@@ -1,0 +1,16 @@
+{
+  "name": "com.crispywonton.unity-mcp-ghost",
+  "version": "0.1.0",
+  "displayName": "Unity MCP Ghost",
+  "description": "Editor bridge package for Unity MCP Ghost.",
+  "unity": "2021.3",
+  "author": {
+    "name": "CrispyW0nton"
+  },
+  "keywords": [
+    "mcp",
+    "cursor",
+    "editor",
+    "automation"
+  ]
+}
