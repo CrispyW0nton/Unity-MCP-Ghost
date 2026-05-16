@@ -285,7 +285,25 @@ Slice 4 validation on KOTOR Unity project:
 - The dry-run path read the original script, produced a backup metadata step, and routed the proposed ranged edit through Unity `script.apply_edits` with `dryRun=true`.
 - The KOTOR project was not mutated during this validation.
 
+Completed in Slice 5:
+
+- Repeatable Phase 3 repair smoke command:
+  - `npm run phase3:repair-smoke`
+  - Optional `--allow-mutation` scratch-script rollback mode
+
+Game-development fit:
+
+- The default smoke keeps production gameplay code safe by validating `repair_apply_edits` in dry-run mode against the target project script.
+- The explicit mutation mode creates a controlled scratch C# script under `Assets/UnityMcpGhostScratch`, introduces a compiler error through `repair_apply_edits`, verifies rollback restored the original content, then deletes the scratch asset and folder.
+- This gives Ghost a repeatable confidence check for the repair loop's most important promise: a failed automated code repair should not leave the Unity project broken.
+
+Slice 5 validation on KOTOR Unity project:
+
+- `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Users/NewAdmin/Documents/KaiGenInteractive/Kotor-Unity --request-timeout-ms 30000` passed in dry-run mode.
+- `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Users/NewAdmin/Documents/KaiGenInteractive/Kotor-Unity --request-timeout-ms 60000 --allow-mutation` passed in scratch mutation rollback mode.
+- The scratch rollback path reported `mode: rolled-back`, `scopedErrorCount: 1`, verified the restored file content matched the original, deleted `Assets/UnityMcpGhostScratch/GhostRepairScratch.cs`, deleted `Assets/UnityMcpGhostScratch`, and waited for compile after cleanup.
+
 Next Phase 3 targets:
 
 - Feed `patch_propose` with stronger compiler diagnostic sourcing beyond bridge-session logs.
-- Add a controlled scratch-scene/script integration test for the full non-dry-run apply and rollback path.
+- Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.

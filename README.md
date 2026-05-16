@@ -50,6 +50,14 @@ Add `--unity-project-path` to exercise the durable file queue fallback:
 npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Path/To/UnityProject --request-timeout-ms 20000
 ```
 
+Run the Phase 3 repair-loop smoke against an open Unity project:
+
+```bash
+npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Path/To/UnityProject --request-timeout-ms 30000
+```
+
+Add `--allow-mutation` only for a controlled scratch-script rollback test. It creates and removes `Assets/UnityMcpGhostScratch`.
+
 ## Cursor MCP Config
 
 ```json
