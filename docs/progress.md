@@ -36,7 +36,7 @@ Remaining before Phase 1 can be called complete:
 
 ## Phase 2: Parity Floor
 
-Status: in progress, first game-development slice implemented.
+Status: Phase 2 parity floor implemented and validated against the live KOTOR Unity project; remaining work is hardening and broader Unity-version coverage.
 
 Completed in Slice 1:
 
@@ -102,12 +102,6 @@ Slice 3 validation on KOTOR Unity project:
 - Read-only `script.read` passed on `ModuleSpawnPipeline.cs` with a 30k-character script payload.
 - Dry-run `script.create`, `script.write`, and `script.delete` passed without changing KOTOR project assets.
 
-Remaining before Phase 2 can be called complete:
-
-- LSP-style ranged `script_apply_edits` for safer partial code edits.
-- MCP resource templates for `unity://gameobject/{instanceId}`, `unity://component/{instanceId}/{type}`, `unity://assets?filter=...`, and `unity://packages`.
-- Unity Editor compile and smoke-test validation for resource-template handlers once implemented.
-
 Completed in Slice 4:
 
 - Long-running operation registry:
@@ -135,6 +129,38 @@ Slice 4 validation on KOTOR Unity project:
 - Dry-run `package.add` passed for `com.unity.cinemachine`.
 - Dry-run `package.remove` passed for `com.unity.cinemachine`.
 - Dry-run `tests.run` passed for an EditMode filter without launching the full KOTOR test suite.
+
+Completed in Slice 5:
+
+- LSP-style ranged script edit tool:
+  - `script_apply_edits`
+  - `manage_script` now routes `apply_edits`.
+- MCP resource templates and state resources:
+  - `unity://packages`
+  - `unity://operations`
+  - `unity://gameobject/{instanceId}`
+  - `unity://component/{instanceId}/{type}`
+  - `unity://assets/{filter}`
+  - `unity://operation/{operationId}`
+  - `unity://tests/{mode}`
+
+Game-development fit:
+
+- Ranged script edits let agents make small targeted C# changes without replacing entire scripts, which is safer for gameplay code, import pipelines, and large systems like the KOTOR module loader.
+- Resource templates let MCP clients browse Unity state as context before choosing tools, keeping read-heavy inspection cheaper and less risky than tool-first workflows.
+
+Slice 5 validation on KOTOR Unity project:
+
+- Unity compiled the new bridge code in Unity `2022.3.62f1`.
+- Dry-run `script.apply_edits` passed against `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs`, reporting original and updated byte counts without changing the file.
+- `package.list` still completed successfully and reported 50 registered packages after the resource-template changes.
+- `npm run build`, `npm run smoke`, and `git diff --check` passed.
+
+Remaining Phase 2 hardening:
+
+- Validate the same bridge against Unity `2021.3` and Unity `6000.x`.
+- Add automated MCP-level resource-template tests.
+- Add EditMode tests for bridge command handlers.
 
 ## Live Test Project: KOTOR Unity Port
 

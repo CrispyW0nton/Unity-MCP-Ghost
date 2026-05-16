@@ -73,7 +73,6 @@ npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C
 
 ## Current Status
 
-Phase 1 is now validated against the live KOTOR Unity project via both direct HTTP JSON-RPC and the durable queue fallback. Phase 2 now includes component, prefab, asset, script, package manager, and test-runner tooling. The current implementation target is the remaining Phase 2 parity floor:
+Phase 1 is validated against the live KOTOR Unity project via both direct HTTP JSON-RPC and the durable queue fallback. Phase 2 parity tooling now includes component, prefab, asset, script, package manager, test-runner, ranged-edit, and resource-template support.
 
-- LSP-style ranged script apply-edits
-- MCP resource templates for game objects, components, assets, packages, and tests
+Next implementation target: Phase 3 moat work, starting with Roslyn-grade script validation and closed-loop diagnostics.

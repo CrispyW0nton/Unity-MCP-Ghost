@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { UnityClient } from "../unity/UnityClient.js";
@@ -35,6 +35,13 @@ const TransformSchema = {
 };
 
 const ComponentValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+const ScriptEditSchema = z.object({
+  startLine: z.number().int().nonnegative(),
+  startColumn: z.number().int().nonnegative(),
+  endLine: z.number().int().nonnegative(),
+  endColumn: z.number().int().nonnegative(),
+  text: z.string()
+});
 
 function annotationsFor(meta: GhostToolMeta): ToolAnnotations {
   return {
@@ -110,6 +117,36 @@ function registerJsonResource(
   );
 }
 
+function registerJsonResourceTemplate(
+  server: McpServer,
+  name: string,
+  uriTemplate: string,
+  description: string,
+  read: (variables: Record<string, string | string[]>) => Promise<unknown> | unknown
+): void {
+  server.registerResource(
+    name,
+    new ResourceTemplate(uriTemplate, { list: undefined }),
+    {
+      title: name,
+      description,
+      mimeType: "application/json"
+    },
+    async (uri, variables) => {
+      const data = await read(variables);
+      return {
+        contents: [
+          {
+            uri: uri.toString(),
+            mimeType: "application/json",
+            text: JSON.stringify(data, null, 2)
+          }
+        ]
+      };
+    }
+  );
+}
+
 async function readUnityResource(context: ToolContext, method: string, params: unknown = {}): Promise<unknown> {
   try {
     return await context.unity.request(method, params);
@@ -125,6 +162,36 @@ async function readUnityResource(context: ToolContext, method: string, params: u
       ]
     };
   }
+}
+
+async function readUnityOperationResource(context: ToolContext, startMethod: string, params: unknown = {}, timeoutMs = 3000): Promise<unknown> {
+  const started = asObject(await readUnityResource(context, startMethod, params));
+  const operationId = started.operationId;
+  if (typeof operationId !== "string") {
+    return started;
+  }
+
+  const startedAt = Date.now();
+  let lastStatus: unknown = started;
+  while (Date.now() - startedAt < timeoutMs) {
+    lastStatus = await readUnityResource(context, "operation.get", { operationId });
+    const state = asObject(asObject(lastStatus).state);
+    if (state.status !== "running") {
+      return lastStatus;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  return lastStatus;
+}
+
+function firstVariable(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) {
+    return value[0] ?? "";
+  }
+
+  return value ?? "";
 }
 
 function registerCoreResources(server: McpServer, context: ToolContext): void {
@@ -146,7 +213,14 @@ function registerCoreResources(server: McpServer, context: ToolContext): void {
         "unity://capabilities",
         "unity://editor/state",
         "unity://scenes/active",
-        "unity://console/errors"
+        "unity://console/errors",
+        "unity://packages",
+        "unity://operations",
+        "unity://gameobject/{instanceId}",
+        "unity://component/{instanceId}/{type}",
+        "unity://assets/{filter}",
+        "unity://operation/{operationId}",
+        "unity://tests/{mode}"
       ],
       tools: RegisteredToolCatalog.map((tool) => ({
         name: tool.name,
@@ -182,6 +256,66 @@ function registerCoreResources(server: McpServer, context: ToolContext): void {
     "unity://console/errors",
     "Read recent Unity console errors for validation and repair workflows.",
     () => readUnityResource(context, "console.get_logs", { severity: "error", limit: 200 })
+  );
+
+  registerJsonResource(
+    server,
+    "Unity Packages",
+    "unity://packages",
+    "Read Unity Package Manager packages through a short-polled operation.",
+    () => readUnityOperationResource(context, "package.list", { includeIndirect: true, includeOffline: true })
+  );
+
+  registerJsonResource(
+    server,
+    "Unity Ghost Operations",
+    "unity://operations",
+    "List long-running Ghost operations tracked in the Unity editor session.",
+    () => readUnityResource(context, "operation.list")
+  );
+
+  registerJsonResourceTemplate(
+    server,
+    "Unity GameObject",
+    "unity://gameobject/{instanceId}",
+    "Read a GameObject by Unity instance id.",
+    (variables) => readUnityResource(context, "gameobject.get", { instanceId: Number.parseInt(firstVariable(variables.instanceId), 10) })
+  );
+
+  registerJsonResourceTemplate(
+    server,
+    "Unity Component",
+    "unity://component/{instanceId}/{type}",
+    "Read a component by owning GameObject instance id and component type.",
+    (variables) =>
+      readUnityResource(context, "component.get", {
+        instanceId: Number.parseInt(firstVariable(variables.instanceId), 10),
+        type: decodeURIComponent(firstVariable(variables.type))
+      })
+  );
+
+  registerJsonResourceTemplate(
+    server,
+    "Unity Assets",
+    "unity://assets/{filter}",
+    "Find Unity assets through AssetDatabase using a URI path filter.",
+    (variables) => readUnityResource(context, "asset.find", { query: decodeURIComponent(firstVariable(variables.filter)), limit: 100 })
+  );
+
+  registerJsonResourceTemplate(
+    server,
+    "Unity Ghost Operation",
+    "unity://operation/{operationId}",
+    "Read a tracked Ghost operation status.",
+    (variables) => readUnityResource(context, "operation.get", { operationId: firstVariable(variables.operationId) })
+  );
+
+  registerJsonResourceTemplate(
+    server,
+    "Unity Test Runner Plan",
+    "unity://tests/{mode}",
+    "Read a dry-run test execution plan for EditMode or PlayMode.",
+    (variables) => readUnityResource(context, "tests.run", { mode: firstVariable(variables.mode), dryRun: true })
   );
 }
 
@@ -753,6 +887,20 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "script_apply_edits",
+    "Apply atomic LSP-style ranged edits to a Unity C# script asset under Assets/.",
+    {
+      path: z.string().min(1),
+      edits: z.array(ScriptEditSchema).min(1),
+      dryRun: DryRunSchema
+    },
+    { risk: "code-write", mutates: true, supportsDryRun: true, phase: 2 },
+    "script.apply_edits"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "script_delete",
     "Move a Unity C# script asset to trash through AssetDatabase.",
     {
@@ -769,7 +917,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     "manage_script",
     "Compatibility tool for C# script read/create/write/delete actions.",
     {
-      action: z.enum(["read", "create", "write", "delete"]),
+      action: z.enum(["read", "create", "write", "apply_edits", "delete"]),
       params: ParamsSchema
     },
     { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },

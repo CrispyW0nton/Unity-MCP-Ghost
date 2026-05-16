@@ -54,6 +54,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("script.read", HandleScriptRead);
             Register("script.create", HandleScriptCreate);
             Register("script.write", HandleScriptWrite);
+            Register("script.apply_edits", HandleScriptApplyEdits);
             Register("script.delete", HandleScriptDelete);
             Register("package.list", HandlePackageList);
             Register("package.search", HandlePackageSearch);
@@ -769,6 +770,65 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var overwrite = JsonRpcUtil.ReadBool(request.RawJson, "overwrite", true);
             var contents = JsonRpcUtil.ReadString(request.RawJson, "content", string.Empty);
             return WriteScript(path, contents, overwrite, JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false), "script.write");
+        }
+
+        private static string HandleScriptApplyEdits(UnityMcpRequest request)
+        {
+            var path = EnsureScriptPath(JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty));
+            EnsureAssetExists(path);
+            var edits = JsonRpcUtil.ReadObjectArray(request.RawJson, "edits");
+            if (edits.Count == 0)
+            {
+                throw new InvalidOperationException("script.apply_edits requires at least one edit.");
+            }
+
+            var fullPath = FullAssetPath(path);
+            var original = File.ReadAllText(fullPath);
+            var ranges = new List<TextEditRange>();
+            for (var index = 0; index < edits.Count; index++)
+            {
+                var editJson = edits[index];
+                var range = new TextEditRange
+                {
+                    StartLine = JsonRpcUtil.ReadInt(editJson, "startLine", 0),
+                    StartColumn = JsonRpcUtil.ReadInt(editJson, "startColumn", 0),
+                    EndLine = JsonRpcUtil.ReadInt(editJson, "endLine", 0),
+                    EndColumn = JsonRpcUtil.ReadInt(editJson, "endColumn", 0),
+                    Text = JsonRpcUtil.ReadString(editJson, "text", string.Empty)
+                };
+                range.StartOffset = TextOffset(original, range.StartLine, range.StartColumn);
+                range.EndOffset = TextOffset(original, range.EndLine, range.EndColumn);
+                if (range.EndOffset < range.StartOffset)
+                {
+                    throw new InvalidOperationException("script.apply_edits edit end is before start at index " + index);
+                }
+
+                ranges.Add(range);
+            }
+
+            ranges.Sort((left, right) => right.StartOffset.CompareTo(left.StartOffset));
+            for (var index = 1; index < ranges.Count; index++)
+            {
+                if (ranges[index].EndOffset > ranges[index - 1].StartOffset)
+                {
+                    throw new InvalidOperationException("script.apply_edits does not allow overlapping edits.");
+                }
+            }
+
+            var updated = original;
+            foreach (var range in ranges)
+            {
+                updated = updated.Substring(0, range.StartOffset) + range.Text + updated.Substring(range.EndOffset);
+            }
+
+            if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
+            {
+                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"script.apply_edits\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"editCount\":" + ranges.Count + ",\"originalBytes\":" + Encoding.UTF8.GetByteCount(original) + ",\"updatedBytes\":" + Encoding.UTF8.GetByteCount(updated) + "}}";
+            }
+
+            File.WriteAllText(fullPath, updated, Encoding.UTF8);
+            AssetDatabase.ImportAsset(path);
+            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"editCount\":" + ranges.Count + ",\"originalBytes\":" + Encoding.UTF8.GetByteCount(original) + ",\"updatedBytes\":" + Encoding.UTF8.GetByteCount(updated) + "}";
         }
 
         private static string HandleScriptDelete(UnityMcpRequest request)
@@ -1527,6 +1587,53 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 + "}\n";
         }
 
+        private static int TextOffset(string text, int line, int column)
+        {
+            if (line < 0 || column < 0)
+            {
+                throw new InvalidOperationException("Text edit line and column must be zero or greater.");
+            }
+
+            var currentLine = 0;
+            var currentColumn = 0;
+            for (var index = 0; index < text.Length; index++)
+            {
+                if (currentLine == line && currentColumn == column)
+                {
+                    return index;
+                }
+
+                var character = text[index];
+                if (character == '\r')
+                {
+                    if (index + 1 < text.Length && text[index + 1] == '\n')
+                    {
+                        index++;
+                    }
+
+                    currentLine++;
+                    currentColumn = 0;
+                    continue;
+                }
+
+                if (character == '\n')
+                {
+                    currentLine++;
+                    currentColumn = 0;
+                    continue;
+                }
+
+                currentColumn++;
+            }
+
+            if (currentLine == line && currentColumn == column)
+            {
+                return text.Length;
+            }
+
+            throw new InvalidOperationException("Text edit position is outside the script content: line " + line + ", column " + column);
+        }
+
         private static string OperationStarted(string operationId, string action)
         {
             return "{\"ok\":true,\"operationId\":\"" + JsonRpcUtil.Escape(operationId) + "\",\"status\":\"running\",\"action\":\"" + JsonRpcUtil.Escape(action) + "\"}";
@@ -1724,5 +1831,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 }
             }
         }
+    }
+
+    internal sealed class TextEditRange
+    {
+        public int StartLine;
+        public int StartColumn;
+        public int EndLine;
+        public int EndColumn;
+        public int StartOffset;
+        public int EndOffset;
+        public string Text;
     }
 }

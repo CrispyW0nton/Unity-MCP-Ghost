@@ -14,7 +14,7 @@ By default the bridge starts after editor reload on `http://127.0.0.1:6400/unity
 
 ## Status
 
-This package is currently a Phase 1 scaffold. It includes:
+This package currently includes Phase 1 and Phase 2 bridge tooling:
 
 - Editor window.
 - Bridge configuration.
@@ -24,7 +24,7 @@ This package is currently a Phase 1 scaffold. It includes:
 - Early Phase 2 compatibility commands: `scene.save_all`, `scene.list_open`, `scene.get_setup`, `gameobject.find`, `gameobject.get`, `gameobject.delete`, and `batch.execute`.
 - Phase 2 scene and hierarchy commands: `scene.create`, `scene.open`, `scene.set_active`, `scene.unload`, `gameobject.duplicate`, and `gameobject.set_parent`.
 - Phase 2 slice commands for components, assets, and prefabs: `component.add`, `component.get`, `component.modify`, `component.remove`, `asset.find`, `asset.create_folder`, `asset.refresh`, `prefab.create`, and `prefab.instantiate`.
-- Phase 2 asset/script commands: `asset.move`, `asset.copy`, `asset.delete`, `script.read`, `script.create`, `script.write`, and `script.delete`.
+- Phase 2 asset/script commands: `asset.move`, `asset.copy`, `asset.delete`, `script.read`, `script.create`, `script.write`, `script.apply_edits`, and `script.delete`.
 - Phase 2 package/test commands: `package.list`, `package.search`, `package.add`, `package.remove`, `operation.get`, `operation.list`, and `tests.run`.
 - Dry-run previews for mutating scene, GameObject, screenshot, and batch commands.
 - Durable queue fallback at `Library/UnityMcpGhost/queue` with `pending` and `results` subfolders.
