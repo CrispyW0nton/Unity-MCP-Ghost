@@ -42,6 +42,7 @@ const ScriptEditSchema = z.object({
   endColumn: z.number().int().nonnegative(),
   text: z.string()
 });
+const DiagnosticInputSchema = z.object({}).passthrough();
 
 function annotationsFor(meta: GhostToolMeta): ToolAnnotations {
   return {
@@ -233,6 +234,140 @@ async function waitForUnityCompile(context: ToolContext, timeoutMs: number, inte
     elapsedMs: Date.now() - startedAt,
     state
   };
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function diagnosticsFromPayload(payload: Record<string, unknown>): Record<string, unknown>[] {
+  const direct = arrayValue(payload.diagnostics);
+  if (direct.length > 0) {
+    return direct.map(asObject);
+  }
+
+  const result = asObject(payload.result);
+  return arrayValue(result.diagnostics).map(asObject);
+}
+
+function diagnosticCode(message: string): string {
+  return message.match(/\b(CS\d{4})\b/)?.[1] ?? "";
+}
+
+function lineColumnEdit(lines: string[], line: number, column: number, text: string): z.infer<typeof ScriptEditSchema> {
+  const lineIndex = Math.max(0, line - 1);
+  const currentLine = lines[lineIndex] ?? "";
+  const columnIndex = Math.max(0, Math.min(currentLine.length, column > 0 ? column - 1 : currentLine.length));
+  return {
+    startLine: lineIndex,
+    startColumn: columnIndex,
+    endLine: lineIndex,
+    endColumn: columnIndex,
+    text
+  };
+}
+
+function buildPatchProposals(diagnostics: Record<string, unknown>[], scriptPath: string, scriptContent: string): Record<string, unknown>[] {
+  const lines = scriptContent.split(/\r\n|\n|\r/);
+
+  return diagnostics.map((diagnostic, index) => {
+    const message = stringValue(diagnostic.message);
+    const code = diagnosticCode(message);
+    const line = numberValue(diagnostic.line);
+    const column = numberValue(diagnostic.column);
+    const file = stringValue(diagnostic.file) || scriptPath;
+    const proposal: Record<string, unknown> = {
+      id: `patch-${index + 1}`,
+      diagnostic: {
+        code,
+        message,
+        file,
+        line,
+        column
+      },
+      confidence: 0.35,
+      edits: [],
+      rationale: "Diagnostic needs human or agent review before a safe ranged edit can be generated.",
+      verification: ["Run script_validate after applying any edit.", "Run compile_wait before reading follow-up diagnostics."]
+    };
+
+    if (code === "CS1002" && scriptPath && line > 0) {
+      const edit = lineColumnEdit(lines, line, column, ";");
+      proposal.summary = "Insert the missing semicolon reported by the C# compiler.";
+      proposal.confidence = 0.68;
+      proposal.rationale = "CS1002 is usually local and the compiler location is precise enough for a dry-run ranged insert.";
+      proposal.edits = [edit];
+      proposal.dryRunToolCall = {
+        name: "script_apply_edits",
+        arguments: {
+          path: scriptPath,
+          edits: [edit],
+          dryRun: true
+        }
+      };
+      return proposal;
+    }
+
+    if (code === "CS1513" && scriptPath && lines.length > 0) {
+      const lastColumn = (lines[lines.length - 1]?.length ?? 0) + 1;
+      const edit = lineColumnEdit(lines, lines.length, lastColumn, "\n}");
+      proposal.summary = "Consider adding a missing closing brace near the end of the script.";
+      proposal.confidence = 0.45;
+      proposal.rationale = "CS1513 can cascade from earlier syntax errors, so Ghost only proposes a dry-run edit with low confidence.";
+      proposal.edits = [edit];
+      proposal.dryRunToolCall = {
+        name: "script_apply_edits",
+        arguments: {
+          path: scriptPath,
+          edits: [edit],
+          dryRun: true
+        }
+      };
+      return proposal;
+    }
+
+    if (code === "CS0246") {
+      proposal.summary = "Resolve the missing type or namespace before editing gameplay code.";
+      proposal.rationale = "In Unity projects this often means a missing using directive, asmdef reference, package, or renamed MonoBehaviour type.";
+      proposal.verification = [
+        "Search project scripts and assemblies for the missing type.",
+        "Inspect asmdef references if the type exists in another assembly.",
+        "Use package_list before adding Unity packages such as Input System, Cinemachine, Addressables, or AR Foundation."
+      ];
+      return proposal;
+    }
+
+    if (code === "CS0103") {
+      proposal.summary = "Resolve an unknown symbol in the local gameplay script context.";
+      proposal.rationale = "This may be a missing field, typo, renamed component property, or variable that moved during refactor.";
+      proposal.verification = [
+        "Read the containing method and class members before proposing edits.",
+        "Check Inspector-wired fields and prefab references before deleting or renaming symbols."
+      ];
+      return proposal;
+    }
+
+    if (code === "CS1061") {
+      proposal.summary = "Resolve a missing member or extension method on a Unity/gameplay type.";
+      proposal.rationale = "This often indicates an API version mismatch, missing using directive, or a component type mismatch.";
+      proposal.verification = [
+        "Confirm the receiver type from source before editing.",
+        "Check package versions and Unity API availability for the active editor version."
+      ];
+      return proposal;
+    }
+
+    proposal.summary = code ? `Review compiler diagnostic ${code}.` : "Review diagnostic before proposing edits.";
+    return proposal;
+  });
 }
 
 function registerCoreResources(server: McpServer, context: ToolContext): void {
@@ -1118,6 +1253,83 @@ export function createMcpServer(context: ToolContext): McpServer {
 
   registerTool(
     server,
+    "patch_propose",
+    "Propose deterministic, dry-run-first ranged edit plans from Unity/C# diagnostics without mutating project files.",
+    {
+      objective: z.string().default("Repair Unity C# diagnostics safely."),
+      scriptPath: z.string().optional(),
+      diagnostics: z.array(DiagnosticInputSchema).optional(),
+      severity: z.enum(["error", "warning", "all"]).default("error"),
+      limit: z.number().int().positive().max(100).default(20),
+      previewDryRuns: z.boolean().default(false)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors"] },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        let diagnostics = args.diagnostics?.map(asObject) ?? [];
+        let diagnosticSource: Record<string, unknown> | null = null;
+
+        if (diagnostics.length === 0) {
+          diagnosticSource = asObject(
+            await context.unity.request("console.diagnostics_get", {
+              severity: args.severity,
+              pathFilter: args.scriptPath ?? "",
+              limit: args.limit
+            })
+          );
+          diagnostics = diagnosticsFromPayload(diagnosticSource);
+        }
+
+        let scriptContent = "";
+        if (args.scriptPath) {
+          const script = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+          scriptContent = stringValue(script.content);
+        }
+
+        const proposals = buildPatchProposals(diagnostics, args.scriptPath ?? "", scriptContent);
+        const dryRunPreviews: unknown[] = [];
+        if (args.previewDryRuns && args.scriptPath) {
+          for (const proposal of proposals) {
+            const dryRunToolCall = asObject(proposal.dryRunToolCall);
+            const dryRunArgs = asObject(dryRunToolCall.arguments);
+            if (dryRunToolCall.name === "script_apply_edits" && arrayValue(dryRunArgs.edits).length > 0) {
+              dryRunPreviews.push({
+                proposalId: proposal.id,
+                result: await context.unity.request("script.apply_edits", dryRunArgs)
+              });
+            }
+          }
+        }
+
+        return successResponse(
+          "patch_propose completed.",
+          {
+            ok: true,
+            objective: args.objective,
+            scriptPath: args.scriptPath ?? null,
+            diagnosticCount: diagnostics.length,
+            proposalCount: proposals.length,
+            proposals,
+            dryRunPreviews,
+            source: diagnosticSource,
+            nextActions: proposals.length > 0
+              ? ["Review proposal confidence and rationale.", "Apply only high-confidence proposals through script_apply_edits with dryRun=true first.", "Run compile_wait and script_validate after any accepted edit."]
+              : ["No diagnostics were available for patch proposal."]
+          },
+          startedAt,
+          {
+            confidence: proposals.length === 0 ? 0.8 : Math.max(...proposals.map((proposal) => numberValue(proposal.confidence)))
+          }
+        );
+      } catch (error) {
+        return failureResponse("patch_propose failed", error, startedAt);
+      }
+    }
+  );
+
+  registerTool(
+    server,
     "repair_loop_run",
     "Run the first Ghost repair-loop skeleton: validate, wait for compile, read diagnostics, and optionally run tests.",
     {
@@ -1155,6 +1367,14 @@ export function createMcpServer(context: ToolContext): McpServer {
         );
         steps.push({ name: "console_diagnostics_get", ok: diagnostics.ok, data: diagnostics });
 
+        const diagnosticList = diagnosticsFromPayload(diagnostics);
+        let patchProposals: Record<string, unknown>[] = [];
+        if (args.scriptPath && diagnosticList.length > 0) {
+          const script = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+          patchProposals = buildPatchProposals(diagnosticList, args.scriptPath, stringValue(script.content));
+          steps.push({ name: "patch_propose", ok: true, data: { proposalCount: patchProposals.length, proposals: patchProposals } });
+        }
+
         let tests: Record<string, unknown>;
         if (args.runTests) {
           const testStart = asObject(
@@ -1184,6 +1404,7 @@ export function createMcpServer(context: ToolContext): McpServer {
             maxIterations: args.maxIterations,
             scriptPath: args.scriptPath ?? null,
             steps,
+            patchProposals,
             nextActions: [
               "If diagnostics are present, propose minimal ranged edits with script_apply_edits dryRun=true.",
               "After applying edits, run compile_wait and script_validate again.",

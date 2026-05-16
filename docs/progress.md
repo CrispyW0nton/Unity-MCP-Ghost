@@ -249,8 +249,25 @@ Slice 2 validation on KOTOR Unity project:
 - MCP-level `repair_loop_run` completed a five-step diagnostic pass against `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs`.
 - `console_diagnostics_get` returned zero diagnostics for the scoped KOTOR script during the repair-loop pass.
 
+Completed in Slice 3:
+
+- Deterministic patch proposal planner:
+  - `patch_propose`
+- `repair_loop_run` now attaches patch proposals when diagnostics are present.
+
+Game-development fit:
+
+- `patch_propose` is intentionally conservative: it does not call a model, does not mutate files, and only emits ranged edits for localized compiler diagnostics such as missing semicolons or braces.
+- For Unity/gameplay-specific diagnostics such as missing types, unknown symbols, or missing members, it recommends project-aware checks first: asmdefs, package availability, Inspector-wired fields, and component/API mismatches.
+- Optional `previewDryRuns` routes proposed edits through `script.apply_edits` with `dryRun=true`, so agents can verify byte-count and range effects before touching gameplay scripts.
+
+Slice 3 validation on KOTOR Unity project:
+
+- MCP-level `patch_propose` converted a synthetic `CS1002` diagnostic for `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs` into one ranged edit proposal.
+- `previewDryRuns=true` successfully routed that proposal through Unity `script.apply_edits` with `dryRun=true` without modifying the KOTOR project.
+- `npm run build`, `npm run smoke`, and `git diff --check` passed.
+
 Next Phase 3 targets:
 
-- `patch_propose` skeleton for turning structured diagnostics into minimal suggested ranged edits.
-- `repair_loop_run` integration with `script_apply_edits` dry-run previews.
-- Stronger compiler diagnostic sourcing beyond bridge-session logs.
+- Feed `patch_propose` with stronger compiler diagnostic sourcing beyond bridge-session logs.
+- Add an apply/rollback repair-loop slice that accepts explicit high-confidence proposals, performs dry-run previews, applies edits, waits for compile, and revalidates.
