@@ -262,6 +262,44 @@ function diagnosticCount(payload: Record<string, unknown>): number {
   return diagnosticsFromPayload(payload).length;
 }
 
+async function compilerFirstDiagnostics(
+  context: ToolContext,
+  pathFilter: string,
+  severity = "error",
+  limit = 100
+): Promise<{ diagnostics: Record<string, unknown>[]; source: string; compile: Record<string, unknown>; console: Record<string, unknown> | null }> {
+  const compile = asObject(
+    await context.unity.request("compile.diagnostics_get", {
+      severity,
+      pathFilter,
+      limit
+    })
+  );
+  const compileDiagnostics = diagnosticsFromPayload(compile);
+  if (compileDiagnostics.length > 0) {
+    return {
+      diagnostics: compileDiagnostics,
+      source: "compilation-pipeline",
+      compile,
+      console: null
+    };
+  }
+
+  const consoleDiagnostics = asObject(
+    await context.unity.request("console.diagnostics_get", {
+      severity,
+      pathFilter,
+      limit
+    })
+  );
+  return {
+    diagnostics: diagnosticsFromPayload(consoleDiagnostics),
+    source: "console-log-buffer",
+    compile,
+    console: consoleDiagnostics
+  };
+}
+
 function diagnosticCode(message: string): string {
   return message.match(/\b(CS\d{4})\b/)?.[1] ?? "";
 }
@@ -694,6 +732,20 @@ export function createMcpServer(context: ToolContext): McpServer {
     },
     { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors"] },
     "console.diagnostics_get"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "compile_diagnostics_get",
+    "Read structured C# compiler diagnostics captured from Unity's compilation pipeline.",
+    {
+      severity: z.enum(["error", "warning", "all"]).default("error"),
+      pathFilter: z.string().default(""),
+      limit: z.number().int().positive().max(500).default(100)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors"] },
+    "compile.diagnostics_get"
   );
 
   registerUnityRequestTool(
@@ -1275,14 +1327,13 @@ export function createMcpServer(context: ToolContext): McpServer {
         let diagnosticSource: Record<string, unknown> | null = null;
 
         if (diagnostics.length === 0) {
-          diagnosticSource = asObject(
-            await context.unity.request("console.diagnostics_get", {
-              severity: args.severity,
-              pathFilter: args.scriptPath ?? "",
-              limit: args.limit
-            })
-          );
-          diagnostics = diagnosticsFromPayload(diagnosticSource);
+          const collected = await compilerFirstDiagnostics(context, args.scriptPath ?? "", args.severity, args.limit);
+          diagnostics = collected.diagnostics;
+          diagnosticSource = {
+            source: collected.source,
+            compile: collected.compile,
+            console: collected.console
+          };
         }
 
         let scriptContent = "";
@@ -1396,6 +1447,15 @@ export function createMcpServer(context: ToolContext): McpServer {
         const validation = asObject(await context.unity.request("script.validate", { path: args.scriptPath, limit: 100 }));
         steps.push({ name: "script_validate", ok: validation.ok, data: validation });
 
+        const compileDiagnostics = asObject(
+          await context.unity.request("compile.diagnostics_get", {
+            severity: "error",
+            pathFilter: args.scriptPath,
+            limit: 100
+          })
+        );
+        steps.push({ name: "compile_diagnostics_get", ok: compileDiagnostics.ok, data: compileDiagnostics });
+
         const diagnostics = asObject(
           await context.unity.request("console.diagnostics_get", {
             severity: "error",
@@ -1418,9 +1478,11 @@ export function createMcpServer(context: ToolContext): McpServer {
         }
 
         const scopedErrorCount = Math.max(diagnosticCount(validation), diagnosticCount(diagnostics));
+        const compilerErrorCount = diagnosticCount(compileDiagnostics);
+        const effectiveErrorCount = Math.max(scopedErrorCount, compilerErrorCount);
         const testState = tests ? asObject(tests.state) : {};
         const testsFailed = tests ? testState.status === "failed" || tests.status === "failed" : false;
-        const shouldRollback = args.rollbackOnFailure && (compileStatus.ok === false || scopedErrorCount > 0 || testsFailed);
+        const shouldRollback = args.rollbackOnFailure && (compileStatus.ok === false || effectiveErrorCount > 0 || testsFailed);
         let rollback: Record<string, unknown> | null = null;
 
         if (shouldRollback) {
@@ -1452,7 +1514,9 @@ export function createMcpServer(context: ToolContext): McpServer {
             objective: args.objective,
             scriptPath: args.scriptPath,
             editCount: args.edits.length,
-            scopedErrorCount,
+            scopedErrorCount: effectiveErrorCount,
+            compilerErrorCount,
+            consoleErrorCount: diagnosticCount(diagnostics),
             testsFailed,
             rollback,
             steps,
@@ -1501,6 +1565,15 @@ export function createMcpServer(context: ToolContext): McpServer {
         const compileStatus = await waitForUnityCompile(context, args.compileTimeoutMs);
         steps.push({ name: "compile_wait", ok: compileStatus.ok, data: compileStatus });
 
+        const compileDiagnostics = asObject(
+          await context.unity.request("compile.diagnostics_get", {
+            severity: "error",
+            pathFilter: args.scriptPath ?? "",
+            limit: 100
+          })
+        );
+        steps.push({ name: "compile_diagnostics_get", ok: compileDiagnostics.ok, data: compileDiagnostics });
+
         const diagnostics = asObject(
           await context.unity.request("console.diagnostics_get", {
             severity: "error",
@@ -1510,7 +1583,9 @@ export function createMcpServer(context: ToolContext): McpServer {
         );
         steps.push({ name: "console_diagnostics_get", ok: diagnostics.ok, data: diagnostics });
 
-        const diagnosticList = diagnosticsFromPayload(diagnostics);
+        const compileDiagnosticList = diagnosticsFromPayload(compileDiagnostics);
+        const consoleDiagnosticList = diagnosticsFromPayload(diagnostics);
+        const diagnosticList = compileDiagnosticList.length > 0 ? compileDiagnosticList : consoleDiagnosticList;
         let patchProposals: Record<string, unknown>[] = [];
         if (args.scriptPath && diagnosticList.length > 0) {
           const script = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
@@ -1546,6 +1621,7 @@ export function createMcpServer(context: ToolContext): McpServer {
             mode: "diagnostic-pass",
             maxIterations: args.maxIterations,
             scriptPath: args.scriptPath ?? null,
+            diagnosticSource: compileDiagnosticList.length > 0 ? "compilation-pipeline" : "console-log-buffer",
             steps,
             patchProposals,
             nextActions: [

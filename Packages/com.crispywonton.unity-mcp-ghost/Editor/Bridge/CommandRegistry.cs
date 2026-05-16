@@ -25,6 +25,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("editor.get_state", HandleEditorState);
             Register("console.get_logs", HandleConsoleLogs);
             Register("console.diagnostics_get", HandleConsoleDiagnostics);
+            Register("compile.diagnostics_get", HandleCompileDiagnostics);
             Register("scene.get_hierarchy", HandleSceneHierarchy);
             Register("scene.create", HandleSceneCreate);
             Register("scene.open", HandleSceneOpen);
@@ -166,6 +167,14 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var limit = JsonRpcUtil.ReadInt(request.RawJson, "limit", 200);
             var pathFilter = JsonRpcUtil.ReadString(request.RawJson, "pathFilter", string.Empty);
             return ConsoleLogBuffer.Diagnostics(severity, limit, pathFilter);
+        }
+
+        private static string HandleCompileDiagnostics(UnityMcpRequest request)
+        {
+            var severity = JsonRpcUtil.ReadString(request.RawJson, "severity", "error");
+            var limit = JsonRpcUtil.ReadInt(request.RawJson, "limit", 200);
+            var pathFilter = JsonRpcUtil.ReadString(request.RawJson, "pathFilter", string.Empty);
+            return CompileDiagnosticBuffer.Diagnostics(severity, limit, pathFilter);
         }
 
         private static string HandleSceneHierarchy(UnityMcpRequest request)

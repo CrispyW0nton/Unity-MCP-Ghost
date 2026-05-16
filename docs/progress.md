@@ -303,7 +303,27 @@ Slice 5 validation on KOTOR Unity project:
 - `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Users/NewAdmin/Documents/KaiGenInteractive/Kotor-Unity --request-timeout-ms 60000 --allow-mutation` passed in scratch mutation rollback mode.
 - The scratch rollback path reported `mode: rolled-back`, `scopedErrorCount: 1`, verified the restored file content matched the original, deleted `Assets/UnityMcpGhostScratch/GhostRepairScratch.cs`, deleted `Assets/UnityMcpGhostScratch`, and waited for compile after cleanup.
 
+Completed in Slice 6:
+
+- Unity compiler-pipeline diagnostic buffer:
+  - Unity bridge command `compile.diagnostics_get`
+  - MCP tool `compile_diagnostics_get`
+- `patch_propose`, `repair_loop_run`, and `repair_apply_edits` now prefer compiler-pipeline diagnostics and fall back to console-derived diagnostics.
+
+Game-development fit:
+
+- Compiler diagnostics now come from `UnityEditor.Compilation.CompilationPipeline.assemblyCompilationFinished`, giving Ghost a more precise source for C# file, line, column, severity, compiler code, and assembly path.
+- This improves gameplay-script repair loops because compile errors can be scoped to the script being edited instead of inferred only from generic console text.
+- Console diagnostics remain as fallback for runtime exceptions, Unity API errors, and non-compiler failures.
+
+Slice 6 validation on KOTOR Unity project:
+
+- Unity refreshed and compiled the updated bridge in Unity `2022.3.62f1`.
+- MCP-level `compile_diagnostics_get` returned `source: compilation-pipeline` and zero scoped diagnostics for `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs`.
+- `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Users/NewAdmin/Documents/KaiGenInteractive/Kotor-Unity --request-timeout-ms 60000 --allow-mutation` passed with compiler diagnostics active.
+- The scratch rollback step reported `mode: rolled-back`, `scopedErrorCount: 2`, verified rollback content, cleaned up the scratch asset/folder, and waited for compile after cleanup.
+
 Next Phase 3 targets:
 
-- Feed `patch_propose` with stronger compiler diagnostic sourcing beyond bridge-session logs.
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
+- Add semantic project-analysis tools for prefab references, UnityEvent bindings, and Animator graphs.
