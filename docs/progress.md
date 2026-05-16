@@ -383,7 +383,27 @@ Slice 9 validation on KOTOR Unity project:
 - `animator_analyze` ran against `MalakMenu_006J.controller` and returned `source: animator-controller-yaml-scan` with a valid target summary.
 - The imported Malak controller currently has empty `m_AnimatorParameters` and `m_AnimatorLayers`, so the analyzer correctly returned zero parameters, state machines, states, and transitions.
 
+Completed in Slice 10:
+
+- Asset hygiene semantic tools:
+  - `meta_integrity_check`
+  - `unused_assets_find`
+  - Unity bridge commands `semantic.meta_integrity_check` and `semantic.unused_assets_find`
+
+Game-development fit:
+
+- `meta_integrity_check` scans Unity assets and `.meta` files for missing metadata, missing GUIDs, duplicate GUIDs, and orphan metadata.
+- `unused_assets_find` builds a GUID reference set from serialized Unity assets, then reports conservative unused candidates with file size, type, extension, and a review-before-delete risk label.
+- The unused-asset tool intentionally skips scripts by default plus Resources, StreamingAssets, Editor, and Gizmos paths because those can be referenced dynamically in real Unity games.
+
+Slice 10 validation on KOTOR Unity project:
+
+- Unity refreshed and compiled the updated bridge in Unity `2022.3.62f1`.
+- `meta_integrity_check` scanned 2,195 assets and returned zero metadata/GUID issues.
+- `unused_assets_find` returned conservative candidates from extracted/imported KOTOR assets; first sampled candidate was `Assets/ExtractedAssets/Textures/bluefill.png`.
+- A temporary scratch fixture verified that a referenced `.asset` is found by `asset_references_trace` and excluded from `unused_assets_find`, then the scratch assets were deleted.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add unused asset detection and GUID/.meta integrity checks.
+- Add call-path / class impact analysis for C# scripts.

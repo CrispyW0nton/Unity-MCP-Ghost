@@ -1068,6 +1068,34 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "meta_integrity_check",
+    "Scan Unity Assets for missing .meta files, missing GUIDs, duplicate GUIDs, and orphan .meta files.",
+    {
+      includeMetaOnly: z.boolean().default(true),
+      limit: z.number().int().positive().max(5000).default(500)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    "semantic.meta_integrity_check"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "unused_assets_find",
+    "Find conservative unused Unity asset candidates by scanning serialized GUID references across the project.",
+    {
+      extensions: z.string().default(".prefab,.unity,.asset,.controller,.overrideController,.mat,.anim,.playable,.renderTexture,.lighting,.shadergraph,.asmdef,.uxml,.uss"),
+      candidateExtensions: z.string().default(".prefab,.mat,.asset,.controller,.overrideController,.anim,.png,.jpg,.jpeg,.tga,.psd,.fbx,.obj,.wav,.mp3,.ogg,.shadergraph,.renderTexture,.uxml,.uss"),
+      includeScripts: z.boolean().default(false),
+      limit: z.number().int().positive().max(5000).default(500)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    "semantic.unused_assets_find"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "asset_create_folder",
     "Create a folder under Assets for organizing game content.",
     {

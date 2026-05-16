@@ -53,6 +53,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("prefab.references_trace", HandleSemanticAssetReferencesTrace);
             Register("semantic.unity_event_bindings_find", HandleSemanticUnityEventBindingsFind);
             Register("semantic.animator_analyze", HandleSemanticAnimatorAnalyze);
+            Register("semantic.meta_integrity_check", HandleSemanticMetaIntegrityCheck);
+            Register("semantic.unused_assets_find", HandleSemanticUnusedAssetsFind);
             Register("asset.create_folder", HandleAssetCreateFolder);
             Register("asset.move", HandleAssetMove);
             Register("asset.copy", HandleAssetCopy);
@@ -859,6 +861,151 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append(",\"transitionCount\":");
             builder.Append(transitionCount);
             builder.Append("}}");
+            return builder.ToString();
+        }
+
+        private static string HandleSemanticMetaIntegrityCheck(UnityMcpRequest request)
+        {
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 500), 5000));
+            var includeMetaOnly = JsonRpcUtil.ReadBool(request.RawJson, "includeMetaOnly", true);
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var seenGuids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var issueCount = 0;
+            var scannedAssets = 0;
+            var scannedMetas = 0;
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"source\":\"asset-meta-guid-scan\",\"issues\":[");
+
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.*", SearchOption.AllDirectories))
+            {
+                if (issueCount >= limit)
+                {
+                    break;
+                }
+
+                if (fullPath.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (ShouldSkipMetaAuditPath(assetPath))
+                {
+                    continue;
+                }
+
+                scannedAssets++;
+                var metaPath = fullPath + ".meta";
+                if (!File.Exists(metaPath))
+                {
+                    AppendMetaIssue(builder, ref issueCount, "missing-meta", assetPath, string.Empty, string.Empty);
+                    continue;
+                }
+
+                scannedMetas++;
+                var guid = ReadMetaGuid(metaPath);
+                if (string.IsNullOrEmpty(guid))
+                {
+                    AppendMetaIssue(builder, ref issueCount, "missing-guid", assetPath, ToAssetPath(projectRoot, metaPath), string.Empty);
+                    continue;
+                }
+
+                string existingPath;
+                if (seenGuids.TryGetValue(guid, out existingPath))
+                {
+                    AppendMetaIssue(builder, ref issueCount, "duplicate-guid", assetPath, ToAssetPath(projectRoot, metaPath), guid, existingPath);
+                    continue;
+                }
+
+                seenGuids[guid] = assetPath;
+            }
+
+            if (includeMetaOnly && issueCount < limit)
+            {
+                foreach (var metaPath in Directory.GetFiles(Application.dataPath, "*.meta", SearchOption.AllDirectories))
+                {
+                    if (issueCount >= limit)
+                    {
+                        break;
+                    }
+
+                    var assetFullPath = metaPath.Substring(0, metaPath.Length - ".meta".Length);
+                    if (File.Exists(assetFullPath) || Directory.Exists(assetFullPath))
+                    {
+                        continue;
+                    }
+
+                    AppendMetaIssue(builder, ref issueCount, "orphan-meta", ToAssetPath(projectRoot, assetFullPath), ToAssetPath(projectRoot, metaPath), ReadMetaGuid(metaPath));
+                }
+            }
+
+            builder.Append("],\"issueCount\":");
+            builder.Append(issueCount);
+            builder.Append(",\"scannedAssetCount\":");
+            builder.Append(scannedAssets);
+            builder.Append(",\"scannedMetaCount\":");
+            builder.Append(scannedMetas);
+            builder.Append(",\"truncated\":");
+            builder.Append(Bool(issueCount >= limit));
+            builder.Append("}");
+            return builder.ToString();
+        }
+
+        private static string HandleSemanticUnusedAssetsFind(UnityMcpRequest request)
+        {
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 500), 5000));
+            var extensions = ReadReferenceExtensions(JsonRpcUtil.ReadString(request.RawJson, "extensions", ".prefab,.unity,.asset,.controller,.overrideController,.mat,.anim,.playable,.renderTexture,.lighting,.shadergraph,.asmdef,.uxml,.uss"));
+            var candidateExtensions = ReadReferenceExtensions(JsonRpcUtil.ReadString(request.RawJson, "candidateExtensions", ".prefab,.mat,.asset,.controller,.overrideController,.anim,.png,.jpg,.jpeg,.tga,.psd,.fbx,.obj,.wav,.mp3,.ogg,.shadergraph,.renderTexture,.uxml,.uss"));
+            var includeScripts = JsonRpcUtil.ReadBool(request.RawJson, "includeScripts", false);
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var referencedGuids = BuildReferencedGuidSet(projectRoot, extensions);
+            var count = 0;
+            var scanned = 0;
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"source\":\"guid-reference-scan\",\"candidates\":[");
+
+            foreach (var guid in AssetDatabase.FindAssets(string.Empty))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrEmpty(path) || AssetDatabase.IsValidFolder(path))
+                {
+                    continue;
+                }
+
+                if (ShouldSkipUnusedCandidate(path, candidateExtensions, includeScripts))
+                {
+                    continue;
+                }
+
+                scanned++;
+                if (referencedGuids.Contains(guid))
+                {
+                    continue;
+                }
+
+                if (count > 0)
+                {
+                    builder.Append(",");
+                }
+
+                AppendUnusedAssetCandidate(builder, guid, path);
+                count++;
+            }
+
+            builder.Append("],\"candidateCount\":");
+            builder.Append(count);
+            builder.Append(",\"scannedCandidateCount\":");
+            builder.Append(scanned);
+            builder.Append(",\"referencedGuidCount\":");
+            builder.Append(referencedGuids.Count);
+            builder.Append(",\"truncated\":");
+            builder.Append(Bool(count >= limit));
+            builder.Append(",\"note\":\"Candidates are conservative GUID-scan results; verify addressables, resources, runtime loads, and external importer manifests before deletion.\"}");
             return builder.ToString();
         }
 
@@ -1729,6 +1876,138 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("\",\"type\":\"");
             builder.Append(JsonRpcUtil.Escape(type == null ? string.Empty : type.FullName));
             builder.Append("\"}");
+        }
+
+        private static void AppendUnusedAssetCandidate(StringBuilder builder, string guid, string path)
+        {
+            var type = AssetDatabase.GetMainAssetTypeAtPath(path);
+            var fullPath = FullAssetPath(path);
+            builder.Append("{\"guid\":\"");
+            builder.Append(JsonRpcUtil.Escape(guid));
+            builder.Append("\",\"path\":\"");
+            builder.Append(JsonRpcUtil.Escape(path));
+            builder.Append("\",\"name\":\"");
+            builder.Append(JsonRpcUtil.Escape(Path.GetFileNameWithoutExtension(path)));
+            builder.Append("\",\"extension\":\"");
+            builder.Append(JsonRpcUtil.Escape(Path.GetExtension(path)));
+            builder.Append("\",\"type\":\"");
+            builder.Append(JsonRpcUtil.Escape(type == null ? string.Empty : type.FullName));
+            builder.Append("\",\"sizeBytes\":");
+            builder.Append(File.Exists(fullPath) ? new FileInfo(fullPath).Length : 0);
+            builder.Append(",\"risk\":\"review-before-delete\"}");
+        }
+
+        private static void AppendMetaIssue(StringBuilder builder, ref int issueCount, string kind, string assetPath, string metaPath, string guid, string duplicateOf = "")
+        {
+            if (issueCount > 0)
+            {
+                builder.Append(",");
+            }
+
+            builder.Append("{\"kind\":\"");
+            builder.Append(JsonRpcUtil.Escape(kind));
+            builder.Append("\",\"assetPath\":\"");
+            builder.Append(JsonRpcUtil.Escape(assetPath));
+            builder.Append("\",\"metaPath\":\"");
+            builder.Append(JsonRpcUtil.Escape(metaPath));
+            builder.Append("\",\"guid\":\"");
+            builder.Append(JsonRpcUtil.Escape(guid));
+            builder.Append("\",\"duplicateOf\":\"");
+            builder.Append(JsonRpcUtil.Escape(duplicateOf));
+            builder.Append("\"}");
+            issueCount++;
+        }
+
+        private static HashSet<string> BuildReferencedGuidSet(string projectRoot, HashSet<string> extensions)
+        {
+            var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var guidRegex = new Regex(@"guid:\s*(?<guid>[0-9a-fA-F]{32})", RegexOptions.Compiled);
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.*", SearchOption.AllDirectories))
+            {
+                var extension = Path.GetExtension(fullPath);
+                if (string.IsNullOrEmpty(extension) || !extensions.Contains(extension))
+                {
+                    continue;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (ShouldSkipMetaAuditPath(assetPath))
+                {
+                    continue;
+                }
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (Match match in guidRegex.Matches(text))
+                {
+                    referenced.Add(match.Groups["guid"].Value);
+                }
+            }
+
+            return referenced;
+        }
+
+        private static string ReadMetaGuid(string metaPath)
+        {
+            try
+            {
+                foreach (var line in File.ReadLines(metaPath))
+                {
+                    var trimmed = line.Trim();
+                    if (trimmed.StartsWith("guid:", StringComparison.Ordinal))
+                    {
+                        return trimmed.Substring("guid:".Length).Trim();
+                    }
+                }
+            }
+            catch
+            {
+                return string.Empty;
+            }
+
+            return string.Empty;
+        }
+
+        private static bool ShouldSkipMetaAuditPath(string assetPath)
+        {
+            var normalized = (assetPath ?? string.Empty).Replace("\\", "/");
+            return normalized.Contains("/Library/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/Temp/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/Obj/", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ShouldSkipUnusedCandidate(string path, HashSet<string> candidateExtensions, bool includeScripts)
+        {
+            var extension = Path.GetExtension(path);
+            if (string.IsNullOrEmpty(extension) || !candidateExtensions.Contains(extension))
+            {
+                return true;
+            }
+
+            if (!includeScripts && extension.Equals(".cs", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var normalized = path.Replace("\\", "/");
+            if (normalized.StartsWith("Assets/Resources/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/Resources/", StringComparison.OrdinalIgnoreCase)
+                || normalized.StartsWith("Assets/StreamingAssets/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/Editor/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/Gizmos/", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return false;
         }
 
         private static int AppendUnityEventBindings(
