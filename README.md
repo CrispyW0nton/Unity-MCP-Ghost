@@ -8,6 +8,8 @@ This repository currently contains the initial project scaffold:
 - `Packages/com.crispywonton.unity-mcp-ghost/` - Unity UPM editor bridge package skeleton.
 - `docs/` - architecture and development notes for the Ghost roadmap.
 
+See [docs/development-plan.md](docs/development-plan.md) for the full strategic roadmap, including the competitive pattern map, phased tool catalog, semantic-analysis moat, durable transport plan, and mobile/runtime milestones. See [docs/progress.md](docs/progress.md) for implementation progress and [docs/mcp-book-guidance.md](docs/mcp-book-guidance.md) for the MCP-specific design guidance applied from the local protocol reference books.
+
 ## Goals
 
 - Expose safe Unity Editor workflows to MCP clients such as Cursor.
@@ -19,13 +21,33 @@ This repository currently contains the initial project scaffold:
 ## Early Local Flow
 
 1. Open a Unity project that has `Packages/com.crispywonton.unity-mcp-ghost` installed.
-2. Start the Unity bridge from `Window > Unity MCP Ghost`.
+2. The bridge auto-starts on `http://127.0.0.1:6400/unity-mcp-ghost/`. Use `Window > Unity MCP Ghost` to inspect status, stop it, or restart it.
 3. Run the MCP server from this repo:
 
 ```bash
 npm install
 npm run build
 node dist/index.js --transport stdio --unity-host 127.0.0.1 --unity-port 6400
+```
+
+To enable the durable file-queue fallback that survives Unity domain reloads, pass either the Unity project path or the queue directory:
+
+```bash
+node dist/index.js --transport stdio --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Path/To/UnityProject
+```
+
+## Smoke Test
+
+Run the read-only/dry-run smoke suite against an open Unity project with the Ghost bridge started:
+
+```bash
+npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 20000
+```
+
+Add `--unity-project-path` to exercise the durable file queue fallback:
+
+```bash
+npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Path/To/UnityProject --request-timeout-ms 20000
 ```
 
 ## Cursor MCP Config
@@ -51,14 +73,7 @@ node dist/index.js --transport stdio --unity-host 127.0.0.1 --unity-port 6400
 
 ## Current Status
 
-This is a brand-new project scaffold. The first implementation target is the Phase 1/2 vertical slice:
+Phase 1 is now validated against the live KOTOR Unity project via both direct HTTP JSON-RPC and the durable queue fallback. Phase 2 now includes component, prefab, asset, script, package manager, and test-runner tooling. The current implementation target is the remaining Phase 2 parity floor:
 
-- MCP `ping`
-- Unity connection health
-- editor state
-- console logs
-- scene hierarchy
-- create GameObject
-- set transform
-- save scene
-- screenshot capture
+- LSP-style ranged script apply-edits
+- MCP resource templates for game objects, components, assets, packages, and tests

@@ -1,0 +1,177 @@
+# Unity MCP Ghost Progress
+
+## Phase 1: Foundation
+
+Status: validated against the live KOTOR Unity project on 2026-05-15; remaining work is automation depth and broader Unity-version coverage.
+
+Completed:
+
+- Structured MCP response envelope with diagnostics, confidence, undo group, and duration fields.
+- Tool metadata for risk level, mutation status, dry-run support, related resources, and roadmap phase.
+- Phase 1 MCP tools: `ping`, `health`, `editor_state_get`, `console_read`, `scene_hierarchy_get`, `gameobject_create`, `transform_set`, `scene_save`, and `screenshot_capture`.
+- Compatibility tools: `unity_get_editor_state`, `unity_get_console_logs`, `unity_get_scene_hierarchy`, `manage_scene`, `manage_gameobject`, and `batch_execute`.
+- MCP resources for read-heavy context: `unity://capabilities`, `unity://editor/state`, `unity://scenes/active`, and `unity://console/errors`.
+- MCP prompts for resource-first inspection and dry-run-first repair planning.
+- Unity bridge commands for editor state, console log buffer, scene hierarchy/save, GameObject create/transform/find/get/delete, screenshot capture, and batch execution.
+- Undo groups for GameObject mutations.
+- Dry-run previews for mutating scene, GameObject, screenshot, and batch commands.
+- Durable file queue under `Library/UnityMcpGhost/queue` with `pending` and `results` folders.
+- TypeScript queue fallback via `--unity-project-path` or `--unity-queue-dir`.
+- Bridge window status for endpoint, connected clients, durable queue, last request, recent commands, and last error.
+- Editor-load bridge service that starts the local bridge automatically on port `6400` unless disabled from the Ghost window.
+- HTTP JSON-RPC hot path, with WebSocket and durable queue fallback.
+
+Game-development fit:
+
+- The implemented commands target everyday Unity game development workflows: inspect editor state, read diagnostics, inspect scene hierarchy, create and place objects, save scenes, capture visual state, and batch repetitive scene edits.
+- The implementation avoids generic filesystem powers where Unity APIs are safer and more game-aware.
+- Mutating commands are undoable or dry-run previewable so agents can iterate without trashing a scene.
+
+Remaining before Phase 1 can be called complete:
+
+- Validate Unity C# compilation inside Unity 2021.3, 2022.3, and Unity 6.
+- Add automated EditMode smoke tests for bridge commands.
+- Improve screenshot completion reporting after Unity finishes writing the PNG.
+- Add a release checklist for v0.1.0.
+
+## Phase 2: Parity Floor
+
+Status: in progress, first game-development slice implemented.
+
+Completed in Slice 1:
+
+- Component tools:
+  - `component_add`
+  - `component_get`
+  - `component_modify`
+  - `component_remove`
+  - `manage_component`
+- Asset tools:
+  - `asset_find`
+  - `asset_create_folder`
+  - `asset_refresh`
+  - `manage_asset`
+- Prefab tools:
+  - `prefab_create`
+  - `prefab_instantiate`
+  - `manage_prefab`
+
+Completed in Slice 2:
+
+- Scene lifecycle tools:
+  - `scene_create`
+  - `scene_open`
+  - `scene_set_active`
+  - `scene_unload`
+- Hierarchy editing tools:
+  - `gameobject_duplicate`
+  - `gameobject_set_parent`
+- Expanded compatibility tools:
+  - `manage_scene` now routes create/open/set-active/unload actions.
+  - `manage_gameobject` now routes duplicate and set-parent actions.
+
+Completed in Slice 3:
+
+- Conservative AssetDatabase mutation tools:
+  - `asset_move`
+  - `asset_copy`
+  - `asset_delete`
+  - `manage_asset` now routes move/copy/delete actions.
+- C# script asset tools constrained to `.cs` files under `Assets/`:
+  - `script_read`
+  - `script_create`
+  - `script_write`
+  - `script_delete`
+  - `manage_script`
+- Improved JSON string parsing in the Unity bridge so script content with escaped newlines and quotes can round-trip more safely.
+
+Game-development fit:
+
+- Component tools let agents assemble real gameplay objects with colliders, rigidbodies, audio sources, renderers, cameras, and project MonoBehaviours through Unity APIs.
+- Asset tools let agents locate sprites, models, materials, scenes, scripts, audio clips, prefabs, and folders through `AssetDatabase` instead of guessing paths.
+- Prefab tools let agents convert scene prototypes into reusable game content and instantiate existing prefab assets back into scenes.
+- Scene lifecycle tools let agents create test scenes, open level scenes, work additively, and set the active authoring target without manual editor clicks.
+- Hierarchy editing tools let agents organize gameplay objects under managers, spawn points, level roots, cameras, UI canvases, and prefab containers.
+- Mutating component, asset, and prefab operations support dry-run previews where Unity supports meaningful previews.
+- Scene-object mutations use Unity Undo where possible.
+- Asset and script tools use `AssetDatabase` and project-relative `Assets/` constraints instead of unrestricted filesystem access.
+
+Slice 3 validation on KOTOR Unity project:
+
+- Dry-run `asset.move`, `asset.copy`, and `asset.delete` passed using `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs`.
+- Read-only `script.read` passed on `ModuleSpawnPipeline.cs` with a 30k-character script payload.
+- Dry-run `script.create`, `script.write`, and `script.delete` passed without changing KOTOR project assets.
+
+Remaining before Phase 2 can be called complete:
+
+- LSP-style ranged `script_apply_edits` for safer partial code edits.
+- MCP resource templates for `unity://gameobject/{instanceId}`, `unity://component/{instanceId}/{type}`, `unity://assets?filter=...`, and `unity://packages`.
+- Unity Editor compile and smoke-test validation for resource-template handlers once implemented.
+
+Completed in Slice 4:
+
+- Long-running operation registry:
+  - `operation_get`
+  - `operation_list`
+- Unity Package Manager tools:
+  - `package_list`
+  - `package_search`
+  - `package_add`
+  - `package_remove`
+  - `manage_package`
+- Unity Test Runner hook:
+  - `tests_run`
+
+Game-development fit:
+
+- Package tools let agents inspect and configure game-development packages such as Cinemachine, Input System, Addressables, AR Foundation, Unity IAP, and platform service packages through Unity Package Manager rather than editing manifests by hand.
+- Test execution returns an operation id so long-running EditMode/PlayMode suites can be polled safely instead of blocking the editor or MCP client.
+- Mutating package actions support dry-run previews, which is important when working in production-scale projects like the KOTOR port.
+
+Slice 4 validation on KOTOR Unity project:
+
+- Unity compiled the new bridge code in Unity `2022.3.62f1`.
+- `package.list` completed successfully and reported 50 registered packages.
+- Dry-run `package.add` passed for `com.unity.cinemachine`.
+- Dry-run `package.remove` passed for `com.unity.cinemachine`.
+- Dry-run `tests.run` passed for an EditMode filter without launching the full KOTOR test suite.
+
+## Live Test Project: KOTOR Unity Port
+
+Path: `C:\Users\NewAdmin\Documents\KaiGenInteractive\Kotor-Unity`
+
+Purpose:
+
+- Use the active KOTOR Unity port as the real-world validation project for Ghost.
+- Keep validation game-development focused: imported KOTOR assets, prefabs, scenes, module content, materials, and diagnostics.
+- Prefer read-only and `dryRun` checks unless an explicit test mutation is planned.
+
+Setup completed:
+
+- Repointed KOTOR Unity package manifest from the old `Unity-MCP` package path to this active `Unity-MCP-Ghost` repo.
+- Repointed `Packages/packages-lock.json` to the same active package path.
+- Added `npm run smoke` in Ghost to run a repeatable read-only/dry-run bridge validation suite.
+- Patched a KOTOR compile blocker in `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs` by initializing two `GameObject root` locals to `null`.
+
+Validation completed on 2026-05-15:
+
+- Unity exited Safe Mode and compiled the Ghost bridge in Unity `2022.3.62f1`.
+- `npm run build` passes for the TypeScript MCP server.
+- Durable queue smoke test passed through `C:/Users/NewAdmin/Documents/KaiGenInteractive/Kotor-Unity/Library/UnityMcpGhost/queue`.
+- Direct HTTP bridge smoke test passed on `http://127.0.0.1:6400/unity-mcp-ghost/`.
+- Smoke covered `health`, `editor.get_state`, `scene.get_hierarchy`, `console.get_logs`, `asset.find` for prefabs/materials, and dry-run `gameobject.create` plus `asset.create_folder`.
+- Active scene during validation: `Assets/Scenes/GameplayTest.unity`, with three root objects detected.
+- Console error smoke returned zero Ghost-captured errors.
+- Existing KOTOR warnings remain in scripts such as `CharacterCreationLayoutModels.cs`, `MCPKotorMainMenuBootstrap.cs`, `VmDispatcher.cs`, and `WAVObject.cs`; these are not Ghost bridge blockers.
+
+Direct smoke command:
+
+```bash
+npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 20000
+```
+
+Durable-queue smoke command:
+
+```bash
+npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Users/NewAdmin/Documents/KaiGenInteractive/Kotor-Unity --request-timeout-ms 20000
+```

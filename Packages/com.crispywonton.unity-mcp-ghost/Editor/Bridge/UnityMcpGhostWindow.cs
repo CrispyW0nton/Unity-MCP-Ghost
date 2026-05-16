@@ -5,7 +5,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 {
     internal sealed class UnityMcpGhostWindow : EditorWindow
     {
-        private static readonly UnityMcpGhostServer Server = new UnityMcpGhostServer();
+        private static readonly UnityMcpGhostServer Server = UnityMcpGhostServer.Shared;
         private int port = UnityMcpGhostConfig.DefaultPort;
 
         [MenuItem("Window/Unity MCP Ghost")]
@@ -26,18 +26,23 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             EditorGUILayout.LabelField("Status", Server.IsRunning ? "Running" : "Stopped");
             EditorGUILayout.LabelField("Endpoint", "ws://127.0.0.1:" + port + UnityMcpGhostConfig.WebSocketPath);
+            EditorGUILayout.LabelField("Connected Clients", Server.ClientCount.ToString());
 
             EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
             {
                 if (GUILayout.Button("Start Bridge"))
                 {
-                    Server.Start(port);
+                    if (Server.Start(port))
+                    {
+                        UnityMcpGhostBridgeService.SetAutoStart(true);
+                    }
                 }
 
                 if (GUILayout.Button("Stop Bridge"))
                 {
                     Server.Stop();
+                    UnityMcpGhostBridgeService.SetAutoStart(false);
                 }
             }
 
@@ -57,8 +62,26 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Durable Queue", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(Server.QueueStatus, MessageType.None);
+
+            EditorGUILayout.Space();
             EditorGUILayout.LabelField("Last Request", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox(string.IsNullOrEmpty(Server.LastRequest) ? "None" : Server.LastRequest, MessageType.None);
+
+            EditorGUILayout.Space();
+            EditorGUILayout.LabelField("Recent Commands", EditorStyles.boldLabel);
+            if (Server.CommandHistory.Count == 0)
+            {
+                EditorGUILayout.HelpBox("None", MessageType.None);
+            }
+            else
+            {
+                foreach (var command in Server.CommandHistory)
+                {
+                    EditorGUILayout.LabelField(command);
+                }
+            }
 
             if (!string.IsNullOrEmpty(Server.LastError))
             {

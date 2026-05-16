@@ -9,6 +9,7 @@ async function main(): Promise<void> {
   const unity = new UnityClient({
     host: config.unityHost,
     port: config.unityPort,
+    queueDir: config.unityQueueDir,
     requestTimeoutMs: config.requestTimeoutMs
   });
 

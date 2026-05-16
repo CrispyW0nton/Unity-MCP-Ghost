@@ -10,6 +10,7 @@ Cursor / MCP client
 TypeScript MCP server
         |
         | localhost WebSocket JSON-RPC
+        | durable queue files under Library/UnityMcpGhost/queue
         v
 Unity editor bridge package
         |
@@ -31,6 +32,17 @@ Unity Editor project
 - Unity editor bridge: `127.0.0.1:6400`
 - Future HTTP MCP transport: `127.0.0.1:8080`
 
+## Durable Queue
+
+The WebSocket path is the hot path for low-latency editor automation. For domain reload resilience, the Unity package also watches:
+
+```text
+Library/UnityMcpGhost/queue/pending/*.json
+Library/UnityMcpGhost/queue/results/*.json
+```
+
+When the TypeScript server is started with `--unity-project-path` or `--unity-queue-dir`, failed socket requests can fall back to the durable queue. This keeps game-development loops alive while Unity recompiles scripts or reloads assemblies.
+
 ## Initial Tool Slice
 
 - `ping`
@@ -40,6 +52,20 @@ Unity Editor project
 - `manage_gameobject`
 - `manage_scene`
 - `batch_execute`
+
+## MCP Resources and Prompts
+
+Ghost follows a resource-first pattern for read-heavy Unity state:
+
+- `unity://capabilities` - tool catalog, risk levels, dry-run support, related resources, and operating principles.
+- `unity://editor/state` - current Unity editor state.
+- `unity://scenes/active` - active scene hierarchy.
+- `unity://console/errors` - recent console errors for validation and repair loops.
+
+Ghost also exposes prompts that encode preferred orchestration patterns:
+
+- `ghost_inspect_project` - read-only project inspection using resources before tools.
+- `ghost_repair_loop_plan` - dry-run-first validate, repair, test planning.
 
 ## Safety Model
 
