@@ -465,7 +465,27 @@ Slice 13 validation on KOTOR Unity project:
 - MCP-level validation confirmed both `project_index_summary` and `unity://semantic/index` return the same semantic summary.
 - `npm run build`, `git diff --check`, `npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 20000`, and `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Users/NewAdmin/Documents/KaiGenInteractive/Kotor-Unity --request-timeout-ms 30000` passed.
 
+Completed in Slice 14:
+
+- Semantic test-scope suggestion:
+  - `test_scope_suggest`
+  - Unity bridge command `semantic.test_scope_suggest`
+
+Game-development fit:
+
+- Gives repair loops a focused validation plan for a changed gameplay script instead of defaulting to either no tests or an expensive full-suite run.
+- Combines C# symbol references, serialized prefab/scene/asset references, and Unity test script discovery to estimate risk and suggest relevant EditMode/PlayMode filters.
+- Always recommends script validation, Unity-specific lint, compile wait, and dry-run test execution before broader or mutating work.
+- Adds manual check guidance for UnityEvent bindings, prefab references, and screenshot validation when a script can affect visible scene behavior.
+
+Slice 14 validation on KOTOR Unity project:
+
+- Unity refreshed and compiled the updated bridge after an initial helper-scope error was caught in the Editor log and corrected.
+- Direct bridge validation for `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs` and `HydrateModule` returned `semantic-test-scope-scan`.
+- The KOTOR sample reported low risk, 2 script references, 0 serialized prefab/scene references, 10 suggested test candidates, and a validation plan of `script_validate`, `lint_unity_run`, `compile_wait`, and filtered `tests_run`.
+- MCP-level validation confirmed the `test_scope_suggest` tool returns structured content through stdio.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add a `test_scope_suggest` tool that uses the semantic index, impact analysis, and Unity test assets to recommend the smallest safe EditMode/PlayMode test set for a change.
+- Wire `test_scope_suggest` into `repair_loop_run` so repair plans automatically carry focused validation recommendations.

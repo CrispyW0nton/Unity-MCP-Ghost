@@ -1163,6 +1163,22 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "test_scope_suggest",
+    "Suggest the smallest useful Unity validation scope for a script/class/method change using semantic impact and test asset scans.",
+    {
+      path: z.string().default(""),
+      className: z.string().default(""),
+      methodName: z.string().default(""),
+      includePlayMode: z.boolean().default(true),
+      limit: z.number().int().positive().max(200).default(20)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://semantic/index", "unity://tests/{mode}"] },
+    "semantic.test_scope_suggest"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "asset_create_folder",
     "Create a folder under Assets for organizing game content.",
     {

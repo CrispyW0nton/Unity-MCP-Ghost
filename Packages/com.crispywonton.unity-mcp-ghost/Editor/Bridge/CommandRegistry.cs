@@ -59,6 +59,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("semantic.call_path_find", HandleSemanticCallPathFind);
             Register("semantic.lint_unity_run", HandleSemanticLintUnityRun);
             Register("semantic.project_index_summary", HandleSemanticProjectIndexSummary);
+            Register("semantic.test_scope_suggest", HandleSemanticTestScopeSuggest);
             Register("asset.create_folder", HandleAssetCreateFolder);
             Register("asset.move", HandleAssetMove);
             Register("asset.copy", HandleAssetCopy);
@@ -1315,6 +1316,90 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("\"class_impact_analyze\",");
             builder.Append("\"unused_assets_find\"");
             builder.Append("],\"note\":\"Read-only summary intended as the first semantic resource for game-development agents; counts are deterministic scans and samples, not destructive cleanup advice.\"}");
+            return builder.ToString();
+        }
+
+        private static string HandleSemanticTestScopeSuggest(UnityMcpRequest request)
+        {
+            var path = JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty);
+            var className = JsonRpcUtil.ReadString(request.RawJson, "className", string.Empty);
+            var methodName = JsonRpcUtil.ReadString(request.RawJson, "methodName", string.Empty);
+            var includePlayMode = JsonRpcUtil.ReadBool(request.RawJson, "includePlayMode", true);
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 20), 200));
+
+            if (!string.IsNullOrEmpty(path))
+            {
+                path = EnsureScriptPath(path);
+                EnsureAssetExists(path);
+            }
+            else if (!string.IsNullOrEmpty(className))
+            {
+                path = FindScriptPathForClass(className);
+            }
+
+            if (string.IsNullOrEmpty(path))
+            {
+                throw new InvalidOperationException("semantic.test_scope_suggest requires path or className.");
+            }
+
+            if (string.IsNullOrEmpty(className))
+            {
+                className = Path.GetFileNameWithoutExtension(path);
+            }
+
+            var guid = AssetDatabase.AssetPathToGUID(path);
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var scriptReferenceCount = CountScriptSymbolReferences(projectRoot, path, className, methodName, limit * 5);
+            var serializedReferenceCount = CountGuidReferenceFiles(projectRoot, guid, path, ReadReferenceExtensions(".prefab,.unity,.asset,.controller,.overrideController"), limit * 5, false);
+            var suggestions = BuildTestScopeSuggestions(projectRoot, path, className, methodName, includePlayMode, limit);
+            var risk = DetermineTestScopeRisk(scriptReferenceCount, serializedReferenceCount, suggestions.Count);
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"source\":\"semantic-test-scope-scan\",\"target\":");
+            AppendAssetSummary(builder, guid, path);
+            builder.Append(",\"className\":\"");
+            builder.Append(JsonRpcUtil.Escape(className));
+            builder.Append("\",\"methodName\":\"");
+            builder.Append(JsonRpcUtil.Escape(methodName));
+            builder.Append("\",\"impact\":{\"scriptReferenceCount\":");
+            builder.Append(scriptReferenceCount);
+            builder.Append(",\"serializedReferenceCount\":");
+            builder.Append(serializedReferenceCount);
+            builder.Append(",\"risk\":\"");
+            builder.Append(risk);
+            builder.Append("\"},\"suggestedTests\":[");
+            for (var index = 0; index < suggestions.Count; index++)
+            {
+                if (index > 0)
+                {
+                    builder.Append(",");
+                }
+
+                AppendTestScopeSuggestion(builder, suggestions[index]);
+            }
+
+            builder.Append("],\"validationPlan\":[");
+            AppendValidationStep(builder, "script_validate", "{\"path\":\"" + JsonRpcUtil.Escape(path) + "\"}", "Validate the changed C# file before asking Unity to run scenes or tests.");
+            builder.Append(",");
+            AppendValidationStep(builder, "lint_unity_run", "{\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"includeAssetRules\":false}", "Catch Unity-specific gameplay risks close to the changed script.");
+            builder.Append(",");
+            AppendValidationStep(builder, "compile_wait", "{\"timeoutMs\":30000}", "Wait for Unity compilation before reading diagnostics.");
+            if (suggestions.Count > 0)
+            {
+                builder.Append(",");
+                AppendValidationStep(builder, "tests_run", "{\"mode\":\"" + JsonRpcUtil.Escape(PreferredTestMode(suggestions)) + "\",\"filter\":\"" + JsonRpcUtil.Escape(PreferredTestFilter(suggestions)) + "\",\"dryRun\":true}", "Dry-run the most relevant test filter before executing it.");
+            }
+
+            if (serializedReferenceCount > 0 && includePlayMode)
+            {
+                builder.Append(",");
+                AppendValidationStep(builder, "tests_run", "{\"mode\":\"playmode\",\"dryRun\":true}", "Serialized scene/prefab references mean PlayMode smoke coverage may be needed.");
+            }
+
+            builder.Append("],\"manualChecks\":[");
+            builder.Append("\"Inspect UnityEvent bindings before renaming public methods or serialized fields.\",");
+            builder.Append("\"Trace prefab references before deleting or moving scripts used by imported KOTOR assets.\",");
+            builder.Append("\"Capture a screenshot after scene-facing changes to verify visible regressions.\"");
+            builder.Append("],\"note\":\"Suggestions are deterministic source/path heuristics; use them to choose a focused validation path, not as proof that broader QA is unnecessary.\"}");
             return builder.ToString();
         }
 
@@ -3006,6 +3091,288 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("]");
         }
 
+        private static int CountScriptSymbolReferences(string projectRoot, string targetPath, string className, string methodName, int limit)
+        {
+            var count = 0;
+            var classRegex = string.IsNullOrEmpty(className) ? null : new Regex(@"\b" + Regex.Escape(className) + @"\b");
+            var methodRegex = string.IsNullOrEmpty(methodName) ? null : new Regex(@"\b" + Regex.Escape(methodName) + @"\s*\(");
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.cs", SearchOption.AllDirectories))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (ShouldSkipLintScript(assetPath) || string.Equals(assetPath, targetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (classRegex != null && classRegex.IsMatch(text))
+                {
+                    count++;
+                }
+
+                if (count < limit && methodRegex != null && methodRegex.IsMatch(text))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static int CountGuidReferenceFiles(string projectRoot, string guid, string targetPath, HashSet<string> extensions, int limit, bool includeSelf)
+        {
+            if (string.IsNullOrEmpty(guid))
+            {
+                return 0;
+            }
+
+            var count = 0;
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.*", SearchOption.AllDirectories))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var extension = Path.GetExtension(fullPath);
+                if (string.IsNullOrEmpty(extension) || !extensions.Contains(extension))
+                {
+                    continue;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (!includeSelf && string.Equals(assetPath, targetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (text.IndexOf(guid, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static List<TestScopeSuggestion> BuildTestScopeSuggestions(string projectRoot, string targetPath, string className, string methodName, bool includePlayMode, int limit)
+        {
+            var suggestions = new List<TestScopeSuggestion>();
+            var targetFolder = ReadTopFolder(targetPath);
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.cs", SearchOption.AllDirectories))
+            {
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (ShouldSkipLintScript(assetPath))
+                {
+                    continue;
+                }
+
+                var normalized = assetPath.Replace("\\", "/");
+                var looksLikeTest = normalized.Contains("/Tests/", StringComparison.OrdinalIgnoreCase)
+                    || normalized.Contains("/Test/", StringComparison.OrdinalIgnoreCase)
+                    || normalized.IndexOf("Test", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!looksLikeTest)
+                {
+                    continue;
+                }
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                var score = 0;
+                var reasons = new List<string>();
+                if (text.Contains("NUnit.Framework") || text.Contains("UnityEngine.TestTools") || text.Contains("[Test]") || text.Contains("[UnityTest]"))
+                {
+                    score += 2;
+                    reasons.Add("contains Unity/NUnit test markers");
+                }
+
+                if (!string.IsNullOrEmpty(className) && text.IndexOf(className, StringComparison.Ordinal) >= 0)
+                {
+                    score += 8;
+                    reasons.Add("references target class");
+                }
+
+                if (!string.IsNullOrEmpty(methodName) && text.IndexOf(methodName, StringComparison.Ordinal) >= 0)
+                {
+                    score += 5;
+                    reasons.Add("references target method");
+                }
+
+                if (!string.IsNullOrEmpty(targetFolder) && normalized.IndexOf("/" + targetFolder + "/", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    score += 2;
+                    reasons.Add("shares top-level content folder");
+                }
+
+                if (score <= 0)
+                {
+                    continue;
+                }
+
+                var mode = normalized.IndexOf("PlayMode", StringComparison.OrdinalIgnoreCase) >= 0 || text.Contains("[UnityTest]") ? "playmode" : "editmode";
+                if (!includePlayMode && mode == "playmode")
+                {
+                    continue;
+                }
+
+                suggestions.Add(new TestScopeSuggestion
+                {
+                    Path = assetPath,
+                    Mode = mode,
+                    Filter = Path.GetFileNameWithoutExtension(assetPath),
+                    Score = score,
+                    Reasons = reasons
+                });
+            }
+
+            suggestions.Sort(delegate (TestScopeSuggestion left, TestScopeSuggestion right)
+            {
+                var scoreCompare = right.Score.CompareTo(left.Score);
+                return scoreCompare != 0 ? scoreCompare : string.Compare(left.Path, right.Path, StringComparison.OrdinalIgnoreCase);
+            });
+
+            if (suggestions.Count > limit)
+            {
+                suggestions.RemoveRange(limit, suggestions.Count - limit);
+            }
+
+            return suggestions;
+        }
+
+        private static string ReadTopFolder(string assetPath)
+        {
+            var normalized = NormalizeAssetPath(assetPath);
+            if (!normalized.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            var remainder = normalized.Substring("Assets/".Length);
+            var slash = remainder.IndexOf('/');
+            return slash >= 0 ? remainder.Substring(0, slash) : string.Empty;
+        }
+
+        private static string DetermineTestScopeRisk(int scriptReferenceCount, int serializedReferenceCount, int suggestedTestCount)
+        {
+            var score = 0;
+            if (scriptReferenceCount > 20)
+            {
+                score += 2;
+            }
+            else if (scriptReferenceCount > 0)
+            {
+                score += 1;
+            }
+
+            if (serializedReferenceCount > 10)
+            {
+                score += 2;
+            }
+            else if (serializedReferenceCount > 0)
+            {
+                score += 1;
+            }
+
+            if (suggestedTestCount == 0)
+            {
+                score += 2;
+            }
+
+            if (score >= 4)
+            {
+                return "high";
+            }
+
+            return score >= 2 ? "medium" : "low";
+        }
+
+        private static void AppendTestScopeSuggestion(StringBuilder builder, TestScopeSuggestion suggestion)
+        {
+            builder.Append("{\"path\":\"");
+            builder.Append(JsonRpcUtil.Escape(suggestion.Path));
+            builder.Append("\",\"mode\":\"");
+            builder.Append(JsonRpcUtil.Escape(suggestion.Mode));
+            builder.Append("\",\"filter\":\"");
+            builder.Append(JsonRpcUtil.Escape(suggestion.Filter));
+            builder.Append("\",\"score\":");
+            builder.Append(suggestion.Score);
+            builder.Append(",\"reasons\":[");
+            for (var index = 0; index < suggestion.Reasons.Count; index++)
+            {
+                if (index > 0)
+                {
+                    builder.Append(",");
+                }
+
+                builder.Append("\"");
+                builder.Append(JsonRpcUtil.Escape(suggestion.Reasons[index]));
+                builder.Append("\"");
+            }
+
+            builder.Append("]}");
+        }
+
+        private static void AppendValidationStep(StringBuilder builder, string tool, string argumentsJson, string reason)
+        {
+            builder.Append("{\"tool\":\"");
+            builder.Append(JsonRpcUtil.Escape(tool));
+            builder.Append("\",\"arguments\":");
+            builder.Append(argumentsJson);
+            builder.Append(",\"reason\":\"");
+            builder.Append(JsonRpcUtil.Escape(reason));
+            builder.Append("\"}");
+        }
+
+        private static string PreferredTestMode(List<TestScopeSuggestion> suggestions)
+        {
+            foreach (var suggestion in suggestions)
+            {
+                if (suggestion.Mode == "editmode")
+                {
+                    return "editmode";
+                }
+            }
+
+            return suggestions.Count > 0 ? suggestions[0].Mode : "editmode";
+        }
+
+        private static string PreferredTestFilter(List<TestScopeSuggestion> suggestions)
+        {
+            return suggestions.Count > 0 ? suggestions[0].Filter : string.Empty;
+        }
+
         private static string FindScriptPathForClass(string className)
         {
             var projectRoot = Path.GetDirectoryName(Application.dataPath);
@@ -4239,6 +4606,15 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         public int ScannedFileCount;
         public int GuidReferenceCount;
         public int UnityEventBindingCount;
+    }
+
+    internal sealed class TestScopeSuggestion
+    {
+        public string Path;
+        public string Mode;
+        public string Filter;
+        public int Score;
+        public List<string> Reasons;
     }
 
     internal sealed class MethodNode
