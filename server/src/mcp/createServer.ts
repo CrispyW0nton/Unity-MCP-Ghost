@@ -438,7 +438,8 @@ function registerCoreResources(server: McpServer, context: ToolContext): void {
         "unity://component/{instanceId}/{type}",
         "unity://assets/{filter}",
         "unity://operation/{operationId}",
-        "unity://tests/{mode}"
+        "unity://tests/{mode}",
+        "unity://semantic/index"
       ],
       tools: RegisteredToolCatalog.map((tool) => ({
         name: tool.name,
@@ -534,6 +535,14 @@ function registerCoreResources(server: McpServer, context: ToolContext): void {
     "unity://tests/{mode}",
     "Read a dry-run test execution plan for EditMode or PlayMode.",
     (variables) => readUnityResource(context, "tests.run", { mode: firstVariable(variables.mode), dryRun: true })
+  );
+
+  registerJsonResource(
+    server,
+    "Unity Semantic Project Index",
+    "unity://semantic/index",
+    "Read a project-wide semantic summary for game-development planning and refactor risk triage.",
+    () => readUnityResource(context, "semantic.project_index_summary", { includeDiagnostics: true, limit: 200 })
   );
 }
 
@@ -1136,6 +1145,19 @@ export function createMcpServer(context: ToolContext): McpServer {
     },
     { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
     "semantic.lint_unity_run"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "project_index_summary",
+    "Summarize the Unity project as a semantic game-development index: asset domains, script patterns, serialized references, risks, and recommended next tools.",
+    {
+      includeDiagnostics: z.boolean().default(true),
+      limit: z.number().int().positive().max(2000).default(200)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://semantic/index"] },
+    "semantic.project_index_summary"
   );
 
   registerUnityRequestTool(

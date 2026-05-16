@@ -58,6 +58,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("semantic.class_impact_analyze", HandleSemanticClassImpactAnalyze);
             Register("semantic.call_path_find", HandleSemanticCallPathFind);
             Register("semantic.lint_unity_run", HandleSemanticLintUnityRun);
+            Register("semantic.project_index_summary", HandleSemanticProjectIndexSummary);
             Register("asset.create_folder", HandleAssetCreateFolder);
             Register("asset.move", HandleAssetMove);
             Register("asset.copy", HandleAssetCopy);
@@ -1158,6 +1159,162 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append(",\"truncated\":");
             builder.Append(Bool(count >= limit));
             builder.Append(",\"note\":\"Unity-specific lint uses deterministic source and GUID scans; review generated code, dynamic runtime loads, and project conventions before applying broad refactors.\"}");
+            return builder.ToString();
+        }
+
+        private static string HandleSemanticProjectIndexSummary(UnityMcpRequest request)
+        {
+            var includeDiagnostics = JsonRpcUtil.ReadBool(request.RawJson, "includeDiagnostics", true);
+            var limit = Math.Max(10, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 200), 2000));
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var activeScene = SceneManager.GetActiveScene();
+            var assetCategoryCounts = NewAssetCategoryCounts();
+            var topFolders = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var resourceAssetCount = 0;
+            var streamingAssetCount = 0;
+            var editorAssetCount = 0;
+            var testAssetCount = 0;
+            var addressableHintCount = 0;
+            var packageAssetCount = 0;
+            var assetCount = 0;
+
+            foreach (var guid in AssetDatabase.FindAssets(string.Empty))
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrEmpty(path))
+                {
+                    continue;
+                }
+
+                var normalizedAssetPath = path.Replace("\\", "/");
+                if (!normalizedAssetPath.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) && !string.Equals(normalizedAssetPath, "Assets", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (normalizedAssetPath.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        packageAssetCount++;
+                    }
+
+                    continue;
+                }
+
+                if (AssetDatabase.IsValidFolder(path))
+                {
+                    Increment(assetCategoryCounts, "folders");
+                    IncrementTopFolder(topFolders, path);
+                    continue;
+                }
+
+                assetCount++;
+                IncrementTopFolder(topFolders, path);
+                IncrementAssetCategory(assetCategoryCounts, path);
+                var normalized = normalizedAssetPath;
+                if (normalized.StartsWith("Assets/Resources/", StringComparison.OrdinalIgnoreCase) || normalized.Contains("/Resources/", StringComparison.OrdinalIgnoreCase))
+                {
+                    resourceAssetCount++;
+                }
+
+                if (normalized.StartsWith("Assets/StreamingAssets/", StringComparison.OrdinalIgnoreCase) || normalized.Contains("/StreamingAssets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    streamingAssetCount++;
+                }
+
+                if (normalized.Contains("/Editor/", StringComparison.OrdinalIgnoreCase))
+                {
+                    editorAssetCount++;
+                }
+
+                if (normalized.Contains("/Tests/", StringComparison.OrdinalIgnoreCase) || normalized.Contains("/Test/", StringComparison.OrdinalIgnoreCase))
+                {
+                    testAssetCount++;
+                }
+
+                if (normalized.Contains("Addressable", StringComparison.OrdinalIgnoreCase))
+                {
+                    addressableHintCount++;
+                }
+            }
+
+            var scriptStats = BuildScriptIndexStats(projectRoot, limit);
+            var serializedStats = BuildSerializedIndexStats(projectRoot, limit);
+            var metaIssueCount = includeDiagnostics ? CountMetaIssues(projectRoot, limit) : 0;
+            var unusedSampleCount = includeDiagnostics ? CountUnusedAssetCandidates(projectRoot, limit) : 0;
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"source\":\"semantic-project-index-summary\",\"project\":{\"name\":\"");
+            builder.Append(JsonRpcUtil.Escape(Application.productName));
+            builder.Append("\",\"unityVersion\":\"");
+            builder.Append(JsonRpcUtil.Escape(Application.unityVersion));
+            builder.Append("\",\"projectPath\":\"");
+            builder.Append(JsonRpcUtil.Escape(projectRoot));
+            builder.Append("\",\"activeBuildTarget\":\"");
+            builder.Append(EditorUserBuildSettings.activeBuildTarget);
+            builder.Append("\"},\"activeScene\":{\"name\":\"");
+            builder.Append(JsonRpcUtil.Escape(activeScene.name));
+            builder.Append("\",\"path\":\"");
+            builder.Append(JsonRpcUtil.Escape(activeScene.path));
+            builder.Append("\",\"isDirty\":");
+            builder.Append(Bool(activeScene.isDirty));
+            builder.Append("},\"counts\":{\"assets\":{\"total\":");
+            builder.Append(assetCount);
+            AppendAssetCategoryCounts(builder, assetCategoryCounts);
+            builder.Append(",\"resources\":");
+            builder.Append(resourceAssetCount);
+            builder.Append(",\"streamingAssets\":");
+            builder.Append(streamingAssetCount);
+            builder.Append(",\"editorAssets\":");
+            builder.Append(editorAssetCount);
+            builder.Append(",\"testAssets\":");
+            builder.Append(testAssetCount);
+            builder.Append(",\"addressableHints\":");
+            builder.Append(addressableHintCount);
+            builder.Append(",\"packageAssetsExcluded\":");
+            builder.Append(packageAssetCount);
+            builder.Append("},\"scripts\":");
+            AppendScriptIndexStats(builder, scriptStats);
+            builder.Append(",\"serializedUnity\":");
+            AppendSerializedIndexStats(builder, serializedStats);
+            builder.Append(",\"diagnostics\":{\"metaIssueCount\":");
+            builder.Append(metaIssueCount);
+            builder.Append(",\"unusedAssetSampleCount\":");
+            builder.Append(unusedSampleCount);
+            builder.Append(",\"sampleLimit\":");
+            builder.Append(limit);
+            builder.Append("}},\"topFolders\":");
+            AppendTopCounts(builder, topFolders, Math.Min(10, limit));
+            builder.Append(",\"gameDevDomains\":{");
+            builder.Append("\"hasScenes\":");
+            builder.Append(Bool(CountValue(assetCategoryCounts, "scenes") > 0));
+            builder.Append(",\"hasPrefabs\":");
+            builder.Append(Bool(CountValue(assetCategoryCounts, "prefabs") > 0));
+            builder.Append(",\"has2DAssets\":");
+            builder.Append(Bool(CountValue(assetCategoryCounts, "spritesAndTextures") > 0));
+            builder.Append(",\"has3DAssets\":");
+            builder.Append(Bool(CountValue(assetCategoryCounts, "models") > 0));
+            builder.Append(",\"hasAnimation\":");
+            builder.Append(Bool(CountValue(assetCategoryCounts, "animations") + CountValue(assetCategoryCounts, "animatorControllers") > 0));
+            builder.Append(",\"hasAudio\":");
+            builder.Append(Bool(CountValue(assetCategoryCounts, "audio") > 0));
+            builder.Append(",\"hasUI\":");
+            builder.Append(Bool(CountValue(assetCategoryCounts, "uiDocuments") > 0 || scriptStats.UiHintCount > 0));
+            builder.Append(",\"hasTests\":");
+            builder.Append(Bool(testAssetCount > 0 || scriptStats.TestScriptCount > 0));
+            builder.Append(",\"usesResourcesFolder\":");
+            builder.Append(Bool(resourceAssetCount > 0));
+            builder.Append("},\"riskSignals\":{\"resourcesLoadLines\":");
+            builder.Append(scriptStats.ResourcesLoadLineCount);
+            builder.Append(",\"sendMessageLines\":");
+            builder.Append(scriptStats.SendMessageLineCount);
+            builder.Append(",\"hotLookupLines\":");
+            builder.Append(scriptStats.HotLookupLineCount);
+            builder.Append(",\"unityEventBindingCount\":");
+            builder.Append(serializedStats.UnityEventBindingCount);
+            builder.Append("},\"recommendedNextTools\":[");
+            builder.Append("\"console_diagnostics_get\",");
+            builder.Append("\"lint_unity_run\",");
+            builder.Append("\"unity_event_bindings_find\",");
+            builder.Append("\"prefab_references_trace\",");
+            builder.Append("\"class_impact_analyze\",");
+            builder.Append("\"unused_assets_find\"");
+            builder.Append("],\"note\":\"Read-only summary intended as the first semantic resource for game-development agents; counts are deterministic scans and samples, not destructive cleanup advice.\"}");
             return builder.ToString();
         }
 
@@ -2432,6 +2589,423 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 || normalized.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static Dictionary<string, int> NewAssetCategoryCounts()
+        {
+            return new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "folders", 0 },
+                { "scenes", 0 },
+                { "prefabs", 0 },
+                { "scripts", 0 },
+                { "materials", 0 },
+                { "models", 0 },
+                { "spritesAndTextures", 0 },
+                { "audio", 0 },
+                { "animatorControllers", 0 },
+                { "animations", 0 },
+                { "shaders", 0 },
+                { "shaderGraphs", 0 },
+                { "scriptableAssets", 0 },
+                { "uiDocuments", 0 },
+                { "other", 0 }
+            };
+        }
+
+        private static void IncrementAssetCategory(Dictionary<string, int> counts, string path)
+        {
+            var extension = Path.GetExtension(path ?? string.Empty).ToLowerInvariant();
+            switch (extension)
+            {
+                case ".unity":
+                    Increment(counts, "scenes");
+                    break;
+                case ".prefab":
+                    Increment(counts, "prefabs");
+                    break;
+                case ".cs":
+                    Increment(counts, "scripts");
+                    break;
+                case ".mat":
+                    Increment(counts, "materials");
+                    break;
+                case ".fbx":
+                case ".obj":
+                case ".blend":
+                case ".dae":
+                case ".3ds":
+                    Increment(counts, "models");
+                    break;
+                case ".png":
+                case ".jpg":
+                case ".jpeg":
+                case ".tga":
+                case ".psd":
+                case ".tif":
+                case ".tiff":
+                case ".exr":
+                    Increment(counts, "spritesAndTextures");
+                    break;
+                case ".wav":
+                case ".mp3":
+                case ".ogg":
+                case ".aiff":
+                    Increment(counts, "audio");
+                    break;
+                case ".controller":
+                case ".overridecontroller":
+                    Increment(counts, "animatorControllers");
+                    break;
+                case ".anim":
+                case ".playable":
+                    Increment(counts, "animations");
+                    break;
+                case ".shader":
+                case ".cginc":
+                case ".hlsl":
+                    Increment(counts, "shaders");
+                    break;
+                case ".shadergraph":
+                case ".shadersubgraph":
+                    Increment(counts, "shaderGraphs");
+                    break;
+                case ".asset":
+                    Increment(counts, "scriptableAssets");
+                    break;
+                case ".uxml":
+                case ".uss":
+                    Increment(counts, "uiDocuments");
+                    break;
+                default:
+                    Increment(counts, "other");
+                    break;
+            }
+        }
+
+        private static void Increment(Dictionary<string, int> counts, string key)
+        {
+            counts[key] = CountValue(counts, key) + 1;
+        }
+
+        private static int CountValue(Dictionary<string, int> counts, string key)
+        {
+            int value;
+            return counts != null && counts.TryGetValue(key, out value) ? value : 0;
+        }
+
+        private static void IncrementTopFolder(Dictionary<string, int> counts, string assetPath)
+        {
+            var normalized = NormalizeAssetPath(assetPath);
+            if (!normalized.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var remainder = normalized.Substring("Assets/".Length);
+            var slash = remainder.IndexOf('/');
+            var folder = slash >= 0 ? remainder.Substring(0, slash) : "(root)";
+            if (string.IsNullOrEmpty(folder))
+            {
+                folder = "(root)";
+            }
+
+            Increment(counts, folder);
+        }
+
+        private static void AppendAssetCategoryCounts(StringBuilder builder, Dictionary<string, int> counts)
+        {
+            builder.Append(",\"folders\":");
+            builder.Append(CountValue(counts, "folders"));
+            builder.Append(",\"scenes\":");
+            builder.Append(CountValue(counts, "scenes"));
+            builder.Append(",\"prefabs\":");
+            builder.Append(CountValue(counts, "prefabs"));
+            builder.Append(",\"scripts\":");
+            builder.Append(CountValue(counts, "scripts"));
+            builder.Append(",\"materials\":");
+            builder.Append(CountValue(counts, "materials"));
+            builder.Append(",\"models\":");
+            builder.Append(CountValue(counts, "models"));
+            builder.Append(",\"spritesAndTextures\":");
+            builder.Append(CountValue(counts, "spritesAndTextures"));
+            builder.Append(",\"audio\":");
+            builder.Append(CountValue(counts, "audio"));
+            builder.Append(",\"animatorControllers\":");
+            builder.Append(CountValue(counts, "animatorControllers"));
+            builder.Append(",\"animations\":");
+            builder.Append(CountValue(counts, "animations"));
+            builder.Append(",\"shaders\":");
+            builder.Append(CountValue(counts, "shaders"));
+            builder.Append(",\"shaderGraphs\":");
+            builder.Append(CountValue(counts, "shaderGraphs"));
+            builder.Append(",\"scriptableAssets\":");
+            builder.Append(CountValue(counts, "scriptableAssets"));
+            builder.Append(",\"uiDocuments\":");
+            builder.Append(CountValue(counts, "uiDocuments"));
+            builder.Append(",\"other\":");
+            builder.Append(CountValue(counts, "other"));
+        }
+
+        private static ScriptIndexStats BuildScriptIndexStats(string projectRoot, int limit)
+        {
+            var stats = new ScriptIndexStats();
+            var typeRegex = new Regex(@"\b(class|struct|interface|enum)\s+[A-Za-z_][A-Za-z0-9_]*");
+            var namespaceRegex = new Regex(@"\bnamespace\s+([A-Za-z_][A-Za-z0-9_.]*)");
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.cs", SearchOption.AllDirectories))
+            {
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (ShouldSkipLintScript(assetPath))
+                {
+                    continue;
+                }
+
+                stats.ScriptCount++;
+                var normalized = assetPath.Replace("\\", "/");
+                if (normalized.Contains("/Editor/", StringComparison.OrdinalIgnoreCase))
+                {
+                    stats.EditorScriptCount++;
+                }
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                stats.TypeDeclarationCount += typeRegex.Matches(text).Count;
+                stats.MonoBehaviourCount += Regex.Matches(text, @":\s*[^{}\n;]*\bMonoBehaviour\b").Count;
+                stats.ScriptableObjectCount += Regex.Matches(text, @":\s*[^{}\n;]*\bScriptableObject\b").Count;
+                stats.ResourcesLoadLineCount += Regex.Matches(text, @"\bResources\.Load\b").Count;
+                stats.SendMessageLineCount += Regex.Matches(text, @"\bSendMessage\s*\(").Count;
+                stats.UiHintCount += Regex.Matches(text, @"\b(Canvas|RectTransform|VisualElement|UIDocument|Button|TextMeshProUGUI)\b").Count;
+                if (text.Contains("NUnit.Framework") || text.Contains("UnityEngine.TestTools") || text.Contains("[Test]") || text.Contains("[UnityTest]") || normalized.Contains("/Tests/", StringComparison.OrdinalIgnoreCase))
+                {
+                    stats.TestScriptCount++;
+                }
+
+                var hotRanges = FindHotUnityMethodRanges(text);
+                if (hotRanges.Count > 0)
+                {
+                    var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+                    for (var index = 0; index < lines.Length; index++)
+                    {
+                        var lineNumber = index + 1;
+                        if (!IsInAnyRange(lineNumber, hotRanges))
+                        {
+                            continue;
+                        }
+
+                        var line = lines[index];
+                        if (line.Contains("GetComponent<") || line.Contains(".GetComponent<") || line.Contains("FindObjectOfType") || line.Contains("FindFirstObjectByType") || line.Contains("GameObject.Find("))
+                        {
+                            stats.HotLookupLineCount++;
+                        }
+                    }
+                }
+
+                foreach (Match match in namespaceRegex.Matches(text))
+                {
+                    if (stats.Namespaces.Count >= limit)
+                    {
+                        break;
+                    }
+
+                    stats.Namespaces.Add(match.Groups[1].Value);
+                }
+            }
+
+            return stats;
+        }
+
+        private static SerializedIndexStats BuildSerializedIndexStats(string projectRoot, int limit)
+        {
+            var stats = new SerializedIndexStats();
+            var extensions = ReadReferenceExtensions(".prefab,.unity,.asset,.controller,.overrideController,.mat,.anim,.playable,.renderTexture,.lighting,.shadergraph,.asmdef,.uxml,.uss");
+            var guidRegex = new Regex(@"guid:\s*(?<guid>[0-9a-fA-F]{32})");
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.*", SearchOption.AllDirectories))
+            {
+                var extension = Path.GetExtension(fullPath);
+                if (string.IsNullOrEmpty(extension) || !extensions.Contains(extension))
+                {
+                    continue;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (ShouldSkipMetaAuditPath(assetPath))
+                {
+                    continue;
+                }
+
+                stats.ScannedFileCount++;
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                stats.GuidReferenceCount += guidRegex.Matches(text).Count;
+                stats.UnityEventBindingCount += CountYamlMethodBindings(text);
+            }
+
+            return stats;
+        }
+
+        private static int CountYamlMethodBindings(string text)
+        {
+            var count = 0;
+            var lines = (text ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            for (var index = 0; index < lines.Length; index++)
+            {
+                var method = ReadYamlValue(lines[index], "m_MethodName:");
+                if (!string.IsNullOrEmpty(method))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static int CountMetaIssues(string projectRoot, int limit)
+        {
+            var seenGuids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var count = 0;
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.*", SearchOption.AllDirectories))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                if (fullPath.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (ShouldSkipMetaAuditPath(assetPath))
+                {
+                    continue;
+                }
+
+                var metaPath = fullPath + ".meta";
+                if (!File.Exists(metaPath))
+                {
+                    count++;
+                    continue;
+                }
+
+                var guid = ReadMetaGuid(metaPath);
+                if (string.IsNullOrEmpty(guid))
+                {
+                    count++;
+                    continue;
+                }
+
+                string existingPath;
+                if (seenGuids.TryGetValue(guid, out existingPath))
+                {
+                    count++;
+                    continue;
+                }
+
+                seenGuids[guid] = assetPath;
+            }
+
+            return count;
+        }
+
+        private static int CountUnusedAssetCandidates(string projectRoot, int limit)
+        {
+            var referencedGuids = BuildReferencedGuidSet(projectRoot, ReadReferenceExtensions(".prefab,.unity,.asset,.controller,.overrideController,.mat,.anim,.playable,.renderTexture,.lighting,.shadergraph,.asmdef,.uxml,.uss"));
+            var candidateExtensions = ReadReferenceExtensions(".prefab,.mat,.asset,.controller,.overrideController,.anim,.png,.jpg,.jpeg,.tga,.psd,.fbx,.obj,.wav,.mp3,.ogg,.shadergraph,.renderTexture,.uxml,.uss");
+            var count = 0;
+            foreach (var guid in AssetDatabase.FindAssets(string.Empty))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrEmpty(path) || AssetDatabase.IsValidFolder(path) || ShouldSkipUnusedCandidate(path, candidateExtensions, false))
+                {
+                    continue;
+                }
+
+                if (!referencedGuids.Contains(guid))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static void AppendScriptIndexStats(StringBuilder builder, ScriptIndexStats stats)
+        {
+            builder.Append("{\"scriptCount\":");
+            builder.Append(stats.ScriptCount);
+            builder.Append(",\"typeDeclarationCount\":");
+            builder.Append(stats.TypeDeclarationCount);
+            builder.Append(",\"monoBehaviourCount\":");
+            builder.Append(stats.MonoBehaviourCount);
+            builder.Append(",\"scriptableObjectCount\":");
+            builder.Append(stats.ScriptableObjectCount);
+            builder.Append(",\"editorScriptCount\":");
+            builder.Append(stats.EditorScriptCount);
+            builder.Append(",\"testScriptCount\":");
+            builder.Append(stats.TestScriptCount);
+            builder.Append(",\"namespaceCount\":");
+            builder.Append(stats.Namespaces.Count);
+            builder.Append("}");
+        }
+
+        private static void AppendSerializedIndexStats(StringBuilder builder, SerializedIndexStats stats)
+        {
+            builder.Append("{\"scannedFileCount\":");
+            builder.Append(stats.ScannedFileCount);
+            builder.Append(",\"guidReferenceCount\":");
+            builder.Append(stats.GuidReferenceCount);
+            builder.Append(",\"unityEventBindingCount\":");
+            builder.Append(stats.UnityEventBindingCount);
+            builder.Append("}");
+        }
+
+        private static void AppendTopCounts(StringBuilder builder, Dictionary<string, int> counts, int limit)
+        {
+            var entries = new List<KeyValuePair<string, int>>(counts);
+            entries.Sort(delegate (KeyValuePair<string, int> left, KeyValuePair<string, int> right)
+            {
+                var countCompare = right.Value.CompareTo(left.Value);
+                return countCompare != 0 ? countCompare : string.Compare(left.Key, right.Key, StringComparison.OrdinalIgnoreCase);
+            });
+
+            builder.Append("[");
+            for (var index = 0; index < entries.Count && index < limit; index++)
+            {
+                if (index > 0)
+                {
+                    builder.Append(",");
+                }
+
+                builder.Append("{\"folder\":\"");
+                builder.Append(JsonRpcUtil.Escape(entries[index].Key));
+                builder.Append("\",\"count\":");
+                builder.Append(entries[index].Value);
+                builder.Append("}");
+            }
+
+            builder.Append("]");
+        }
+
         private static string FindScriptPathForClass(string className)
         {
             var projectRoot = Path.GetDirectoryName(Application.dataPath);
@@ -3643,6 +4217,28 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         public int StartOffset;
         public int EndOffset;
         public string Text;
+    }
+
+    internal sealed class ScriptIndexStats
+    {
+        public int ScriptCount;
+        public int TypeDeclarationCount;
+        public int MonoBehaviourCount;
+        public int ScriptableObjectCount;
+        public int EditorScriptCount;
+        public int TestScriptCount;
+        public int ResourcesLoadLineCount;
+        public int SendMessageLineCount;
+        public int HotLookupLineCount;
+        public int UiHintCount;
+        public readonly HashSet<string> Namespaces = new HashSet<string>(StringComparer.Ordinal);
+    }
+
+    internal sealed class SerializedIndexStats
+    {
+        public int ScannedFileCount;
+        public int GuidReferenceCount;
+        public int UnityEventBindingCount;
     }
 
     internal sealed class MethodNode

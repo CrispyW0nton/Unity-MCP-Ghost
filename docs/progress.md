@@ -10,7 +10,7 @@ Completed:
 - Tool metadata for risk level, mutation status, dry-run support, related resources, and roadmap phase.
 - Phase 1 MCP tools: `ping`, `health`, `editor_state_get`, `console_read`, `scene_hierarchy_get`, `gameobject_create`, `transform_set`, `scene_save`, and `screenshot_capture`.
 - Compatibility tools: `unity_get_editor_state`, `unity_get_console_logs`, `unity_get_scene_hierarchy`, `manage_scene`, `manage_gameobject`, and `batch_execute`.
-- MCP resources for read-heavy context: `unity://capabilities`, `unity://editor/state`, `unity://scenes/active`, and `unity://console/errors`.
+- MCP resources for read-heavy context: `unity://capabilities`, `unity://editor/state`, `unity://scenes/active`, `unity://console/errors`, and `unity://semantic/index`.
 - MCP prompts for resource-first inspection and dry-run-first repair planning.
 - Unity bridge commands for editor state, console log buffer, scene hierarchy/save, GameObject create/transform/find/get/delete, screenshot capture, and batch execution.
 - Undo groups for GameObject mutations.
@@ -442,7 +442,30 @@ Slice 12 validation on KOTOR Unity project:
 - Focused lint for `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs` returned zero diagnostics.
 - A temporary scratch script verified `UNI-PERF-001` for `GetComponent` and `UNI-PERF-002` for `GameObject.Find` inside `Update`, then the scratch script/folder were deleted and Unity compiled cleanly.
 
+Completed in Slice 13:
+
+- Semantic project index summary:
+  - `project_index_summary`
+  - MCP resource `unity://semantic/index`
+  - Unity bridge command `semantic.project_index_summary`
+
+Game-development fit:
+
+- Gives agents a first-pass map of a Unity game project: scenes, prefabs, scripts, models, materials, textures, audio, animation, UI, tests, Resources usage, and top content folders.
+- Adds script semantics for MonoBehaviour count, ScriptableObject count, type declarations, test scripts, UI hints, `Resources.Load`, `SendMessage`, and hot-loop lookup signals.
+- Adds serialized Unity context for GUID reference density and UnityEvent binding counts, plus sampled meta/unused-asset diagnostics for refactor triage.
+- Exposes recommended next tools (`lint_unity_run`, `unity_event_bindings_find`, `prefab_references_trace`, `class_impact_analyze`, `unused_assets_find`) so the MCP steers agents toward game-development-safe inspection paths.
+
+Slice 13 validation on KOTOR Unity project:
+
+- Unity refreshed and compiled the updated bridge in Unity `2022.3.62f1`.
+- Direct bridge validation returned `semantic-project-index-summary` for `Assets/MCPGhostTests/MainMenuRecreation/MCP_Kotor_MainMenu_Recreation.unity`.
+- KOTOR index sample reported 2,196 project assets, 221 scripts, 100 MonoBehaviours, 26 prefabs, 10 scenes, and 5 `Resources.Load` lines.
+- Top content folders were `KotorImported`, `Scripts`, `ExtractedAssets`, `MCPGhostTests`, and `StreamingAssets`, which matches the active KOTOR asset-porting workflow.
+- MCP-level validation confirmed both `project_index_summary` and `unity://semantic/index` return the same semantic summary.
+- `npm run build`, `git diff --check`, `npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 20000`, and `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Users/NewAdmin/Documents/KaiGenInteractive/Kotor-Unity --request-timeout-ms 30000` passed.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add a semantic project index summary/resource that aggregates the Phase 3 semantic tools into one project overview.
+- Add a `test_scope_suggest` tool that uses the semantic index, impact analysis, and Unity test assets to recommend the smallest safe EditMode/PlayMode test set for a change.
