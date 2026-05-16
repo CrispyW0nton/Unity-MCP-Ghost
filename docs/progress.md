@@ -346,7 +346,25 @@ Slice 7 validation on KOTOR Unity project:
 - `asset_references_trace` against the same script scanned 216 serialized asset files and returned zero back-references.
 - `asset_references_trace` against imported KOTOR Malak menu materials found prefab back-references such as `Assets/KotorImported/MainMenu/Prefabs/MalakMenuModel_DirectMdlCandidate006N.prefab`.
 
+Completed in Slice 8:
+
+- UnityEvent semantic binding discovery:
+  - `unity_event_bindings_find`
+  - Unity bridge command `semantic.unity_event_bindings_find`
+
+Game-development fit:
+
+- The tool scans serialized Unity scenes, prefabs, and assets for persistent UnityEvent method bindings, which normal code search cannot reliably see.
+- Results include asset path, event property, method name, target assembly type, target object reference, mode, and source line so agents can avoid breaking Inspector-wired UI, trigger, animation, and timeline callbacks during refactors.
+- Filters support `methodName`, `targetType`, `assetPath`, extension sets, and result limits.
+
+Slice 8 validation on KOTOR Unity project:
+
+- Unity refreshed and compiled the updated bridge in Unity `2022.3.62f1`.
+- `unity_event_bindings_find` scanned 202 serialized `.prefab`, `.unity`, and `.asset` files.
+- The KOTOR project currently has many UnityEvent containers but no persistent `m_MethodName` entries, so the tool correctly returned zero bindings for the current asset set.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add semantic project-analysis tools for UnityEvent bindings and Animator graphs.
+- Add Animator graph analysis.

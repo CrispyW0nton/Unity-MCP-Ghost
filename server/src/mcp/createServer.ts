@@ -1039,6 +1039,22 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "unity_event_bindings_find",
+    "Find Inspector-wired UnityEvent persistent callbacks in serialized scenes, prefabs, and assets.",
+    {
+      methodName: z.string().default(""),
+      targetType: z.string().default(""),
+      assetPath: z.string().default(""),
+      extensions: z.string().default(".prefab,.unity,.asset"),
+      limit: z.number().int().positive().max(5000).default(500)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    "semantic.unity_event_bindings_find"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "asset_create_folder",
     "Create a folder under Assets for organizing game content.",
     {

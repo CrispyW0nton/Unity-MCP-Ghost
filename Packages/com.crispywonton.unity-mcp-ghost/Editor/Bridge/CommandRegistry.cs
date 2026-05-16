@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.PackageManager;
 using UnityEditor.PackageManager.Requests;
@@ -50,6 +51,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("asset.find", HandleAssetFind);
             Register("semantic.asset_references_trace", HandleSemanticAssetReferencesTrace);
             Register("prefab.references_trace", HandleSemanticAssetReferencesTrace);
+            Register("semantic.unity_event_bindings_find", HandleSemanticUnityEventBindingsFind);
             Register("asset.create_folder", HandleAssetCreateFolder);
             Register("asset.move", HandleAssetMove);
             Register("asset.copy", HandleAssetCopy);
@@ -750,6 +752,70 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             builder.Append("],\"referenceCount\":");
+            builder.Append(count);
+            builder.Append(",\"scannedCount\":");
+            builder.Append(scanned);
+            builder.Append(",\"truncated\":");
+            builder.Append(Bool(count >= limit));
+            builder.Append("}");
+            return builder.ToString();
+        }
+
+        private static string HandleSemanticUnityEventBindingsFind(UnityMcpRequest request)
+        {
+            var methodName = JsonRpcUtil.ReadString(request.RawJson, "methodName", string.Empty);
+            var targetType = JsonRpcUtil.ReadString(request.RawJson, "targetType", string.Empty);
+            var assetPath = JsonRpcUtil.ReadString(request.RawJson, "assetPath", string.Empty);
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 500), 5000));
+            var extensions = ReadReferenceExtensions(JsonRpcUtil.ReadString(request.RawJson, "extensions", ".prefab,.unity,.asset"));
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"source\":\"unity-event-yaml-scan\",\"methodName\":\"");
+            builder.Append(JsonRpcUtil.Escape(methodName));
+            builder.Append("\",\"targetType\":\"");
+            builder.Append(JsonRpcUtil.Escape(targetType));
+            builder.Append("\",\"bindings\":[");
+
+            var count = 0;
+            var scanned = 0;
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var files = string.IsNullOrEmpty(assetPath)
+                ? Directory.GetFiles(Application.dataPath, "*.*", SearchOption.AllDirectories)
+                : new[] { FullAssetPath(NormalizeAssetPath(assetPath)) };
+
+            foreach (var fullPath in files)
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var extension = Path.GetExtension(fullPath);
+                if (string.IsNullOrEmpty(extension) || !extensions.Contains(extension))
+                {
+                    continue;
+                }
+
+                var currentAssetPath = ToAssetPath(projectRoot, fullPath);
+                if (!string.IsNullOrEmpty(assetPath))
+                {
+                    EnsureAssetExists(currentAssetPath);
+                }
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                scanned++;
+                count = AppendUnityEventBindings(builder, text, currentAssetPath, extension, methodName, targetType, count, limit);
+            }
+
+            builder.Append("],\"bindingCount\":");
             builder.Append(count);
             builder.Append(",\"scannedCount\":");
             builder.Append(scanned);
@@ -1626,6 +1692,162 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("\",\"type\":\"");
             builder.Append(JsonRpcUtil.Escape(type == null ? string.Empty : type.FullName));
             builder.Append("\"}");
+        }
+
+        private static int AppendUnityEventBindings(
+            StringBuilder builder,
+            string text,
+            string assetPath,
+            string extension,
+            string methodName,
+            string targetType,
+            int count,
+            int limit)
+        {
+            var lines = (text ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            for (var index = 0; index < lines.Length && count < limit; index++)
+            {
+                var method = ReadYamlValue(lines[index], "m_MethodName:");
+                if (string.IsNullOrEmpty(method))
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(methodName) && !string.Equals(method, methodName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var assemblyType = FindNearbyYamlValue(lines, index, "m_TargetAssemblyTypeName:", 30, 8);
+                if (!string.IsNullOrEmpty(targetType) && assemblyType.IndexOf(targetType, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                if (count > 0)
+                {
+                    builder.Append(",");
+                }
+
+                AppendUnityEventBinding(
+                    builder,
+                    assetPath,
+                    extension,
+                    method,
+                    assemblyType,
+                    FindNearbyYamlValue(lines, index, "m_Target:", 30, 8),
+                    FindNearbyYamlValue(lines, index, "m_Mode:", 4, 8),
+                    FindUnityEventPropertyName(lines, index),
+                    index + 1);
+                count++;
+            }
+
+            return count;
+        }
+
+        private static void AppendUnityEventBinding(
+            StringBuilder builder,
+            string assetPath,
+            string extension,
+            string methodName,
+            string assemblyType,
+            string targetReference,
+            string mode,
+            string eventProperty,
+            int line)
+        {
+            var guid = AssetDatabase.AssetPathToGUID(assetPath);
+            var type = AssetDatabase.GetMainAssetTypeAtPath(assetPath);
+            builder.Append("{\"assetGuid\":\"");
+            builder.Append(JsonRpcUtil.Escape(guid));
+            builder.Append("\",\"assetPath\":\"");
+            builder.Append(JsonRpcUtil.Escape(assetPath));
+            builder.Append("\",\"assetName\":\"");
+            builder.Append(JsonRpcUtil.Escape(Path.GetFileNameWithoutExtension(assetPath)));
+            builder.Append("\",\"assetExtension\":\"");
+            builder.Append(JsonRpcUtil.Escape(extension));
+            builder.Append("\",\"assetType\":\"");
+            builder.Append(JsonRpcUtil.Escape(type == null ? string.Empty : type.FullName));
+            builder.Append("\",\"eventProperty\":\"");
+            builder.Append(JsonRpcUtil.Escape(eventProperty));
+            builder.Append("\",\"methodName\":\"");
+            builder.Append(JsonRpcUtil.Escape(methodName));
+            builder.Append("\",\"targetAssemblyTypeName\":\"");
+            builder.Append(JsonRpcUtil.Escape(assemblyType));
+            builder.Append("\",\"targetReference\":\"");
+            builder.Append(JsonRpcUtil.Escape(targetReference));
+            builder.Append("\",\"mode\":\"");
+            builder.Append(JsonRpcUtil.Escape(mode));
+            builder.Append("\",\"line\":");
+            builder.Append(line);
+            builder.Append("}");
+        }
+
+        private static string ReadYamlValue(string line, string key)
+        {
+            var trimmed = (line ?? string.Empty).Trim();
+            if (!trimmed.StartsWith(key, StringComparison.Ordinal))
+            {
+                return string.Empty;
+            }
+
+            return trimmed.Substring(key.Length).Trim().Trim('"');
+        }
+
+        private static string FindNearbyYamlValue(string[] lines, int index, string key, int back, int forward)
+        {
+            var start = Math.Max(0, index - back);
+            for (var current = index; current >= start; current--)
+            {
+                var value = ReadYamlValue(lines[current], key);
+                if (!string.IsNullOrEmpty(value))
+                {
+                    return value;
+                }
+            }
+
+            var end = Math.Min(lines.Length - 1, index + forward);
+            for (var current = index + 1; current <= end; current++)
+            {
+                var value = ReadYamlValue(lines[current], key);
+                if (!string.IsNullOrEmpty(value))
+                {
+                    return value;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static string FindUnityEventPropertyName(string[] lines, int index)
+        {
+            var start = Math.Max(0, index - 80);
+            for (var current = index; current >= start; current--)
+            {
+                var trimmed = (lines[current] ?? string.Empty).Trim();
+                if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("-", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (!trimmed.EndsWith(":", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var candidate = trimmed.TrimEnd(':');
+                if (candidate == "m_PersistentCalls" || candidate == "m_Calls" || candidate == "m_Arguments")
+                {
+                    continue;
+                }
+
+                if (Regex.IsMatch(candidate, @"^m_[A-Za-z0-9_]+$"))
+                {
+                    return candidate;
+                }
+            }
+
+            return string.Empty;
         }
 
         private static HashSet<string> ReadReferenceExtensions(string csv)
