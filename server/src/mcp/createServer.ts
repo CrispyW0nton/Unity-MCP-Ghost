@@ -194,6 +194,47 @@ function firstVariable(value: string | string[] | undefined): string {
   return value ?? "";
 }
 
+async function pollOperation(context: ToolContext, operationId: string, timeoutMs: number, intervalMs = 250): Promise<Record<string, unknown>> {
+  const startedAt = Date.now();
+  let last = asObject(await context.unity.request("operation.get", { operationId }));
+  while (Date.now() - startedAt < timeoutMs) {
+    const state = asObject(last.state);
+    if (state.status !== "running") {
+      return last;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    last = asObject(await context.unity.request("operation.get", { operationId }));
+  }
+
+  return last;
+}
+
+async function waitForUnityCompile(context: ToolContext, timeoutMs: number, intervalMs = 250): Promise<Record<string, unknown>> {
+  const startedAt = Date.now();
+  let state = asObject(await context.unity.request("editor.get_state"));
+  while (Date.now() - startedAt < timeoutMs) {
+    if (state.isCompiling !== true && state.isUpdating !== true) {
+      return {
+        ok: true,
+        status: "success",
+        elapsedMs: Date.now() - startedAt,
+        state
+      };
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    state = asObject(await context.unity.request("editor.get_state"));
+  }
+
+  return {
+    ok: false,
+    status: "timeout",
+    elapsedMs: Date.now() - startedAt,
+    state
+  };
+}
+
 function registerCoreResources(server: McpServer, context: ToolContext): void {
   registerJsonResource(
     server,
@@ -1040,6 +1081,27 @@ export function createMcpServer(context: ToolContext): McpServer {
     "operation.list"
   );
 
+  registerTool(
+    server,
+    "compile_wait",
+    "Wait until Unity is no longer compiling or updating by polling editor state from the MCP server.",
+    {
+      timeoutMs: z.number().int().positive().max(300000).default(30000)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const data = await waitForUnityCompile(context, args.timeoutMs);
+        return successResponse("compile_wait completed.", data, startedAt, {
+          confidence: data.status === "success" ? 1 : 0.5
+        });
+      } catch (error) {
+        return failureResponse("compile_wait failed", error, startedAt);
+      }
+    }
+  );
+
   registerUnityRequestTool(
     server,
     context,
@@ -1052,6 +1114,88 @@ export function createMcpServer(context: ToolContext): McpServer {
     },
     { risk: "test-execution", mutates: false, supportsDryRun: true, phase: 2, relatedResources: ["unity://tests/{mode}"] },
     "tests.run"
+  );
+
+  registerTool(
+    server,
+    "repair_loop_run",
+    "Run the first Ghost repair-loop skeleton: validate, wait for compile, read diagnostics, and optionally run tests.",
+    {
+      objective: z.string().min(1),
+      scriptPath: z.string().optional(),
+      maxIterations: z.number().int().positive().max(5).default(1),
+      compileTimeoutMs: z.number().int().positive().max(300000).default(30000),
+      runTests: z.boolean().default(false),
+      testMode: z.enum(["editmode", "playmode"]).default("editmode"),
+      testFilter: z.string().default("")
+    },
+    { risk: "test-execution", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors", "unity://tests/{mode}"] },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const steps: unknown[] = [];
+        const editorState = asObject(await context.unity.request("editor.get_state"));
+        steps.push({ name: "editor_state", ok: editorState.ok, data: editorState });
+
+        let validation: Record<string, unknown> | undefined;
+        if (args.scriptPath) {
+          validation = asObject(await context.unity.request("script.validate", { path: args.scriptPath, limit: 100 }));
+          steps.push({ name: "script_validate", ok: validation.ok, data: validation });
+        }
+
+        const compileStatus = await waitForUnityCompile(context, args.compileTimeoutMs);
+        steps.push({ name: "compile_wait", ok: compileStatus.ok, data: compileStatus });
+
+        const diagnostics = asObject(
+          await context.unity.request("console.diagnostics_get", {
+            severity: "error",
+            pathFilter: args.scriptPath ?? "",
+            limit: 100
+          })
+        );
+        steps.push({ name: "console_diagnostics_get", ok: diagnostics.ok, data: diagnostics });
+
+        let tests: Record<string, unknown>;
+        if (args.runTests) {
+          const testStart = asObject(
+            await context.unity.request("tests.run", {
+              mode: args.testMode,
+              filter: args.testFilter
+            })
+          );
+          tests = typeof testStart.operationId === "string" ? await pollOperation(context, testStart.operationId, 120000, 500) : testStart;
+        } else {
+          tests = asObject(
+            await context.unity.request("tests.run", {
+              mode: args.testMode,
+              filter: args.testFilter,
+              dryRun: true
+            })
+          );
+        }
+        steps.push({ name: args.runTests ? "tests_run" : "tests_run_dry_run", ok: tests.ok, data: tests });
+
+        return successResponse(
+          "repair_loop_run completed diagnostic pass.",
+          {
+            ok: true,
+            objective: args.objective,
+            mode: "diagnostic-pass",
+            maxIterations: args.maxIterations,
+            scriptPath: args.scriptPath ?? null,
+            steps,
+            nextActions: [
+              "If diagnostics are present, propose minimal ranged edits with script_apply_edits dryRun=true.",
+              "After applying edits, run compile_wait and script_validate again.",
+              "Run tests with runTests=true only after diagnostics are clear or intentionally scoped."
+            ]
+          },
+          startedAt
+        );
+      } catch (error) {
+        return failureResponse("repair_loop_run failed", error, startedAt);
+      }
+    }
   );
 
   registerUnityRequestTool(

@@ -64,6 +64,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("package.remove", HandlePackageRemove);
             Register("operation.get", HandleOperationGet);
             Register("operation.list", HandleOperationList);
+            Register("compile.wait", HandleCompileWait);
             Register("tests.run", HandleTestsRun);
             Register("prefab.create", HandlePrefabCreate);
             Register("prefab.instantiate", HandlePrefabInstantiate);
@@ -932,6 +933,15 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return OperationStore.List();
         }
 
+        private static string HandleCompileWait(UnityMcpRequest request)
+        {
+            var timeoutMs = Math.Max(1000, JsonRpcUtil.ReadInt(request.RawJson, "timeoutMs", 30000));
+            var startedAt = DateTime.UtcNow;
+            var deadline = startedAt.AddMilliseconds(timeoutMs);
+            var id = OperationStore.Register("compile", "compile.wait", () => CompileWaitState(startedAt, deadline));
+            return OperationStarted(id, "compile.wait");
+        }
+
         private static string HandleTestsRun(UnityMcpRequest request)
         {
             var mode = JsonRpcUtil.ReadString(request.RawJson, "mode", "editmode");
@@ -1758,6 +1768,20 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static string PackageErrorState(string message)
         {
             return "{\"status\":\"failed\",\"error\":\"" + JsonRpcUtil.Escape(message) + "\"}";
+        }
+
+        private static string CompileWaitState(DateTime startedAt, DateTime deadline)
+        {
+            var isCompiling = EditorApplication.isCompiling;
+            var isUpdating = EditorApplication.isUpdating;
+            var status = (!isCompiling && !isUpdating) ? "success" : DateTime.UtcNow > deadline ? "failed" : "running";
+            return "{"
+                + "\"status\":\"" + status + "\","
+                + "\"isCompiling\":" + Bool(isCompiling) + ","
+                + "\"isUpdating\":" + Bool(isUpdating) + ","
+                + "\"startedAtUtc\":\"" + startedAt.ToString("O", CultureInfo.InvariantCulture) + "\","
+                + "\"elapsedMs\":" + (int)(DateTime.UtcNow - startedAt).TotalMilliseconds
+                + "}";
         }
 
         private static void AppendPackageInfo(StringBuilder builder, UnityEditor.PackageManager.PackageInfo package)

@@ -204,7 +204,7 @@ npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C
 
 ## Phase 3: Ghost Moat
 
-Status: started, diagnostics substrate implemented.
+Status: in progress, diagnostics substrate and the first repair-loop scaffold implemented.
 
 Completed in Slice 1:
 
@@ -227,8 +227,30 @@ Slice 1 validation on KOTOR Unity project:
 - `console.diagnostics_get` returned zero diagnostics for that script after the earlier KOTOR compile fix.
 - `npm run build`, `npm run smoke`, and `git diff --check` passed.
 
+Completed in Slice 2:
+
+- Polling-aware compile/update wait:
+  - Unity bridge command `compile.wait`
+  - MCP tool `compile_wait`
+- First repair-loop orchestrator scaffold:
+  - `repair_loop_run`
+
+Game-development fit:
+
+- `compile_wait` gives agents a reliable way to wait for Unity to finish script compilation and asset refreshes before making follow-up gameplay edits.
+- `repair_loop_run` now sequences the Phase 3 loop's read-only half: editor state -> optional script validation -> compile wait -> structured console diagnostics -> scoped test dry-run or test execution.
+- The current repair loop deliberately stops before patching. It points agents toward `script_apply_edits` with `dryRun=true` so repair work stays reviewable and Unity-aware while the full patch-generation layer is still being built.
+
+Slice 2 validation on KOTOR Unity project:
+
+- Unity compiled the new bridge code in Unity `2022.3.62f1`.
+- Direct `compile.wait` completed successfully after Unity finished updating.
+- MCP-level `compile_wait` completed through stdio against the open KOTOR project.
+- MCP-level `repair_loop_run` completed a five-step diagnostic pass against `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs`.
+- `console_diagnostics_get` returned zero diagnostics for the scoped KOTOR script during the repair-loop pass.
+
 Next Phase 3 targets:
 
-- Polling-aware `wait_for_compile` / validation operation so repair loops know when Unity has finished compiling.
-- `repair_loop_run` skeleton that sequences validate -> diagnostics -> dry-run patch -> test.
+- `patch_propose` skeleton for turning structured diagnostics into minimal suggested ranged edits.
+- `repair_loop_run` integration with `script_apply_edits` dry-run previews.
 - Stronger compiler diagnostic sourcing beyond bridge-session logs.
