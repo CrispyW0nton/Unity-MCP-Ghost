@@ -1007,6 +1007,38 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "asset_references_trace",
+    "Trace Unity asset, scene, prefab, material, animator, and ScriptableObject files that reference a target asset GUID.",
+    {
+      path: z.string().optional(),
+      guid: z.string().optional(),
+      extensions: z.string().default(""),
+      includeSelf: z.boolean().default(false),
+      limit: z.number().int().positive().max(5000).default(500)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    "semantic.asset_references_trace"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "prefab_references_trace",
+    "Trace prefab and scene back-references to a Unity asset or script before refactors, deletes, or prefab changes.",
+    {
+      path: z.string().optional(),
+      guid: z.string().optional(),
+      extensions: z.string().default(".prefab,.unity"),
+      includeSelf: z.boolean().default(false),
+      limit: z.number().int().positive().max(5000).default(500)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    "prefab.references_trace"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "asset_create_folder",
     "Create a folder under Assets for organizing game content.",
     {

@@ -27,6 +27,7 @@ This package currently includes Phase 1 and Phase 2 bridge tooling:
 - Phase 2 asset/script commands: `asset.move`, `asset.copy`, `asset.delete`, `script.read`, `script.create`, `script.write`, `script.apply_edits`, and `script.delete`.
 - Phase 2 package/test commands: `package.list`, `package.search`, `package.add`, `package.remove`, `operation.get`, `operation.list`, and `tests.run`.
 - Early Phase 3 diagnostics commands: `console.diagnostics_get`, `compile.diagnostics_get`, `script.validate`, and `compile.wait`.
+- Early Phase 3 semantic commands: `semantic.asset_references_trace` and `prefab.references_trace`.
 - MCP-level Phase 3 orchestration now includes `compile_wait`, `patch_propose`, `repair_apply_edits`, and the first `repair_loop_run` diagnostic-pass scaffold in the TypeScript server.
 - Dry-run previews for mutating scene, GameObject, screenshot, and batch commands.
 - Durable queue fallback at `Library/UnityMcpGhost/queue` with `pending` and `results` subfolders.

@@ -48,6 +48,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("component.modify", HandleComponentModify);
             Register("component.remove", HandleComponentRemove);
             Register("asset.find", HandleAssetFind);
+            Register("semantic.asset_references_trace", HandleSemanticAssetReferencesTrace);
+            Register("prefab.references_trace", HandleSemanticAssetReferencesTrace);
             Register("asset.create_folder", HandleAssetCreateFolder);
             Register("asset.move", HandleAssetMove);
             Register("asset.copy", HandleAssetCopy);
@@ -667,6 +669,93 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             builder.Append("]}");
+            return builder.ToString();
+        }
+
+        private static string HandleSemanticAssetReferencesTrace(UnityMcpRequest request)
+        {
+            var path = JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty);
+            var guid = JsonRpcUtil.ReadString(request.RawJson, "guid", string.Empty);
+            if (!string.IsNullOrEmpty(path))
+            {
+                path = NormalizeAssetPath(path);
+                EnsureAssetExists(path);
+                guid = AssetDatabase.AssetPathToGUID(path);
+            }
+
+            if (string.IsNullOrEmpty(guid))
+            {
+                throw new InvalidOperationException("semantic.asset_references_trace requires either path or guid.");
+            }
+
+            if (string.IsNullOrEmpty(path))
+            {
+                path = AssetDatabase.GUIDToAssetPath(guid);
+            }
+
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 500), 5000));
+            var includeSelf = JsonRpcUtil.ReadBool(request.RawJson, "includeSelf", false);
+            var extensions = ReadReferenceExtensions(JsonRpcUtil.ReadString(request.RawJson, "extensions", string.Empty));
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"target\":");
+            AppendAssetSummary(builder, guid, path);
+            builder.Append(",\"source\":\"guid-text-scan\",\"references\":[");
+
+            var count = 0;
+            var scanned = 0;
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var files = Directory.GetFiles(Application.dataPath, "*.*", SearchOption.AllDirectories);
+            foreach (var fullPath in files)
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var extension = Path.GetExtension(fullPath);
+                if (string.IsNullOrEmpty(extension) || !extensions.Contains(extension))
+                {
+                    continue;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (!includeSelf && string.Equals(assetPath, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                scanned++;
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (text.IndexOf(guid, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                if (count > 0)
+                {
+                    builder.Append(",");
+                }
+
+                AppendAssetReference(builder, assetPath, extension);
+                count++;
+            }
+
+            builder.Append("],\"referenceCount\":");
+            builder.Append(count);
+            builder.Append(",\"scannedCount\":");
+            builder.Append(scanned);
+            builder.Append(",\"truncated\":");
+            builder.Append(Bool(count >= limit));
+            builder.Append("}");
             return builder.ToString();
         }
 
@@ -1520,6 +1609,54 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("\",\"type\":\"");
             builder.Append(JsonRpcUtil.Escape(type == null ? string.Empty : type.FullName));
             builder.Append("\"}");
+        }
+
+        private static void AppendAssetReference(StringBuilder builder, string path, string extension)
+        {
+            var guid = AssetDatabase.AssetPathToGUID(path);
+            var type = AssetDatabase.GetMainAssetTypeAtPath(path);
+            builder.Append("{\"guid\":\"");
+            builder.Append(JsonRpcUtil.Escape(guid));
+            builder.Append("\",\"path\":\"");
+            builder.Append(JsonRpcUtil.Escape(path));
+            builder.Append("\",\"name\":\"");
+            builder.Append(JsonRpcUtil.Escape(Path.GetFileNameWithoutExtension(path)));
+            builder.Append("\",\"extension\":\"");
+            builder.Append(JsonRpcUtil.Escape(extension));
+            builder.Append("\",\"type\":\"");
+            builder.Append(JsonRpcUtil.Escape(type == null ? string.Empty : type.FullName));
+            builder.Append("\"}");
+        }
+
+        private static HashSet<string> ReadReferenceExtensions(string csv)
+        {
+            var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var raw = string.IsNullOrEmpty(csv)
+                ? ".prefab,.unity,.asset,.controller,.overrideController,.mat,.anim,.playable,.renderTexture,.lighting,.shadergraph,.asmdef"
+                : csv;
+            foreach (var part in raw.Split(','))
+            {
+                var extension = part.Trim();
+                if (string.IsNullOrEmpty(extension))
+                {
+                    continue;
+                }
+
+                if (!extension.StartsWith(".", StringComparison.Ordinal))
+                {
+                    extension = "." + extension;
+                }
+
+                extensions.Add(extension);
+            }
+
+            return extensions;
+        }
+
+        private static string ToAssetPath(string projectRoot, string fullPath)
+        {
+            var relative = fullPath.Substring(projectRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return relative.Replace("\\", "/");
         }
 
         private static string NormalizeAssetPath(string path)

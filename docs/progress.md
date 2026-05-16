@@ -323,7 +323,30 @@ Slice 6 validation on KOTOR Unity project:
 - `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Users/NewAdmin/Documents/KaiGenInteractive/Kotor-Unity --request-timeout-ms 60000 --allow-mutation` passed with compiler diagnostics active.
 - The scratch rollback step reported `mode: rolled-back`, `scopedErrorCount: 2`, verified rollback content, cleaned up the scratch asset/folder, and waited for compile after cleanup.
 
+Completed in Slice 7:
+
+- First semantic project-understanding tools:
+  - `asset_references_trace`
+  - `prefab_references_trace`
+- Unity bridge commands:
+  - `semantic.asset_references_trace`
+  - `prefab.references_trace`
+
+Game-development fit:
+
+- These tools trace reverse references by Unity GUID across serialized project assets, giving agents a safer answer to "what will break if I edit, move, or delete this asset?"
+- `prefab_references_trace` focuses the scan on `.prefab` and `.unity` files for scene/prefab impact analysis before gameplay refactors.
+- `asset_references_trace` scans broader Unity serialized assets such as prefabs, scenes, materials, animator controllers, ScriptableObjects, animation clips, asmdefs, and shader graphs.
+- This is the first gdep-style semantic layer slice and directly supports KOTOR asset-porting work by exposing which imported prefabs point at generated materials, models, scripts, and other assets.
+
+Slice 7 validation on KOTOR Unity project:
+
+- Unity refreshed and compiled the updated bridge in Unity `2022.3.62f1`.
+- `prefab_references_trace` against `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs` scanned 36 prefab/scene files and returned zero back-references.
+- `asset_references_trace` against the same script scanned 216 serialized asset files and returned zero back-references.
+- `asset_references_trace` against imported KOTOR Malak menu materials found prefab back-references such as `Assets/KotorImported/MainMenu/Prefabs/MalakMenuModel_DirectMdlCandidate006N.prefab`.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add semantic project-analysis tools for prefab references, UnityEvent bindings, and Animator graphs.
+- Add semantic project-analysis tools for UnityEvent bindings and Animator graphs.
