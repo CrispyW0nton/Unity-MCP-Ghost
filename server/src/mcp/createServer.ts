@@ -1096,6 +1096,36 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "class_impact_analyze",
+    "Analyze Unity C# class impact across scripts plus serialized asset/prefab references before refactors.",
+    {
+      path: z.string().default(""),
+      className: z.string().default(""),
+      methodName: z.string().default(""),
+      limit: z.number().int().positive().max(2000).default(200)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    "semantic.class_impact_analyze"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "call_path_find",
+    "Find a lightweight C# method call path across Unity scripts using a deterministic source scan.",
+    {
+      fromMethod: z.string().min(1),
+      toMethod: z.string().min(1),
+      maxDepth: z.number().int().positive().max(12).default(6),
+      limit: z.number().int().positive().max(100).default(20)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    "semantic.call_path_find"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "asset_create_folder",
     "Create a folder under Assets for organizing game content.",
     {

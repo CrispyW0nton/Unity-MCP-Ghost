@@ -55,6 +55,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("semantic.animator_analyze", HandleSemanticAnimatorAnalyze);
             Register("semantic.meta_integrity_check", HandleSemanticMetaIntegrityCheck);
             Register("semantic.unused_assets_find", HandleSemanticUnusedAssetsFind);
+            Register("semantic.class_impact_analyze", HandleSemanticClassImpactAnalyze);
+            Register("semantic.call_path_find", HandleSemanticCallPathFind);
             Register("asset.create_folder", HandleAssetCreateFolder);
             Register("asset.move", HandleAssetMove);
             Register("asset.copy", HandleAssetCopy);
@@ -1009,6 +1011,99 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return builder.ToString();
         }
 
+        private static string HandleSemanticClassImpactAnalyze(UnityMcpRequest request)
+        {
+            var path = JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty);
+            var className = JsonRpcUtil.ReadString(request.RawJson, "className", string.Empty);
+            var methodName = JsonRpcUtil.ReadString(request.RawJson, "methodName", string.Empty);
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 200), 2000));
+
+            if (!string.IsNullOrEmpty(path))
+            {
+                path = EnsureScriptPath(path);
+                EnsureAssetExists(path);
+            }
+            else if (!string.IsNullOrEmpty(className))
+            {
+                path = FindScriptPathForClass(className);
+            }
+
+            if (string.IsNullOrEmpty(path))
+            {
+                throw new InvalidOperationException("semantic.class_impact_analyze requires path or className.");
+            }
+
+            if (string.IsNullOrEmpty(className))
+            {
+                className = Path.GetFileNameWithoutExtension(path);
+            }
+
+            var guid = AssetDatabase.AssetPathToGUID(path);
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"source\":\"csharp-text-impact-scan\",\"target\":");
+            AppendAssetSummary(builder, guid, path);
+            builder.Append(",\"className\":\"");
+            builder.Append(JsonRpcUtil.Escape(className));
+            builder.Append("\",\"methodName\":\"");
+            builder.Append(JsonRpcUtil.Escape(methodName));
+            builder.Append("\",\"scriptReferences\":[");
+
+            var scriptReferenceCount = AppendScriptReferences(builder, projectRoot, path, className, methodName, limit);
+            builder.Append("],\"assetReferences\":[");
+            var assetReferenceCount = AppendGuidReferences(builder, projectRoot, guid, path, ReadReferenceExtensions(".prefab,.unity,.asset,.controller,.overrideController"), limit, false);
+            builder.Append("],\"suggestedTests\":[");
+            var suggestedTestCount = AppendSuggestedTests(builder, projectRoot, className, methodName, limit);
+            builder.Append("],\"summary\":{\"scriptReferenceCount\":");
+            builder.Append(scriptReferenceCount);
+            builder.Append(",\"assetReferenceCount\":");
+            builder.Append(assetReferenceCount);
+            builder.Append(",\"suggestedTestCount\":");
+            builder.Append(suggestedTestCount);
+            builder.Append("},\"note\":\"Text scan impact analysis; verify dynamic reflection, serialized strings, addressables, and generated code before risky refactors.\"}");
+            return builder.ToString();
+        }
+
+        private static string HandleSemanticCallPathFind(UnityMcpRequest request)
+        {
+            var fromMethod = JsonRpcUtil.ReadString(request.RawJson, "fromMethod", string.Empty);
+            var toMethod = JsonRpcUtil.ReadString(request.RawJson, "toMethod", string.Empty);
+            var maxDepth = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "maxDepth", 6), 12));
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 20), 100));
+            if (string.IsNullOrEmpty(fromMethod) || string.IsNullOrEmpty(toMethod))
+            {
+                throw new InvalidOperationException("semantic.call_path_find requires fromMethod and toMethod.");
+            }
+
+            var methods = BuildMethodIndex();
+            var path = FindCallPath(methods, fromMethod, toMethod, maxDepth);
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"source\":\"csharp-text-call-graph\",\"fromMethod\":\"");
+            builder.Append(JsonRpcUtil.Escape(fromMethod));
+            builder.Append("\",\"toMethod\":\"");
+            builder.Append(JsonRpcUtil.Escape(toMethod));
+            builder.Append("\",\"maxDepth\":");
+            builder.Append(maxDepth);
+            builder.Append(",\"pathFound\":");
+            builder.Append(Bool(path.Count > 0));
+            builder.Append(",\"path\":[");
+
+            for (var index = 0; index < path.Count && index < limit; index++)
+            {
+                if (index > 0)
+                {
+                    builder.Append(",");
+                }
+
+                AppendMethodNode(builder, path[index]);
+            }
+
+            builder.Append("],\"indexedMethodCount\":");
+            builder.Append(methods.Count);
+            builder.Append(",\"note\":\"Lightweight text call graph; overloads, delegates, reflection, events, and virtual dispatch require review.\"}");
+            return builder.ToString();
+        }
+
         private static string HandleAssetCreateFolder(UnityMcpRequest request)
         {
             var parentPath = NormalizeAssetPath(JsonRpcUtil.ReadString(request.RawJson, "parentPath", "Assets"));
@@ -1897,6 +1992,201 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append(",\"risk\":\"review-before-delete\"}");
         }
 
+        private static int AppendScriptReferences(StringBuilder builder, string projectRoot, string targetPath, string className, string methodName, int limit)
+        {
+            var count = 0;
+            var classRegex = string.IsNullOrEmpty(className) ? null : new Regex(@"\b" + Regex.Escape(className) + @"\b");
+            var methodRegex = string.IsNullOrEmpty(methodName) ? null : new Regex(@"\b" + Regex.Escape(methodName) + @"\s*\(");
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.cs", SearchOption.AllDirectories))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (string.Equals(assetPath, targetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var lines = File.ReadAllLines(fullPath);
+                for (var index = 0; index < lines.Length && count < limit; index++)
+                {
+                    var line = lines[index];
+                    var matchType = string.Empty;
+                    if (classRegex != null && classRegex.IsMatch(line))
+                    {
+                        matchType = "class";
+                    }
+
+                    if (methodRegex != null && methodRegex.IsMatch(line))
+                    {
+                        matchType = string.IsNullOrEmpty(matchType) ? "method" : "class+method";
+                    }
+
+                    if (string.IsNullOrEmpty(matchType))
+                    {
+                        continue;
+                    }
+
+                    if (count > 0)
+                    {
+                        builder.Append(",");
+                    }
+
+                    AppendScriptReference(builder, assetPath, index + 1, matchType, line.Trim());
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static void AppendScriptReference(StringBuilder builder, string path, int line, string matchType, string snippet)
+        {
+            builder.Append("{\"path\":\"");
+            builder.Append(JsonRpcUtil.Escape(path));
+            builder.Append("\",\"line\":");
+            builder.Append(line);
+            builder.Append(",\"matchType\":\"");
+            builder.Append(JsonRpcUtil.Escape(matchType));
+            builder.Append("\",\"snippet\":\"");
+            builder.Append(JsonRpcUtil.Escape(snippet.Length > 240 ? snippet.Substring(0, 240) : snippet));
+            builder.Append("\"}");
+        }
+
+        private static int AppendGuidReferences(StringBuilder builder, string projectRoot, string guid, string targetPath, HashSet<string> extensions, int limit, bool includeSelf)
+        {
+            var count = 0;
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.*", SearchOption.AllDirectories))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var extension = Path.GetExtension(fullPath);
+                if (string.IsNullOrEmpty(extension) || !extensions.Contains(extension))
+                {
+                    continue;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (!includeSelf && string.Equals(assetPath, targetPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (text.IndexOf(guid, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                if (count > 0)
+                {
+                    builder.Append(",");
+                }
+
+                AppendAssetReference(builder, assetPath, extension);
+                count++;
+            }
+
+            return count;
+        }
+
+        private static int AppendSuggestedTests(StringBuilder builder, string projectRoot, string className, string methodName, int limit)
+        {
+            var count = 0;
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.cs", SearchOption.AllDirectories))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (assetPath.IndexOf("Test", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    continue;
+                }
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(className) && text.IndexOf(className, StringComparison.Ordinal) < 0
+                    && !string.IsNullOrEmpty(methodName) && text.IndexOf(methodName, StringComparison.Ordinal) < 0)
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrEmpty(className) && text.IndexOf(className, StringComparison.Ordinal) < 0 && string.IsNullOrEmpty(methodName))
+                {
+                    continue;
+                }
+
+                if (count > 0)
+                {
+                    builder.Append(",");
+                }
+
+                builder.Append("{\"path\":\"");
+                builder.Append(JsonRpcUtil.Escape(assetPath));
+                builder.Append("\",\"reason\":\"references target symbol or sits in a test path\"}");
+                count++;
+            }
+
+            return count;
+        }
+
+        private static string FindScriptPathForClass(string className)
+        {
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var classRegex = new Regex(@"\b(class|struct|interface|enum)\s+" + Regex.Escape(className) + @"\b");
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.cs", SearchOption.AllDirectories))
+            {
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (string.Equals(Path.GetFileNameWithoutExtension(assetPath), className, StringComparison.OrdinalIgnoreCase))
+                {
+                    return assetPath;
+                }
+
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (classRegex.IsMatch(text))
+                {
+                    return assetPath;
+                }
+            }
+
+            return string.Empty;
+        }
+
         private static void AppendMetaIssue(StringBuilder builder, ref int issueCount, string kind, string assetPath, string metaPath, string guid, string duplicateOf = "")
         {
             if (issueCount > 0)
@@ -2222,6 +2512,277 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 builder.Append(JsonRpcUtil.Escape(FindNearbyYamlValue(lines, index, "m_EventTreshold:", 4, 4)));
                 builder.Append("\"}");
                 count++;
+            }
+        }
+
+        private static List<MethodNode> BuildMethodIndex()
+        {
+            var methods = new List<MethodNode>();
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var declarationRegex = new Regex(@"(?<prefix>\b(public|private|protected|internal|static|virtual|override|async|sealed|new|extern|partial)\s+)+(?:[\w<>\[\],\s\.]+\s+)(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*(where\s+[^{]+)?\{", RegexOptions.Multiline);
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.cs", SearchOption.AllDirectories))
+            {
+                string text;
+                try
+                {
+                    text = File.ReadAllText(fullPath);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                foreach (Match match in declarationRegex.Matches(text))
+                {
+                    var methodName = match.Groups["name"].Value;
+                    if (IsIgnoredCallName(methodName))
+                    {
+                        continue;
+                    }
+
+                    var openBrace = text.IndexOf('{', match.Index + match.Length - 1);
+                    var closeBrace = FindMatchingBrace(text, openBrace);
+                    if (openBrace < 0 || closeBrace <= openBrace)
+                    {
+                        continue;
+                    }
+
+                    var className = FindNearestClassName(text, match.Index);
+                    var node = new MethodNode
+                    {
+                        MethodName = methodName,
+                        ClassName = className,
+                        FullName = string.IsNullOrEmpty(className) ? methodName : className + "." + methodName,
+                        Path = assetPath,
+                        Line = CountLines(text, match.Index),
+                        Calls = ExtractCalls(text.Substring(openBrace + 1, closeBrace - openBrace - 1))
+                    };
+                    methods.Add(node);
+                }
+            }
+
+            return methods;
+        }
+
+        private static List<MethodNode> FindCallPath(List<MethodNode> methods, string fromMethod, string toMethod, int maxDepth)
+        {
+            var starts = new List<MethodNode>();
+            foreach (var method in methods)
+            {
+                if (MatchesMethodQuery(method, fromMethod))
+                {
+                    starts.Add(method);
+                }
+            }
+
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            var queue = new Queue<List<MethodNode>>();
+            foreach (var start in starts)
+            {
+                queue.Enqueue(new List<MethodNode> { start });
+                visited.Add(start.FullName + "@" + start.Path + ":" + start.Line);
+            }
+
+            while (queue.Count > 0)
+            {
+                var path = queue.Dequeue();
+                var current = path[path.Count - 1];
+                if (MatchesMethodQuery(current, toMethod))
+                {
+                    return path;
+                }
+
+                if (path.Count > maxDepth)
+                {
+                    continue;
+                }
+
+                foreach (var next in methods)
+                {
+                    if (!current.Calls.Contains(next.MethodName) && !current.Calls.Contains(next.FullName))
+                    {
+                        continue;
+                    }
+
+                    var key = next.FullName + "@" + next.Path + ":" + next.Line;
+                    if (visited.Contains(key))
+                    {
+                        continue;
+                    }
+
+                    var nextPath = new List<MethodNode>(path);
+                    nextPath.Add(next);
+                    queue.Enqueue(nextPath);
+                    visited.Add(key);
+                }
+            }
+
+            return new List<MethodNode>();
+        }
+
+        private static void AppendMethodNode(StringBuilder builder, MethodNode node)
+        {
+            builder.Append("{\"method\":\"");
+            builder.Append(JsonRpcUtil.Escape(node.MethodName));
+            builder.Append("\",\"className\":\"");
+            builder.Append(JsonRpcUtil.Escape(node.ClassName));
+            builder.Append("\",\"fullName\":\"");
+            builder.Append(JsonRpcUtil.Escape(node.FullName));
+            builder.Append("\",\"path\":\"");
+            builder.Append(JsonRpcUtil.Escape(node.Path));
+            builder.Append("\",\"line\":");
+            builder.Append(node.Line);
+            builder.Append(",\"calls\":[");
+            var index = 0;
+            foreach (var call in node.Calls)
+            {
+                if (index > 0)
+                {
+                    builder.Append(",");
+                }
+
+                builder.Append("\"");
+                builder.Append(JsonRpcUtil.Escape(call));
+                builder.Append("\"");
+                index++;
+            }
+
+            builder.Append("]}");
+        }
+
+        private static bool MatchesMethodQuery(MethodNode node, string query)
+        {
+            return string.Equals(node.MethodName, query, StringComparison.Ordinal)
+                || string.Equals(node.FullName, query, StringComparison.Ordinal)
+                || node.FullName.EndsWith("." + query, StringComparison.Ordinal);
+        }
+
+        private static int FindMatchingBrace(string text, int openBrace)
+        {
+            if (openBrace < 0)
+            {
+                return -1;
+            }
+
+            var depth = 0;
+            var inString = false;
+            var escaped = false;
+            for (var index = openBrace; index < text.Length; index++)
+            {
+                var character = text[index];
+                if (inString)
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                    }
+                    else if (character == '\\')
+                    {
+                        escaped = true;
+                    }
+                    else if (character == '"')
+                    {
+                        inString = false;
+                    }
+
+                    continue;
+                }
+
+                if (character == '"')
+                {
+                    inString = true;
+                    continue;
+                }
+
+                if (character == '{')
+                {
+                    depth++;
+                }
+                else if (character == '}')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        return index;
+                    }
+                }
+            }
+
+            return -1;
+        }
+
+        private static string FindNearestClassName(string text, int beforeIndex)
+        {
+            var classRegex = new Regex(@"\b(class|struct|interface)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\b");
+            var className = string.Empty;
+            foreach (Match match in classRegex.Matches(text.Substring(0, Math.Max(0, beforeIndex))))
+            {
+                var openBrace = text.IndexOf('{', match.Index + match.Length);
+                var closeBrace = FindMatchingBrace(text, openBrace);
+                if (openBrace >= 0 && openBrace < beforeIndex && closeBrace > beforeIndex)
+                {
+                    className = match.Groups["name"].Value;
+                }
+            }
+
+            return className;
+        }
+
+        private static int CountLines(string text, int beforeIndex)
+        {
+            var line = 1;
+            var max = Math.Min(beforeIndex, text.Length);
+            for (var index = 0; index < max; index++)
+            {
+                if (text[index] == '\n')
+                {
+                    line++;
+                }
+            }
+
+            return line;
+        }
+
+        private static HashSet<string> ExtractCalls(string body)
+        {
+            var calls = new HashSet<string>(StringComparer.Ordinal);
+            var callRegex = new Regex(@"\b(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(");
+            foreach (Match match in callRegex.Matches(body ?? string.Empty))
+            {
+                var name = match.Groups["name"].Value;
+                if (!IsIgnoredCallName(name))
+                {
+                    calls.Add(name);
+                }
+            }
+
+            return calls;
+        }
+
+        private static bool IsIgnoredCallName(string name)
+        {
+            switch (name)
+            {
+                case "if":
+                case "for":
+                case "foreach":
+                case "while":
+                case "switch":
+                case "catch":
+                case "using":
+                case "lock":
+                case "return":
+                case "new":
+                case "nameof":
+                case "typeof":
+                case "sizeof":
+                case "default":
+                case "checked":
+                case "unchecked":
+                    return true;
+                default:
+                    return false;
             }
         }
 
@@ -2806,5 +3367,15 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         public int StartOffset;
         public int EndOffset;
         public string Text;
+    }
+
+    internal sealed class MethodNode
+    {
+        public string MethodName;
+        public string ClassName;
+        public string FullName;
+        public string Path;
+        public int Line;
+        public HashSet<string> Calls;
     }
 }

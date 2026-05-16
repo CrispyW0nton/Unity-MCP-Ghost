@@ -403,7 +403,27 @@ Slice 10 validation on KOTOR Unity project:
 - `unused_assets_find` returned conservative candidates from extracted/imported KOTOR assets; first sampled candidate was `Assets/ExtractedAssets/Textures/bluefill.png`.
 - A temporary scratch fixture verified that a referenced `.asset` is found by `asset_references_trace` and excluded from `unused_assets_find`, then the scratch assets were deleted.
 
+Completed in Slice 11:
+
+- C# source impact-analysis tools:
+  - `class_impact_analyze`
+  - `call_path_find`
+  - Unity bridge commands `semantic.class_impact_analyze` and `semantic.call_path_find`
+
+Game-development fit:
+
+- `class_impact_analyze` reports direct C# script references, serialized Unity asset references by GUID, and suggested test scripts before risky class or method refactors.
+- `call_path_find` builds a lightweight method call graph across Unity C# scripts and returns an explainable path between methods when one is found.
+- Both tools are deterministic read-only scans today, with response shapes that can later be backed by Roslyn without changing the MCP surface.
+
+Slice 11 validation on KOTOR Unity project:
+
+- Unity refreshed and compiled the updated bridge in Unity `2022.3.62f1`.
+- `class_impact_analyze` for `ModuleSpawnPipeline.HydrateModule` found the direct call in `Assets/Scripts/KotOR/Modules/FirstPlayableModuleLoader.cs` line 173.
+- `call_path_find` found the KOTOR module-loading path `FirstPlayableModuleLoader.LoadModule -> FirstPlayableModuleLoader.LoadModuleRoutine -> ModuleSpawnPipeline.HydrateModule`.
+- The call graph indexed 2,195 methods across the KOTOR project's C# scripts.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add call-path / class impact analysis for C# scripts.
+- Add Unity-specific lint rules for common performance and asset-integrity risks.
