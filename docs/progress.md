@@ -267,7 +267,25 @@ Slice 3 validation on KOTOR Unity project:
 - `previewDryRuns=true` successfully routed that proposal through Unity `script.apply_edits` with `dryRun=true` without modifying the KOTOR project.
 - `npm run build`, `npm run smoke`, and `git diff --check` passed.
 
+Completed in Slice 4:
+
+- Explicit repair application tool:
+  - `repair_apply_edits`
+- `repair_loop_run` now points accepted edits through `repair_apply_edits` instead of raw script editing.
+
+Game-development fit:
+
+- `repair_apply_edits` backs up the original C# script content, dry-runs ranged edits first, applies only when `dryRun=false`, waits for Unity compile/update, revalidates scoped diagnostics, and can restore the original file if compile/diagnostic/test checks fail.
+- The tool is built for gameplay code safety: it works on explicit ranged edits, keeps the script path scoped under Unity's `Assets/`, and treats test execution as an optional validation gate for risky changes.
+- This is the first closed-loop repair slice that can move from preview to apply to validation while still protecting project code with rollback.
+
+Slice 4 validation on KOTOR Unity project:
+
+- MCP-level `repair_apply_edits` completed a dry-run preview against `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs`.
+- The dry-run path read the original script, produced a backup metadata step, and routed the proposed ranged edit through Unity `script.apply_edits` with `dryRun=true`.
+- The KOTOR project was not mutated during this validation.
+
 Next Phase 3 targets:
 
 - Feed `patch_propose` with stronger compiler diagnostic sourcing beyond bridge-session logs.
-- Add an apply/rollback repair-loop slice that accepts explicit high-confidence proposals, performs dry-run previews, applies edits, waits for compile, and revalidates.
+- Add a controlled scratch-scene/script integration test for the full non-dry-run apply and rollback path.

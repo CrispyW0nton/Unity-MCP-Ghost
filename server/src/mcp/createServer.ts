@@ -258,6 +258,10 @@ function diagnosticsFromPayload(payload: Record<string, unknown>): Record<string
   return arrayValue(result.diagnostics).map(asObject);
 }
 
+function diagnosticCount(payload: Record<string, unknown>): number {
+  return diagnosticsFromPayload(payload).length;
+}
+
 function diagnosticCode(message: string): string {
   return message.match(/\b(CS\d{4})\b/)?.[1] ?? "";
 }
@@ -1330,6 +1334,145 @@ export function createMcpServer(context: ToolContext): McpServer {
 
   registerTool(
     server,
+    "repair_apply_edits",
+    "Preview or apply explicit ranged C# repair edits, wait for Unity compile, revalidate diagnostics, and roll back on failure.",
+    {
+      objective: z.string().default("Apply an explicit Unity C# repair safely."),
+      scriptPath: z.string().min(1),
+      edits: z.array(ScriptEditSchema).min(1),
+      dryRun: DryRunSchema,
+      rollbackOnFailure: z.boolean().default(true),
+      compileTimeoutMs: z.number().int().positive().max(300000).default(30000),
+      runTests: z.boolean().default(false),
+      testMode: z.enum(["editmode", "playmode"]).default("editmode"),
+      testFilter: z.string().default("")
+    },
+    { risk: "code-write", mutates: true, supportsDryRun: true, phase: 3, relatedResources: ["unity://console/errors", "unity://tests/{mode}"] },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const steps: unknown[] = [];
+        const script = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+        const originalContent = stringValue(script.content);
+        steps.push({ name: "script_read_backup", ok: script.ok, data: { path: args.scriptPath, originalBytes: Buffer.byteLength(originalContent, "utf8") } });
+
+        const dryRunPreview = asObject(
+          await context.unity.request("script.apply_edits", {
+            path: args.scriptPath,
+            edits: args.edits,
+            dryRun: true
+          })
+        );
+        steps.push({ name: "script_apply_edits_dry_run", ok: dryRunPreview.ok, data: dryRunPreview });
+
+        if (args.dryRun) {
+          return successResponse(
+            "repair_apply_edits completed dry-run preview.",
+            {
+              ok: true,
+              mode: "dry-run",
+              objective: args.objective,
+              scriptPath: args.scriptPath,
+              editCount: args.edits.length,
+              steps,
+              nextActions: ["Review the dry-run preview.", "Rerun with dryRun=false only after accepting the ranged edits."]
+            },
+            startedAt
+          );
+        }
+
+        const applyResult = asObject(
+          await context.unity.request("script.apply_edits", {
+            path: args.scriptPath,
+            edits: args.edits,
+            dryRun: false
+          })
+        );
+        steps.push({ name: "script_apply_edits", ok: applyResult.ok, data: applyResult });
+
+        const compileStatus = await waitForUnityCompile(context, args.compileTimeoutMs);
+        steps.push({ name: "compile_wait", ok: compileStatus.ok, data: compileStatus });
+
+        const validation = asObject(await context.unity.request("script.validate", { path: args.scriptPath, limit: 100 }));
+        steps.push({ name: "script_validate", ok: validation.ok, data: validation });
+
+        const diagnostics = asObject(
+          await context.unity.request("console.diagnostics_get", {
+            severity: "error",
+            pathFilter: args.scriptPath,
+            limit: 100
+          })
+        );
+        steps.push({ name: "console_diagnostics_get", ok: diagnostics.ok, data: diagnostics });
+
+        let tests: Record<string, unknown> | null = null;
+        if (args.runTests) {
+          const testStart = asObject(
+            await context.unity.request("tests.run", {
+              mode: args.testMode,
+              filter: args.testFilter
+            })
+          );
+          tests = typeof testStart.operationId === "string" ? await pollOperation(context, testStart.operationId, 120000, 500) : testStart;
+          steps.push({ name: "tests_run", ok: tests.ok, data: tests });
+        }
+
+        const scopedErrorCount = Math.max(diagnosticCount(validation), diagnosticCount(diagnostics));
+        const testState = tests ? asObject(tests.state) : {};
+        const testsFailed = tests ? testState.status === "failed" || tests.status === "failed" : false;
+        const shouldRollback = args.rollbackOnFailure && (compileStatus.ok === false || scopedErrorCount > 0 || testsFailed);
+        let rollback: Record<string, unknown> | null = null;
+
+        if (shouldRollback) {
+          const writeBack = asObject(
+            await context.unity.request("script.write", {
+              path: args.scriptPath,
+              content: originalContent,
+              overwrite: true,
+              dryRun: false
+            })
+          );
+          const rollbackCompile = await waitForUnityCompile(context, args.compileTimeoutMs);
+          const rollbackValidation = asObject(await context.unity.request("script.validate", { path: args.scriptPath, limit: 100 }));
+          rollback = {
+            writeBack,
+            compile: rollbackCompile,
+            validation: rollbackValidation
+          };
+          steps.push({ name: "rollback_script_write", ok: writeBack.ok, data: writeBack });
+          steps.push({ name: "rollback_compile_wait", ok: rollbackCompile.ok, data: rollbackCompile });
+          steps.push({ name: "rollback_script_validate", ok: rollbackValidation.ok, data: rollbackValidation });
+        }
+
+        return successResponse(
+          shouldRollback ? "repair_apply_edits applied edits then rolled back after validation failure." : "repair_apply_edits applied edits and revalidated.",
+          {
+            ok: !shouldRollback && scopedErrorCount === 0 && compileStatus.ok !== false && !testsFailed,
+            mode: shouldRollback ? "rolled-back" : "applied",
+            objective: args.objective,
+            scriptPath: args.scriptPath,
+            editCount: args.edits.length,
+            scopedErrorCount,
+            testsFailed,
+            rollback,
+            steps,
+            nextActions: shouldRollback
+              ? ["Inspect validation diagnostics and request a new patch_propose pass before trying another edit."]
+              : ["Run repair_loop_run or tests_run for broader project validation if this script participates in gameplay flows."]
+          },
+          startedAt,
+          {
+            confidence: shouldRollback ? 0.4 : 0.9
+          }
+        );
+      } catch (error) {
+        return failureResponse("repair_apply_edits failed", error, startedAt);
+      }
+    }
+  );
+
+  registerTool(
+    server,
     "repair_loop_run",
     "Run the first Ghost repair-loop skeleton: validate, wait for compile, read diagnostics, and optionally run tests.",
     {
@@ -1406,8 +1549,8 @@ export function createMcpServer(context: ToolContext): McpServer {
             steps,
             patchProposals,
             nextActions: [
-              "If diagnostics are present, propose minimal ranged edits with script_apply_edits dryRun=true.",
-              "After applying edits, run compile_wait and script_validate again.",
+              "If diagnostics are present, propose minimal ranged edits with patch_propose.",
+              "Apply accepted edits through repair_apply_edits with dryRun=true first.",
               "Run tests with runTests=true only after diagnostics are clear or intentionally scoped."
             ]
           },

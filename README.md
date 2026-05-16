@@ -75,4 +75,4 @@ npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C
 
 Phase 1 is validated against the live KOTOR Unity project via both direct HTTP JSON-RPC and the durable queue fallback. Phase 2 parity tooling now includes component, prefab, asset, script, package manager, test-runner, ranged-edit, and resource-template support.
 
-Phase 3 moat work has started with structured console diagnostics, `script_validate`, polling-aware `compile_wait`, `patch_propose`, and the first `repair_loop_run` diagnostic-pass scaffold. Next target: stronger compiler diagnostic sourcing and explicit apply/rollback repair-loop slices.
+Phase 3 moat work has started with structured console diagnostics, `script_validate`, polling-aware `compile_wait`, `patch_propose`, `repair_apply_edits`, and the first `repair_loop_run` diagnostic-pass scaffold. Next target: stronger compiler diagnostic sourcing and controlled non-dry-run repair rollback tests.
