@@ -1126,6 +1126,21 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "lint_unity_run",
+    "Run Unity-specific lint rules for gameplay performance, fragile APIs, asset metadata, and unused asset candidates.",
+    {
+      path: z.string().default(""),
+      rules: z.string().default(""),
+      includeAssetRules: z.boolean().default(true),
+      limit: z.number().int().positive().max(5000).default(500)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    "semantic.lint_unity_run"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "asset_create_folder",
     "Create a folder under Assets for organizing game content.",
     {

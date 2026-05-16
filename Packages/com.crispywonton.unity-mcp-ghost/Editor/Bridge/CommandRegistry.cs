@@ -57,6 +57,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("semantic.unused_assets_find", HandleSemanticUnusedAssetsFind);
             Register("semantic.class_impact_analyze", HandleSemanticClassImpactAnalyze);
             Register("semantic.call_path_find", HandleSemanticCallPathFind);
+            Register("semantic.lint_unity_run", HandleSemanticLintUnityRun);
             Register("asset.create_folder", HandleAssetCreateFolder);
             Register("asset.move", HandleAssetMove);
             Register("asset.copy", HandleAssetCopy);
@@ -1101,6 +1102,62 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("],\"indexedMethodCount\":");
             builder.Append(methods.Count);
             builder.Append(",\"note\":\"Lightweight text call graph; overloads, delegates, reflection, events, and virtual dispatch require review.\"}");
+            return builder.ToString();
+        }
+
+        private static string HandleSemanticLintUnityRun(UnityMcpRequest request)
+        {
+            var path = JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty);
+            var rules = ReadRuleSet(JsonRpcUtil.ReadString(request.RawJson, "rules", string.Empty));
+            var includeAssetRules = JsonRpcUtil.ReadBool(request.RawJson, "includeAssetRules", true);
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 500), 5000));
+            if (!string.IsNullOrEmpty(path))
+            {
+                path = EnsureScriptPath(path);
+                EnsureAssetExists(path);
+            }
+
+            var projectRoot = Path.GetDirectoryName(Application.dataPath);
+            var builder = new StringBuilder();
+            var count = 0;
+            var scannedScripts = 0;
+            builder.Append("{\"ok\":true,\"source\":\"unity-specific-lint-scan\",\"diagnostics\":[");
+
+            var scriptFiles = string.IsNullOrEmpty(path)
+                ? Directory.GetFiles(Application.dataPath, "*.cs", SearchOption.AllDirectories)
+                : new[] { FullAssetPath(path) };
+            foreach (var fullPath in scriptFiles)
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (ShouldSkipLintScript(assetPath))
+                {
+                    continue;
+                }
+
+                scannedScripts++;
+                count = AppendScriptLintDiagnostics(builder, fullPath, assetPath, rules, count, limit);
+            }
+
+            var scannedAssetCandidates = 0;
+            if (includeAssetRules && string.IsNullOrEmpty(path) && count < limit)
+            {
+                count = AppendAssetLintDiagnostics(builder, projectRoot, rules, count, limit, out scannedAssetCandidates);
+            }
+
+            builder.Append("],\"diagnosticCount\":");
+            builder.Append(count);
+            builder.Append(",\"scannedScriptCount\":");
+            builder.Append(scannedScripts);
+            builder.Append(",\"scannedAssetCandidateCount\":");
+            builder.Append(scannedAssetCandidates);
+            builder.Append(",\"truncated\":");
+            builder.Append(Bool(count >= limit));
+            builder.Append(",\"note\":\"Unity-specific lint uses deterministic source and GUID scans; review generated code, dynamic runtime loads, and project conventions before applying broad refactors.\"}");
             return builder.ToString();
         }
 
@@ -2154,6 +2211,225 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             return count;
+        }
+
+        private static int AppendScriptLintDiagnostics(StringBuilder builder, string fullPath, string assetPath, HashSet<string> rules, int count, int limit)
+        {
+            var text = File.ReadAllText(fullPath);
+            var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            var hotMethodRanges = FindHotUnityMethodRanges(text);
+            for (var index = 0; index < lines.Length && count < limit; index++)
+            {
+                var line = lines[index];
+                var lineNumber = index + 1;
+                if (IsRuleEnabled(rules, "UNI-PERF-001") && IsInAnyRange(lineNumber, hotMethodRanges)
+                    && (line.Contains("GetComponent<") || line.Contains(".GetComponent<") || line.Contains("GetComponentInChildren<") || line.Contains("GetComponentInParent<")))
+                {
+                    AppendLintDiagnostic(builder, ref count, "UNI-PERF-001", "warning", assetPath, lineNumber, "Component lookup inside Update/FixedUpdate/LateUpdate.", "Cache component references in Awake/Start or assign them via the Inspector.", line);
+                }
+
+                if (IsRuleEnabled(rules, "UNI-PERF-002") && IsInAnyRange(lineNumber, hotMethodRanges)
+                    && (line.Contains("FindObjectOfType") || line.Contains("FindFirstObjectByType") || line.Contains("GameObject.Find(")))
+                {
+                    AppendLintDiagnostic(builder, ref count, "UNI-PERF-002", "warning", assetPath, lineNumber, "Scene-wide lookup inside a per-frame Unity method.", "Cache references, use serialized fields, or inject dependencies before runtime update loops.", line);
+                }
+
+                if (IsRuleEnabled(rules, "UNI-ASYNC-001") && Regex.IsMatch(line, @"StartCoroutine\s*\(\s*"""))
+                {
+                    AppendLintDiagnostic(builder, ref count, "UNI-ASYNC-001", "info", assetPath, lineNumber, "String-based coroutine start is fragile under refactors.", "Use StartCoroutine(MethodName()) or store the IEnumerator explicitly.", line);
+                }
+
+                if (IsRuleEnabled(rules, "UNI-MSG-001") && line.Contains("SendMessage("))
+                {
+                    AppendLintDiagnostic(builder, ref count, "UNI-MSG-001", "warning", assetPath, lineNumber, "SendMessage is reflection-like and bypasses static analysis.", "Prefer direct interfaces, events, UnityEvents, or cached component method calls.", line);
+                }
+
+                if (IsRuleEnabled(rules, "UNI-ASSET-LOAD-001") && line.Contains("Resources.Load"))
+                {
+                    AppendLintDiagnostic(builder, ref count, "UNI-ASSET-LOAD-001", "info", assetPath, lineNumber, "Resources.Load makes asset dependencies invisible to addressable/build analysis.", "Consider serialized references, Addressables, or an explicit content registry for production assets.", line);
+                }
+            }
+
+            return count;
+        }
+
+        private static int AppendAssetLintDiagnostics(StringBuilder builder, string projectRoot, HashSet<string> rules, int count, int limit, out int scannedCandidates)
+        {
+            scannedCandidates = 0;
+            if (IsRuleEnabled(rules, "UNI-ASSET-001"))
+            {
+                count = AppendMetaLintDiagnostics(builder, projectRoot, count, limit);
+            }
+
+            if (count < limit && IsRuleEnabled(rules, "UNI-ASSET-002"))
+            {
+                count = AppendUnusedAssetLintDiagnostics(builder, projectRoot, count, limit, out scannedCandidates);
+            }
+
+            return count;
+        }
+
+        private static int AppendMetaLintDiagnostics(StringBuilder builder, string projectRoot, int count, int limit)
+        {
+            var seenGuids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var fullPath in Directory.GetFiles(Application.dataPath, "*.*", SearchOption.AllDirectories))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                if (fullPath.EndsWith(".meta", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var assetPath = ToAssetPath(projectRoot, fullPath);
+                if (ShouldSkipMetaAuditPath(assetPath))
+                {
+                    continue;
+                }
+
+                var metaPath = fullPath + ".meta";
+                if (!File.Exists(metaPath))
+                {
+                    AppendLintDiagnostic(builder, ref count, "UNI-ASSET-001", "error", assetPath, 0, "Asset is missing its .meta file.", "Restore or regenerate the .meta file before moving or committing this asset.", string.Empty);
+                    continue;
+                }
+
+                var guid = ReadMetaGuid(metaPath);
+                if (string.IsNullOrEmpty(guid))
+                {
+                    AppendLintDiagnostic(builder, ref count, "UNI-ASSET-001", "error", ToAssetPath(projectRoot, metaPath), 0, "Meta file has no GUID.", "Regenerate the .meta file or repair it before Unity references break.", string.Empty);
+                    continue;
+                }
+
+                string existingPath;
+                if (seenGuids.TryGetValue(guid, out existingPath))
+                {
+                    AppendLintDiagnostic(builder, ref count, "UNI-ASSET-001", "error", ToAssetPath(projectRoot, metaPath), 0, "Duplicate Unity GUID also used by " + existingPath + ".", "Regenerate one of the duplicate .meta files to avoid broken references.", guid);
+                    continue;
+                }
+
+                seenGuids[guid] = assetPath;
+            }
+
+            return count;
+        }
+
+        private static int AppendUnusedAssetLintDiagnostics(StringBuilder builder, string projectRoot, int count, int limit, out int scannedCandidates)
+        {
+            scannedCandidates = 0;
+            var referencedGuids = BuildReferencedGuidSet(projectRoot, ReadReferenceExtensions(".prefab,.unity,.asset,.controller,.overrideController,.mat,.anim,.playable,.renderTexture,.lighting,.shadergraph,.asmdef,.uxml,.uss"));
+            var candidateExtensions = ReadReferenceExtensions(".prefab,.mat,.asset,.controller,.overrideController,.anim,.png,.jpg,.jpeg,.tga,.psd,.fbx,.obj,.wav,.mp3,.ogg,.shadergraph,.renderTexture,.uxml,.uss");
+            foreach (var guid in AssetDatabase.FindAssets(string.Empty))
+            {
+                if (count >= limit)
+                {
+                    break;
+                }
+
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrEmpty(path) || AssetDatabase.IsValidFolder(path) || ShouldSkipUnusedCandidate(path, candidateExtensions, false))
+                {
+                    continue;
+                }
+
+                scannedCandidates++;
+                if (referencedGuids.Contains(guid))
+                {
+                    continue;
+                }
+
+                AppendLintDiagnostic(builder, ref count, "UNI-ASSET-002", "info", path, 0, "Asset has no serialized GUID references in scanned assets.", "Review dynamic loads, Addressables, import manifests, and Resources before deleting.", guid);
+            }
+
+            return count;
+        }
+
+        private static void AppendLintDiagnostic(StringBuilder builder, ref int count, string ruleId, string severity, string path, int line, string message, string recommendation, string snippet)
+        {
+            if (count > 0)
+            {
+                builder.Append(",");
+            }
+
+            builder.Append("{\"ruleId\":\"");
+            builder.Append(JsonRpcUtil.Escape(ruleId));
+            builder.Append("\",\"severity\":\"");
+            builder.Append(JsonRpcUtil.Escape(severity));
+            builder.Append("\",\"path\":\"");
+            builder.Append(JsonRpcUtil.Escape(path));
+            builder.Append("\",\"line\":");
+            builder.Append(line);
+            builder.Append(",\"message\":\"");
+            builder.Append(JsonRpcUtil.Escape(message));
+            builder.Append("\",\"recommendation\":\"");
+            builder.Append(JsonRpcUtil.Escape(recommendation));
+            builder.Append("\",\"snippet\":\"");
+            var cleanSnippet = (snippet ?? string.Empty).Trim();
+            builder.Append(JsonRpcUtil.Escape(cleanSnippet.Length > 240 ? cleanSnippet.Substring(0, 240) : cleanSnippet));
+            builder.Append("\"}");
+            count++;
+        }
+
+        private static List<Tuple<int, int>> FindHotUnityMethodRanges(string text)
+        {
+            var ranges = new List<Tuple<int, int>>();
+            var regex = new Regex(@"\b(void|IEnumerator)\s+(Update|FixedUpdate|LateUpdate)\s*\([^)]*\)\s*\{");
+            foreach (Match match in regex.Matches(text ?? string.Empty))
+            {
+                var openBrace = text.IndexOf('{', match.Index + match.Length - 1);
+                var closeBrace = FindMatchingBrace(text, openBrace);
+                if (openBrace >= 0 && closeBrace > openBrace)
+                {
+                    ranges.Add(Tuple.Create(CountLines(text, openBrace), CountLines(text, closeBrace)));
+                }
+            }
+
+            return ranges;
+        }
+
+        private static bool IsInAnyRange(int line, List<Tuple<int, int>> ranges)
+        {
+            foreach (var range in ranges)
+            {
+                if (line >= range.Item1 && line <= range.Item2)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static HashSet<string> ReadRuleSet(string csv)
+        {
+            var rules = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var part in (csv ?? string.Empty).Split(','))
+            {
+                var rule = part.Trim();
+                if (!string.IsNullOrEmpty(rule))
+                {
+                    rules.Add(rule);
+                }
+            }
+
+            return rules;
+        }
+
+        private static bool IsRuleEnabled(HashSet<string> rules, string ruleId)
+        {
+            return rules.Count == 0 || rules.Contains(ruleId);
+        }
+
+        private static bool ShouldSkipLintScript(string assetPath)
+        {
+            var normalized = (assetPath ?? string.Empty).Replace("\\", "/");
+            return normalized.Contains("/Library/", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("/Temp/", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith(".Designer.cs", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string FindScriptPathForClass(string className)

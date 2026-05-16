@@ -423,7 +423,26 @@ Slice 11 validation on KOTOR Unity project:
 - `call_path_find` found the KOTOR module-loading path `FirstPlayableModuleLoader.LoadModule -> FirstPlayableModuleLoader.LoadModuleRoutine -> ModuleSpawnPipeline.HydrateModule`.
 - The call graph indexed 2,195 methods across the KOTOR project's C# scripts.
 
+Completed in Slice 12:
+
+- Unity-specific lint rules:
+  - `lint_unity_run`
+  - Unity bridge command `semantic.lint_unity_run`
+
+Game-development fit:
+
+- Script lint rules detect component and scene-wide lookups in hot Unity update loops, string-based coroutines, `SendMessage`, and `Resources.Load` usage.
+- Asset lint rules surface metadata/GUID integrity issues and conservative unused-asset candidates using the same GUID scan foundation as the semantic asset tools.
+- Diagnostics include rule id, severity, path, line, message, recommendation, and source snippet so agents can decide whether to refactor, warn, or route to review.
+
+Slice 12 validation on KOTOR Unity project:
+
+- Unity refreshed and compiled the updated bridge in Unity `2022.3.62f1`.
+- Project lint sample scanned 221 C# scripts and found `UNI-ASSET-LOAD-001` `Resources.Load` usage in `Assets/Scripts/KotOR/Audio/KotorAudioManager.cs`, one `UNI-MSG-001` `SendMessage`, and conservative `UNI-ASSET-002` unused asset candidates.
+- Focused lint for `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs` returned zero diagnostics.
+- A temporary scratch script verified `UNI-PERF-001` for `GetComponent` and `UNI-PERF-002` for `GameObject.Find` inside `Update`, then the scratch script/folder were deleted and Unity compiled cleanly.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add Unity-specific lint rules for common performance and asset-integrity risks.
+- Add a semantic project index summary/resource that aggregates the Phase 3 semantic tools into one project overview.
