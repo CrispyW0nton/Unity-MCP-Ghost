@@ -505,6 +505,20 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "console_diagnostics_get",
+    "Read structured Unity console diagnostics grouped for repair-loop workflows.",
+    {
+      severity: z.enum(["error", "warning", "all"]).default("error"),
+      pathFilter: z.string().default(""),
+      limit: z.number().int().positive().max(500).default(100)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors"] },
+    "console.diagnostics_get"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "unity_get_console_logs",
     "Compatibility alias for console_read.",
     {
@@ -914,10 +928,24 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
-    "manage_script",
-    "Compatibility tool for C# script read/create/write/delete actions.",
+    "script_validate",
+    "Import and validate a Unity C# script, returning bridge-session compiler diagnostics for repair loops.",
     {
-      action: z.enum(["read", "create", "write", "apply_edits", "delete"]),
+      path: z.string().min(1),
+      limit: z.number().int().positive().max(500).default(100),
+      dryRun: DryRunSchema
+    },
+    { risk: "read", mutates: false, supportsDryRun: true, phase: 3, relatedResources: ["unity://console/errors"] },
+    "script.validate"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "manage_script",
+    "Compatibility tool for C# script read/create/write/apply_edits/delete/validate actions.",
+    {
+      action: z.enum(["read", "create", "write", "apply_edits", "delete", "validate"]),
       params: ParamsSchema
     },
     { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },

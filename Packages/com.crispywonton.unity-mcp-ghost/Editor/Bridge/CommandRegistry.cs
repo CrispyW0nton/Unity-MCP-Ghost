@@ -24,6 +24,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("health", HandleHealth);
             Register("editor.get_state", HandleEditorState);
             Register("console.get_logs", HandleConsoleLogs);
+            Register("console.diagnostics_get", HandleConsoleDiagnostics);
             Register("scene.get_hierarchy", HandleSceneHierarchy);
             Register("scene.create", HandleSceneCreate);
             Register("scene.open", HandleSceneOpen);
@@ -56,6 +57,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("script.write", HandleScriptWrite);
             Register("script.apply_edits", HandleScriptApplyEdits);
             Register("script.delete", HandleScriptDelete);
+            Register("script.validate", HandleScriptValidate);
             Register("package.list", HandlePackageList);
             Register("package.search", HandlePackageSearch);
             Register("package.add", HandlePackageAdd);
@@ -155,6 +157,14 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var severity = JsonRpcUtil.ReadString(request.RawJson, "severity", "all");
             var limit = JsonRpcUtil.ReadInt(request.RawJson, "limit", 200);
             return ConsoleLogBuffer.Read(severity, limit);
+        }
+
+        private static string HandleConsoleDiagnostics(UnityMcpRequest request)
+        {
+            var severity = JsonRpcUtil.ReadString(request.RawJson, "severity", "error");
+            var limit = JsonRpcUtil.ReadInt(request.RawJson, "limit", 200);
+            var pathFilter = JsonRpcUtil.ReadString(request.RawJson, "pathFilter", string.Empty);
+            return ConsoleLogBuffer.Diagnostics(severity, limit, pathFilter);
         }
 
         private static string HandleSceneHierarchy(UnityMcpRequest request)
@@ -843,6 +853,20 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             var deleted = AssetDatabase.MoveAssetToTrash(path);
             return "{\"ok\":" + Bool(deleted) + ",\"path\":\"" + JsonRpcUtil.Escape(path) + "\"}";
+        }
+
+        private static string HandleScriptValidate(UnityMcpRequest request)
+        {
+            var path = EnsureScriptPath(JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty));
+            EnsureAssetExists(path);
+            if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
+            {
+                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"script.validate\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\"}}";
+            }
+
+            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+            var diagnostics = ConsoleLogBuffer.Diagnostics("error", JsonRpcUtil.ReadInt(request.RawJson, "limit", 100), path);
+            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"isCompiling\":" + Bool(EditorApplication.isCompiling) + ",\"result\":" + diagnostics + "}";
         }
 
         private static string HandlePackageList(UnityMcpRequest request)

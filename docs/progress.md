@@ -201,3 +201,34 @@ Durable-queue smoke command:
 ```bash
 npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Users/NewAdmin/Documents/KaiGenInteractive/Kotor-Unity --request-timeout-ms 20000
 ```
+
+## Phase 3: Ghost Moat
+
+Status: started, diagnostics substrate implemented.
+
+Completed in Slice 1:
+
+- Structured console diagnostics:
+  - `console_diagnostics_get`
+- Script validation entry point:
+  - `script_validate`
+  - `manage_script` now routes `validate`.
+
+Game-development fit:
+
+- Diagnostics are the first building block for the promised validate -> repair -> test workflow.
+- `script_validate` imports a C# script through Unity and returns bridge-session diagnostics without guessing from raw files alone.
+- Structured diagnostics include severity, message, stack trace, and parsed `Assets/...cs(line,column)` locations when Unity provides them.
+
+Slice 1 validation on KOTOR Unity project:
+
+- Unity compiled the new bridge code in Unity `2022.3.62f1`.
+- `script.validate` passed against `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs`.
+- `console.diagnostics_get` returned zero diagnostics for that script after the earlier KOTOR compile fix.
+- `npm run build`, `npm run smoke`, and `git diff --check` passed.
+
+Next Phase 3 targets:
+
+- Polling-aware `wait_for_compile` / validation operation so repair loops know when Unity has finished compiling.
+- `repair_loop_run` skeleton that sequences validate -> diagnostics -> dry-run patch -> test.
+- Stronger compiler diagnostic sourcing beyond bridge-session logs.
