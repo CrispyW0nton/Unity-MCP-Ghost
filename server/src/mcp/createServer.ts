@@ -1055,6 +1055,19 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "animator_analyze",
+    "Analyze a Unity Animator Controller YAML graph: parameters, state machines, states, transitions, and transition conditions.",
+    {
+      path: z.string().min(1),
+      limit: z.number().int().positive().max(5000).default(500)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    "semantic.animator_analyze"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "asset_create_folder",
     "Create a folder under Assets for organizing game content.",
     {

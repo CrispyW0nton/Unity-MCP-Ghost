@@ -52,6 +52,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("semantic.asset_references_trace", HandleSemanticAssetReferencesTrace);
             Register("prefab.references_trace", HandleSemanticAssetReferencesTrace);
             Register("semantic.unity_event_bindings_find", HandleSemanticUnityEventBindingsFind);
+            Register("semantic.animator_analyze", HandleSemanticAnimatorAnalyze);
             Register("asset.create_folder", HandleAssetCreateFolder);
             Register("asset.move", HandleAssetMove);
             Register("asset.copy", HandleAssetCopy);
@@ -822,6 +823,42 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append(",\"truncated\":");
             builder.Append(Bool(count >= limit));
             builder.Append("}");
+            return builder.ToString();
+        }
+
+        private static string HandleSemanticAnimatorAnalyze(UnityMcpRequest request)
+        {
+            var path = NormalizeAssetPath(JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty));
+            if (!path.EndsWith(".controller", StringComparison.OrdinalIgnoreCase) && !path.EndsWith(".overrideController", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("semantic.animator_analyze requires a .controller or .overrideController asset path.");
+            }
+
+            EnsureAssetExists(path);
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 500), 5000));
+            var text = File.ReadAllText(FullAssetPath(path));
+            var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            var guid = AssetDatabase.AssetPathToGUID(path);
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"source\":\"animator-controller-yaml-scan\",\"target\":");
+            AppendAssetSummary(builder, guid, path);
+            builder.Append(",\"parameters\":[");
+            var parameterCount = AppendAnimatorParameters(builder, lines, limit);
+            builder.Append("],\"stateMachines\":[");
+            var stateMachineCount = AppendAnimatorBlocks(builder, lines, "AnimatorStateMachine:", false, limit);
+            builder.Append("],\"states\":[");
+            var stateCount = AppendAnimatorBlocks(builder, lines, "AnimatorState:", false, limit);
+            builder.Append("],\"transitions\":[");
+            var transitionCount = AppendAnimatorBlocks(builder, lines, "AnimatorStateTransition:", true, limit);
+            builder.Append("],\"summary\":{\"parameterCount\":");
+            builder.Append(parameterCount);
+            builder.Append(",\"stateMachineCount\":");
+            builder.Append(stateMachineCount);
+            builder.Append(",\"stateCount\":");
+            builder.Append(stateCount);
+            builder.Append(",\"transitionCount\":");
+            builder.Append(transitionCount);
+            builder.Append("}}");
             return builder.ToString();
         }
 
@@ -1783,9 +1820,140 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("}");
         }
 
+        private static int AppendAnimatorParameters(StringBuilder builder, string[] lines, int limit)
+        {
+            var count = 0;
+            var inParameters = false;
+            for (var index = 0; index < lines.Length && count < limit; index++)
+            {
+                var trimmed = (lines[index] ?? string.Empty).Trim();
+                if (trimmed == "m_AnimatorParameters:")
+                {
+                    inParameters = true;
+                    continue;
+                }
+
+                if (!inParameters)
+                {
+                    continue;
+                }
+
+                if (trimmed == "m_AnimatorLayers:" || trimmed.StartsWith("--- ", StringComparison.Ordinal))
+                {
+                    break;
+                }
+
+                var name = ReadYamlValue(lines[index], "m_Name:");
+                if (string.IsNullOrEmpty(name))
+                {
+                    continue;
+                }
+
+                if (count > 0)
+                {
+                    builder.Append(",");
+                }
+
+                builder.Append("{\"name\":\"");
+                builder.Append(JsonRpcUtil.Escape(name));
+                builder.Append("\",\"type\":\"");
+                builder.Append(JsonRpcUtil.Escape(AnimatorParameterTypeName(FindNearbyYamlValue(lines, index, "m_Type:", 0, 8))));
+                builder.Append("\",\"defaultFloat\":\"");
+                builder.Append(JsonRpcUtil.Escape(FindNearbyYamlValue(lines, index, "m_DefaultFloat:", 0, 8)));
+                builder.Append("\",\"defaultInt\":\"");
+                builder.Append(JsonRpcUtil.Escape(FindNearbyYamlValue(lines, index, "m_DefaultInt:", 0, 8)));
+                builder.Append("\",\"defaultBool\":\"");
+                builder.Append(JsonRpcUtil.Escape(FindNearbyYamlValue(lines, index, "m_DefaultBool:", 0, 8)));
+                builder.Append("\"}");
+                count++;
+            }
+
+            return count;
+        }
+
+        private static int AppendAnimatorBlocks(StringBuilder builder, string[] lines, string blockType, bool includeConditions, int limit)
+        {
+            var count = 0;
+            for (var index = 0; index < lines.Length && count < limit; index++)
+            {
+                if ((lines[index] ?? string.Empty).Trim() != blockType)
+                {
+                    continue;
+                }
+
+                var end = FindYamlBlockEnd(lines, index + 1);
+                if (count > 0)
+                {
+                    builder.Append(",");
+                }
+
+                builder.Append("{\"fileId\":\"");
+                builder.Append(JsonRpcUtil.Escape(FindYamlObjectFileId(lines, index)));
+                builder.Append("\",\"name\":\"");
+                builder.Append(JsonRpcUtil.Escape(FindBlockYamlValue(lines, index, end, "m_Name:")));
+                builder.Append("\"");
+
+                if (blockType == "AnimatorState:")
+                {
+                    builder.Append(",\"speed\":\"");
+                    builder.Append(JsonRpcUtil.Escape(FindBlockYamlValue(lines, index, end, "m_Speed:")));
+                    builder.Append("\",\"motion\":\"");
+                    builder.Append(JsonRpcUtil.Escape(FindBlockYamlValue(lines, index, end, "m_Motion:")));
+                    builder.Append("\"");
+                }
+
+                if (includeConditions)
+                {
+                    builder.Append(",\"destinationState\":\"");
+                    builder.Append(JsonRpcUtil.Escape(FindBlockYamlValue(lines, index, end, "m_DstState:")));
+                    builder.Append("\",\"conditions\":[");
+                    AppendAnimatorConditions(builder, lines, index, end);
+                    builder.Append("]");
+                }
+
+                builder.Append("}");
+                count++;
+                index = end;
+            }
+
+            return count;
+        }
+
+        private static void AppendAnimatorConditions(StringBuilder builder, string[] lines, int start, int end)
+        {
+            var count = 0;
+            for (var index = start; index <= end; index++)
+            {
+                var parameter = ReadYamlValue(lines[index], "m_ConditionEvent:");
+                if (string.IsNullOrEmpty(parameter))
+                {
+                    continue;
+                }
+
+                if (count > 0)
+                {
+                    builder.Append(",");
+                }
+
+                builder.Append("{\"parameter\":\"");
+                builder.Append(JsonRpcUtil.Escape(parameter));
+                builder.Append("\",\"mode\":\"");
+                builder.Append(JsonRpcUtil.Escape(AnimatorConditionModeName(FindNearbyYamlValue(lines, index, "m_ConditionMode:", 4, 4))));
+                builder.Append("\",\"threshold\":\"");
+                builder.Append(JsonRpcUtil.Escape(FindNearbyYamlValue(lines, index, "m_EventTreshold:", 4, 4)));
+                builder.Append("\"}");
+                count++;
+            }
+        }
+
         private static string ReadYamlValue(string line, string key)
         {
             var trimmed = (line ?? string.Empty).Trim();
+            if (trimmed.StartsWith("- ", StringComparison.Ordinal))
+            {
+                trimmed = trimmed.Substring(2).TrimStart();
+            }
+
             if (!trimmed.StartsWith(key, StringComparison.Ordinal))
             {
                 return string.Empty;
@@ -1817,6 +1985,107 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             return string.Empty;
+        }
+
+        private static string FindYamlObjectFileId(string[] lines, int index)
+        {
+            for (var current = index; current >= 0 && current >= index - 2; current--)
+            {
+                var match = Regex.Match(lines[current] ?? string.Empty, @"&(?<id>-?\d+)");
+                if (match.Success)
+                {
+                    return match.Groups["id"].Value;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static int FindYamlBlockEnd(string[] lines, int start)
+        {
+            for (var index = start; index < lines.Length; index++)
+            {
+                if ((lines[index] ?? string.Empty).StartsWith("--- ", StringComparison.Ordinal))
+                {
+                    return Math.Max(start, index - 1);
+                }
+            }
+
+            return lines.Length - 1;
+        }
+
+        private static string FindBlockYamlValue(string[] lines, int start, int end, string key)
+        {
+            for (var index = start; index <= end; index++)
+            {
+                var value = ReadYamlValue(lines[index], key);
+                if (!string.IsNullOrEmpty(value))
+                {
+                    return value;
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static string AnimatorParameterTypeName(string value)
+        {
+            if (value == "1")
+            {
+                return "Float";
+            }
+
+            if (value == "3")
+            {
+                return "Int";
+            }
+
+            if (value == "4")
+            {
+                return "Bool";
+            }
+
+            if (value == "9")
+            {
+                return "Trigger";
+            }
+
+            return value;
+        }
+
+        private static string AnimatorConditionModeName(string value)
+        {
+            if (value == "1")
+            {
+                return "If";
+            }
+
+            if (value == "2")
+            {
+                return "IfNot";
+            }
+
+            if (value == "3")
+            {
+                return "Greater";
+            }
+
+            if (value == "4")
+            {
+                return "Less";
+            }
+
+            if (value == "6")
+            {
+                return "Equals";
+            }
+
+            if (value == "7")
+            {
+                return "NotEqual";
+            }
+
+            return value;
         }
 
         private static string FindUnityEventPropertyName(string[] lines, int index)

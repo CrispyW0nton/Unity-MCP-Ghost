@@ -364,7 +364,26 @@ Slice 8 validation on KOTOR Unity project:
 - `unity_event_bindings_find` scanned 202 serialized `.prefab`, `.unity`, and `.asset` files.
 - The KOTOR project currently has many UnityEvent containers but no persistent `m_MethodName` entries, so the tool correctly returned zero bindings for the current asset set.
 
+Completed in Slice 9:
+
+- Animator graph analysis:
+  - `animator_analyze`
+  - Unity bridge command `semantic.animator_analyze`
+
+Game-development fit:
+
+- `animator_analyze` reads serialized `.controller` and `.overrideController` assets and returns parameters, state machines, states, transitions, transition conditions, file IDs, motions, and summary counts.
+- This gives agents structured context before changing animation states, blend logic, controller parameters, or gameplay scripts that drive Animator parameters.
+- The tool is read-only and works directly on Unity's serialized controller YAML, which is useful for asset-import pipelines and large game projects where opening Animator windows manually is slow.
+
+Slice 9 validation on KOTOR Unity project:
+
+- Unity refreshed and compiled the updated bridge in Unity `2022.3.62f1`.
+- `asset_find` found `Assets/KotorImported/MainMenu/Animations/MalakMenu_006J.controller`.
+- `animator_analyze` ran against `MalakMenu_006J.controller` and returned `source: animator-controller-yaml-scan` with a valid target summary.
+- The imported Malak controller currently has empty `m_AnimatorParameters` and `m_AnimatorLayers`, so the analyzer correctly returned zero parameters, state machines, states, and transitions.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add Animator graph analysis.
+- Add unused asset detection and GUID/.meta integrity checks.
