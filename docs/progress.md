@@ -548,7 +548,27 @@ Slice 17 validation on KOTOR Unity project:
 - MCP `screenshot_capture` created a fresh `kotor-main-menu-baseline` PNG plus sidecar metadata in `Library/UnityMcpGhost/screenshots`.
 - MCP `screenshot_baselines_list` and `unity://screenshots/baselines/kotor-main-menu-baseline` both returned the fresh baseline with `640x360`, `Main Camera`, and active scene `Assets/MCPGhostTests/MainMenuRecreation/MCP_Kotor_MainMenu_Recreation.unity`.
 
+Completed in Slice 18:
+
+- Automatic screenshot baseline selection in repair loops:
+  - `repair_loop_run` now accepts `screenshotBaselineFilter`.
+  - `repair_loop_run` also accepts `screenshotMode`, `screenshotWidth`, and `screenshotHeight` so captures can match baseline resolution and camera mode.
+  - When a filter is supplied, the loop calls `screenshot.baselines_list`, selects the newest matching baseline, captures a fresh screenshot, and runs `screenshot.diff`.
+  - `screenshotValidation` now includes `selectedBaseline`, `baselineList`, capture metadata, wait status, and diff results.
+
+Game-development fit:
+
+- Agents can ask for a scene-facing validation by label, such as `kotor-main-menu-baseline`, without copying absolute paths.
+- Matching screenshot dimensions avoids false visual diffs caused by aspect/resolution changes rather than actual scene regressions.
+- This closes the current validate -> repair -> test -> visual-check loop for KOTOR UI/menu/camera work.
+
+Slice 18 validation on KOTOR Unity project:
+
+- Direct MCP `repair_loop_run` selected `kotor-main-menu-baseline-20260517-034301.png`, captured a new `640x360` repair-loop screenshot, and ran `screenshot.diff`.
+- The diff returned `differentRatio: 0`, `meanAbsoluteDifference: 0`, and `withinThreshold: true`.
+- `npm run build`, `git diff --check`, `npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 20000`, and `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 90000` passed.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add automatic baseline selection to `repair_loop_run` via a `screenshotBaselineFilter` argument.
+- Add baseline hygiene helpers for pruning stale/empty screenshot captures and protecting named baselines from accidental cleanup.

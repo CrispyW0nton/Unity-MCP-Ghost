@@ -57,6 +57,9 @@ async function main(): Promise<void> {
         useSemanticTestScope: true,
         runTests: false,
         captureScreenshot: true,
+        screenshotBaselineFilter: "kotor-main-menu-baseline",
+        screenshotWidth: 640,
+        screenshotHeight: 360,
         screenshotWaitMs: 5000,
         compileTimeoutMs: config.requestTimeoutMs
       })
@@ -253,6 +256,8 @@ function summarize(result: Record<string, unknown>): unknown {
     testsFailed: record.testsFailed,
     plannedTestScope: record.plannedTestScope,
     screenshotCaptured: Boolean(asRecord(record.screenshotValidation).capture),
+    selectedBaseline: asRecord(record.screenshotValidation).selectedBaseline,
+    screenshotDiff: asRecord(record.screenshotValidation).diff,
     screenshotPath: asRecord(asRecord(record.screenshotValidation).capture).path,
     stepCount: Array.isArray(record.steps) ? record.steps.length : undefined
   };

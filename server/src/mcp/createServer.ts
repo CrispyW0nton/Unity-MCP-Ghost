@@ -328,6 +328,11 @@ function chooseRepairLoopTestScope(
   };
 }
 
+function firstScreenshotBaseline(baselineList: Record<string, unknown> | null): Record<string, unknown> | null {
+  const baselines = arrayValue(baselineList?.baselines).map(asObject);
+  return baselines.length > 0 ? baselines[0] : null;
+}
+
 async function compilerFirstDiagnostics(
   context: ToolContext,
   pathFilter: string,
@@ -1844,6 +1849,10 @@ export function createMcpServer(context: ToolContext): McpServer {
       testFilter: z.string().default(""),
       captureScreenshot: z.boolean().default(false),
       screenshotBaselinePath: z.string().default(""),
+      screenshotBaselineFilter: z.string().default(""),
+      screenshotMode: z.enum(["auto", "mainCamera", "game", "sceneView", "scene"]).default("auto"),
+      screenshotWidth: z.number().int().positive().max(4096).default(1280),
+      screenshotHeight: z.number().int().positive().max(4096).default(720),
       screenshotThreshold: z.number().nonnegative().max(1).default(0.02),
       screenshotWaitMs: z.number().int().positive().max(30000).default(5000)
     },
@@ -1926,10 +1935,32 @@ export function createMcpServer(context: ToolContext): McpServer {
         steps.push({ name: args.runTests ? "tests_run" : "tests_run_dry_run", ok: tests.ok, data: tests });
 
         let screenshotValidation: Record<string, unknown> | null = null;
-        if (args.captureScreenshot || args.screenshotBaselinePath) {
+        if (args.captureScreenshot || args.screenshotBaselinePath || args.screenshotBaselineFilter) {
+          let selectedBaseline: Record<string, unknown> | null = null;
+          let baselineList: Record<string, unknown> | null = null;
+          if (args.screenshotBaselinePath) {
+            selectedBaseline = {
+              path: args.screenshotBaselinePath,
+              source: "caller-path"
+            };
+          } else if (args.screenshotBaselineFilter) {
+            baselineList = asObject(
+              await context.unity.request("screenshot.baselines_list", {
+                filter: args.screenshotBaselineFilter,
+                limit: 1,
+                includeDimensions: true
+              })
+            );
+            selectedBaseline = firstScreenshotBaseline(baselineList);
+            steps.push({ name: "screenshot_baselines_list", ok: baselineList.ok, data: baselineList });
+          }
+
           const capture = asObject(
             await context.unity.request("screenshot.capture", {
               label: "repair-loop",
+              mode: args.screenshotMode,
+              width: args.screenshotWidth,
+              height: args.screenshotHeight,
               superSize: 1,
               dryRun: false
             })
@@ -1937,16 +1968,20 @@ export function createMcpServer(context: ToolContext): McpServer {
           const screenshotPath = stringValue(capture.path);
           const wait = screenshotPath ? await waitForFile(screenshotPath, args.screenshotWaitMs) : { exists: false, elapsedMs: 0 };
           screenshotValidation = {
+            baselineFilter: args.screenshotBaselineFilter || null,
+            selectedBaseline,
+            baselineList,
             capture,
             wait,
             diff: null
           };
           steps.push({ name: "screenshot_capture", ok: capture.ok, data: screenshotValidation });
 
-          if (args.screenshotBaselinePath && screenshotPath && wait.exists) {
+          const baselinePath = stringValue(selectedBaseline?.path);
+          if (baselinePath && screenshotPath && wait.exists) {
             const diff = asObject(
               await context.unity.request("screenshot.diff", {
-                baselinePath: args.screenshotBaselinePath,
+                baselinePath,
                 currentPath: screenshotPath,
                 threshold: args.screenshotThreshold
               })
