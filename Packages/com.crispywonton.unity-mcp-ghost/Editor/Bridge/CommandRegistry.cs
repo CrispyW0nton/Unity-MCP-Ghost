@@ -82,6 +82,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("prefab.create", HandlePrefabCreate);
             Register("prefab.instantiate", HandlePrefabInstantiate);
             Register("screenshot.capture", HandleScreenshotCapture);
+            Register("screenshot.diff", HandleScreenshotDiff);
             Register("batch.execute", HandleBatchExecute);
         }
 
@@ -1839,18 +1840,99 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static string HandleScreenshotCapture(UnityMcpRequest request)
         {
             var superSize = JsonRpcUtil.ReadInt(request.RawJson, "superSize", 1);
+            var label = SanitizeFileName(JsonRpcUtil.ReadString(request.RawJson, "label", "ghost"));
+            var mode = JsonRpcUtil.ReadString(request.RawJson, "mode", "auto").ToLowerInvariant();
+            var width = Math.Max(1, JsonRpcUtil.ReadInt(request.RawJson, "width", 1280) * Math.Max(1, superSize));
+            var height = Math.Max(1, JsonRpcUtil.ReadInt(request.RawJson, "height", 720) * Math.Max(1, superSize));
             var directory = Path.Combine(Application.dataPath, "..", "Library", "UnityMcpGhost", "screenshots");
-            var fileName = "ghost-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".png";
+            var fileName = label + "-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".png";
             var path = Path.GetFullPath(Path.Combine(directory, fileName));
 
             if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
             {
-                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"screenshot.capture\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"superSize\":" + superSize + "}}";
+                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"screenshot.capture\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"mode\":\"" + JsonRpcUtil.Escape(mode) + "\",\"width\":" + width + ",\"height\":" + height + ",\"superSize\":" + superSize + "}}";
             }
 
             Directory.CreateDirectory(directory);
-            ScreenCapture.CaptureScreenshot(path, Math.Max(1, superSize));
-            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"superSize\":" + superSize + ",\"note\":\"Unity writes screenshots asynchronously; poll the path if the file is not present immediately.\"}";
+            var camera = ResolveScreenshotCamera(mode);
+            if (camera == null)
+            {
+                throw new InvalidOperationException("No camera is available for screenshot.capture. Use mode=sceneView with an open Scene view or add/tag a MainCamera.");
+            }
+
+            var previousTarget = camera.targetTexture;
+            var previousActive = RenderTexture.active;
+            var renderTexture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+            var texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            try
+            {
+                camera.targetTexture = renderTexture;
+                RenderTexture.active = renderTexture;
+                camera.Render();
+                texture.ReadPixels(new Rect(0, 0, width, height), 0, 0);
+                texture.Apply();
+                File.WriteAllBytes(path, texture.EncodeToPNG());
+            }
+            finally
+            {
+                camera.targetTexture = previousTarget;
+                RenderTexture.active = previousActive;
+                UnityEngine.Object.DestroyImmediate(texture);
+                UnityEngine.Object.DestroyImmediate(renderTexture);
+            }
+
+            var info = new FileInfo(path);
+            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"mode\":\"" + JsonRpcUtil.Escape(mode) + "\",\"camera\":\"" + JsonRpcUtil.Escape(camera.name) + "\",\"width\":" + width + ",\"height\":" + height + ",\"bytes\":" + info.Length + ",\"superSize\":" + superSize + ",\"note\":\"Screenshot rendered synchronously from the selected Unity camera.\"}";
+        }
+
+        private static string HandleScreenshotDiff(UnityMcpRequest request)
+        {
+            var baselinePath = JsonRpcUtil.ReadString(request.RawJson, "baselinePath", string.Empty);
+            var currentPath = JsonRpcUtil.ReadString(request.RawJson, "currentPath", string.Empty);
+            var threshold = Math.Max(0f, JsonRpcUtil.ReadFloat(request.RawJson, "threshold", 0.02f));
+            var maxSamples = Math.Max(100, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "maxSamples", 20000), 200000));
+
+            if (string.IsNullOrEmpty(baselinePath) || string.IsNullOrEmpty(currentPath))
+            {
+                throw new InvalidOperationException("screenshot.diff requires baselinePath and currentPath.");
+            }
+
+            if (!File.Exists(baselinePath))
+            {
+                throw new InvalidOperationException("Baseline screenshot does not exist: " + baselinePath);
+            }
+
+            if (!File.Exists(currentPath))
+            {
+                throw new InvalidOperationException("Current screenshot does not exist: " + currentPath);
+            }
+
+            var baseline = LoadScreenshotTexture(baselinePath);
+            var current = LoadScreenshotTexture(currentPath);
+            try
+            {
+                var result = CompareScreenshots(baseline, current, maxSamples);
+                return "{"
+                    + "\"ok\":true,"
+                    + "\"source\":\"screenshot-pixel-diff\","
+                    + "\"baselinePath\":\"" + JsonRpcUtil.Escape(baselinePath) + "\","
+                    + "\"currentPath\":\"" + JsonRpcUtil.Escape(currentPath) + "\","
+                    + "\"baseline\":{\"width\":" + baseline.width + ",\"height\":" + baseline.height + "},"
+                    + "\"current\":{\"width\":" + current.width + ",\"height\":" + current.height + "},"
+                    + "\"sampledPixels\":" + result.SampledPixels + ","
+                    + "\"differentPixels\":" + result.DifferentPixels + ","
+                    + "\"differentRatio\":" + result.DifferentRatio.ToString("0.######", CultureInfo.InvariantCulture) + ","
+                    + "\"meanAbsoluteDifference\":" + result.MeanAbsoluteDifference.ToString("0.######", CultureInfo.InvariantCulture) + ","
+                    + "\"threshold\":" + threshold.ToString("0.######", CultureInfo.InvariantCulture) + ","
+                    + "\"withinThreshold\":" + Bool(result.DifferentRatio <= threshold) + ","
+                    + "\"note\":\"Pixel diff samples PNG colors; camera timing, async screenshot writes, compression, and dynamic UI may require tolerance.\""
+                    + "}";
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(baseline);
+                UnityEngine.Object.DestroyImmediate(current);
+            }
         }
 
         private static void AppendGameObject(StringBuilder builder, GameObject gameObject, int depth, int maxDepth, bool includeInactive)
@@ -3373,6 +3455,111 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return suggestions.Count > 0 ? suggestions[0].Filter : string.Empty;
         }
 
+        private static Texture2D LoadScreenshotTexture(string path)
+        {
+            var bytes = File.ReadAllBytes(path);
+            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            if (!texture.LoadImage(bytes, false))
+            {
+                UnityEngine.Object.DestroyImmediate(texture);
+                throw new InvalidOperationException("Could not decode PNG screenshot: " + path);
+            }
+
+            return texture;
+        }
+
+        private static ScreenshotDiffStats CompareScreenshots(Texture2D baseline, Texture2D current, int maxSamples)
+        {
+            var width = Math.Min(baseline.width, current.width);
+            var height = Math.Min(baseline.height, current.height);
+            if (width <= 0 || height <= 0)
+            {
+                throw new InvalidOperationException("Screenshots have no overlapping pixel area.");
+            }
+
+            var totalPixels = width * height;
+            var step = Math.Max(1, (int)Math.Sqrt(Math.Max(1, totalPixels / Math.Max(1, maxSamples))));
+            var sampled = 0;
+            var different = 0;
+            double totalDifference = 0;
+            for (var y = 0; y < height; y += step)
+            {
+                for (var x = 0; x < width; x += step)
+                {
+                    var left = baseline.GetPixel(x, y);
+                    var right = current.GetPixel(x, y);
+                    var difference = (Math.Abs(left.r - right.r) + Math.Abs(left.g - right.g) + Math.Abs(left.b - right.b) + Math.Abs(left.a - right.a)) / 4.0;
+                    totalDifference += difference;
+                    if (difference > 0.01)
+                    {
+                        different++;
+                    }
+
+                    sampled++;
+                    if (sampled >= maxSamples)
+                    {
+                        break;
+                    }
+                }
+
+                if (sampled >= maxSamples)
+                {
+                    break;
+                }
+            }
+
+            return new ScreenshotDiffStats
+            {
+                SampledPixels = sampled,
+                DifferentPixels = different,
+                DifferentRatio = sampled == 0 ? 0f : (float)different / sampled,
+                MeanAbsoluteDifference = sampled == 0 ? 0f : (float)(totalDifference / sampled)
+            };
+        }
+
+        private static string SanitizeFileName(string value)
+        {
+            var input = string.IsNullOrEmpty(value) ? "ghost" : value;
+            var builder = new StringBuilder(input.Length);
+            foreach (var character in input)
+            {
+                if (char.IsLetterOrDigit(character) || character == '-' || character == '_')
+                {
+                    builder.Append(character);
+                }
+                else if (char.IsWhiteSpace(character))
+                {
+                    builder.Append('-');
+                }
+            }
+
+            return builder.Length == 0 ? "ghost" : builder.ToString();
+        }
+
+        private static Camera ResolveScreenshotCamera(string mode)
+        {
+            if (mode == "maincamera" || mode == "game" || mode == "auto")
+            {
+                var main = Camera.main;
+                if (main != null)
+                {
+                    return main;
+                }
+            }
+
+            if (mode == "sceneview" || mode == "scene" || mode == "auto")
+            {
+                var sceneView = SceneView.lastActiveSceneView;
+                if (sceneView != null && sceneView.camera != null)
+                {
+                    return sceneView.camera;
+                }
+            }
+
+            var anyCamera = UnityEngine.Object.FindObjectOfType<Camera>();
+            return anyCamera;
+        }
+
         private static string FindScriptPathForClass(string className)
         {
             var projectRoot = Path.GetDirectoryName(Application.dataPath);
@@ -4615,6 +4802,14 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         public string Filter;
         public int Score;
         public List<string> Reasons;
+    }
+
+    internal sealed class ScreenshotDiffStats
+    {
+        public int SampledPixels;
+        public int DifferentPixels;
+        public float DifferentRatio;
+        public float MeanAbsoluteDifference;
     }
 
     internal sealed class MethodNode

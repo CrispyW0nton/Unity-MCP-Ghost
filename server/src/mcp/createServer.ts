@@ -1,5 +1,6 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { access } from "node:fs/promises";
 import { z } from "zod";
 import type { UnityClient } from "../unity/UnityClient.js";
 import { asObject, failureResponse, type GhostToolMeta, successResponse } from "./toolResponse.js";
@@ -266,6 +267,26 @@ function diagnosticsFromPayload(payload: Record<string, unknown>): Record<string
 
 function diagnosticCount(payload: Record<string, unknown>): number {
   return diagnosticsFromPayload(payload).length;
+}
+
+async function waitForFile(path: string, timeoutMs: number, intervalMs = 250): Promise<{ exists: boolean; elapsedMs: number }> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      await access(path);
+      return {
+        exists: true,
+        elapsedMs: Date.now() - startedAt
+      };
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+  }
+
+  return {
+    exists: false,
+    elapsedMs: Date.now() - startedAt
+  };
 }
 
 function chooseRepairLoopTestScope(
@@ -892,11 +913,30 @@ export function createMcpServer(context: ToolContext): McpServer {
     "screenshot_capture",
     "Capture a Unity screenshot to Library/UnityMcpGhost/screenshots.",
     {
+      label: z.string().default("ghost"),
+      mode: z.enum(["auto", "mainCamera", "game", "sceneView", "scene"]).default("auto"),
+      width: z.number().int().positive().max(4096).default(1280),
+      height: z.number().int().positive().max(4096).default(720),
       superSize: z.number().int().positive().max(8).default(1),
       dryRun: DryRunSchema
     },
     { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 1 },
     "screenshot.capture"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "screenshot_diff",
+    "Compare two Unity PNG screenshots with a sampled pixel diff for visual regression checks.",
+    {
+      baselinePath: z.string().min(1),
+      currentPath: z.string().min(1),
+      threshold: z.number().nonnegative().max(1).default(0.02),
+      maxSamples: z.number().int().positive().max(200000).default(20000)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    "screenshot.diff"
   );
 
   registerUnityRequestTool(
@@ -1764,7 +1804,11 @@ export function createMcpServer(context: ToolContext): McpServer {
       useSemanticTestScope: z.boolean().default(true),
       runTests: z.boolean().default(false),
       testMode: z.enum(["editmode", "playmode"]).default("editmode"),
-      testFilter: z.string().default("")
+      testFilter: z.string().default(""),
+      captureScreenshot: z.boolean().default(false),
+      screenshotBaselinePath: z.string().default(""),
+      screenshotThreshold: z.number().nonnegative().max(1).default(0.02),
+      screenshotWaitMs: z.number().int().positive().max(30000).default(5000)
     },
     { risk: "test-execution", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors", "unity://tests/{mode}", "unity://semantic/index"] },
     async (args) => {
@@ -1844,6 +1888,37 @@ export function createMcpServer(context: ToolContext): McpServer {
         }
         steps.push({ name: args.runTests ? "tests_run" : "tests_run_dry_run", ok: tests.ok, data: tests });
 
+        let screenshotValidation: Record<string, unknown> | null = null;
+        if (args.captureScreenshot || args.screenshotBaselinePath) {
+          const capture = asObject(
+            await context.unity.request("screenshot.capture", {
+              label: "repair-loop",
+              superSize: 1,
+              dryRun: false
+            })
+          );
+          const screenshotPath = stringValue(capture.path);
+          const wait = screenshotPath ? await waitForFile(screenshotPath, args.screenshotWaitMs) : { exists: false, elapsedMs: 0 };
+          screenshotValidation = {
+            capture,
+            wait,
+            diff: null
+          };
+          steps.push({ name: "screenshot_capture", ok: capture.ok, data: screenshotValidation });
+
+          if (args.screenshotBaselinePath && screenshotPath && wait.exists) {
+            const diff = asObject(
+              await context.unity.request("screenshot.diff", {
+                baselinePath: args.screenshotBaselinePath,
+                currentPath: screenshotPath,
+                threshold: args.screenshotThreshold
+              })
+            );
+            screenshotValidation.diff = diff;
+            steps.push({ name: "screenshot_diff", ok: diff.ok, data: diff });
+          }
+        }
+
         return successResponse(
           "repair_loop_run completed diagnostic pass.",
           {
@@ -1855,6 +1930,7 @@ export function createMcpServer(context: ToolContext): McpServer {
             diagnosticSource: compileDiagnosticList.length > 0 ? "compilation-pipeline" : "console-log-buffer",
             semanticTestScope,
             plannedTestScope,
+            screenshotValidation,
             steps,
             patchProposals,
             nextActions: [

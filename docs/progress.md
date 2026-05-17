@@ -506,7 +506,29 @@ Slice 15 validation on KOTOR Unity project:
 - The loop selected `plannedTestScope: { mode: "editmode", filter: "ParityTestRunner", source: "semantic-test-scope" }`.
 - `npm run build`, `git diff --check`, `npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 20000`, and `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 90000` passed.
 
+Completed in Slice 16:
+
+- Visual repair validation hooks:
+  - Unity bridge command `screenshot.diff`
+  - MCP tool `screenshot_diff`
+  - `screenshot.capture` now renders synchronously from `Main Camera`, Scene view, or the first available Unity camera instead of relying only on Unity's async `ScreenCapture.CaptureScreenshot`.
+  - `repair_loop_run` now supports `captureScreenshot`, `screenshotBaselinePath`, `screenshotThreshold`, and `screenshotWaitMs`.
+  - `repair_loop_run` returns `screenshotValidation` with capture metadata and optional sampled pixel diff results.
+  - `phase3:repair-smoke` now verifies repair-loop screenshot capture.
+
+Game-development fit:
+
+- Scene-facing gameplay changes can now validate visible state after script validation and focused test planning.
+- Pixel diff support gives agents a deterministic way to compare menu, camera, imported level, and UI screenshots without hand-inspecting PNGs first.
+- Synchronous camera rendering fixes the earlier screenshot TODO where Unity returned a path before a useful PNG existed.
+
+Slice 16 validation on KOTOR Unity project:
+
+- Direct bridge validation captured two real `640x360` PNGs from `Main Camera` in the KOTOR main-menu recreation scene.
+- `screenshot.diff` compared the two captures with 5,000 sampled pixels and returned `differentRatio: 0`, `meanAbsoluteDifference: 0`, and `withinThreshold: true`.
+- `repair_loop_run` with `captureScreenshot: true` returned `screenshotValidation.capture.bytes: 354502`, `wait.exists: true`, and included the `screenshot_capture` step after semantic test planning.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add screenshot capture/diff hooks to `repair_loop_run` so scene-facing changes can validate visual regressions after tests pass.
+- Add screenshot baseline selection resources so agents can discover prior visual baselines by scene/objective before requesting a diff.

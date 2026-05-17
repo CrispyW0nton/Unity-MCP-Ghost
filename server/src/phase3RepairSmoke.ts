@@ -56,6 +56,8 @@ async function main(): Promise<void> {
         scriptPath: flags.scriptPath,
         useSemanticTestScope: true,
         runTests: false,
+        captureScreenshot: true,
+        screenshotWaitMs: 5000,
         compileTimeoutMs: config.requestTimeoutMs
       })
     );
@@ -250,8 +252,14 @@ function summarize(result: Record<string, unknown>): unknown {
     scopedErrorCount: record.scopedErrorCount,
     testsFailed: record.testsFailed,
     plannedTestScope: record.plannedTestScope,
+    screenshotCaptured: Boolean(asRecord(record.screenshotValidation).capture),
+    screenshotPath: asRecord(asRecord(record.screenshotValidation).capture).path,
     stepCount: Array.isArray(record.steps) ? record.steps.length : undefined
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function readFlags(args: string[]): { allowMutation: boolean; scriptPath: string } {

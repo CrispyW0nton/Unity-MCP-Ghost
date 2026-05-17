@@ -20,7 +20,7 @@ This package currently includes Phase 1 and Phase 2 bridge tooling:
 - Bridge configuration.
 - Main-thread dispatcher.
 - Command registry.
-- Phase 1 bridge commands: `ping`, `health`, `editor.get_state`, `console.get_logs`, `scene.get_hierarchy`, `scene.save`, `gameobject.create`, `gameobject.create_primitive`, `gameobject.set_transform`, and `screenshot.capture`.
+- Phase 1 bridge commands: `ping`, `health`, `editor.get_state`, `console.get_logs`, `scene.get_hierarchy`, `scene.save`, `gameobject.create`, `gameobject.create_primitive`, `gameobject.set_transform`, and synchronous `screenshot.capture`.
 - Early Phase 2 compatibility commands: `scene.save_all`, `scene.list_open`, `scene.get_setup`, `gameobject.find`, `gameobject.get`, `gameobject.delete`, and `batch.execute`.
 - Phase 2 scene and hierarchy commands: `scene.create`, `scene.open`, `scene.set_active`, `scene.unload`, `gameobject.duplicate`, and `gameobject.set_parent`.
 - Phase 2 slice commands for components, assets, and prefabs: `component.add`, `component.get`, `component.modify`, `component.remove`, `asset.find`, `asset.create_folder`, `asset.refresh`, `prefab.create`, and `prefab.instantiate`.
@@ -28,6 +28,7 @@ This package currently includes Phase 1 and Phase 2 bridge tooling:
 - Phase 2 package/test commands: `package.list`, `package.search`, `package.add`, `package.remove`, `operation.get`, `operation.list`, and `tests.run`.
 - Early Phase 3 diagnostics commands: `console.diagnostics_get`, `compile.diagnostics_get`, `script.validate`, and `compile.wait`.
 - Early Phase 3 semantic commands: `semantic.asset_references_trace`, `prefab.references_trace`, `semantic.unity_event_bindings_find`, `semantic.animator_analyze`, `semantic.meta_integrity_check`, `semantic.unused_assets_find`, `semantic.class_impact_analyze`, `semantic.call_path_find`, `semantic.lint_unity_run`, `semantic.project_index_summary`, and `semantic.test_scope_suggest`.
+- Early Phase 3 visual validation command: `screenshot.diff`.
 - MCP-level Phase 3 orchestration now includes `compile_wait`, `patch_propose`, `repair_apply_edits`, and the first `repair_loop_run` diagnostic-pass scaffold in the TypeScript server.
 - Dry-run previews for mutating scene, GameObject, screenshot, and batch commands.
 - Durable queue fallback at `Library/UnityMcpGhost/queue` with `pending` and `results` subfolders.
