@@ -505,7 +505,9 @@ function registerCoreResources(server: McpServer, context: ToolContext): void {
         "unity://assets/{filter}",
         "unity://operation/{operationId}",
         "unity://tests/{mode}",
-        "unity://semantic/index"
+        "unity://semantic/index",
+        "unity://screenshots/baselines",
+        "unity://screenshots/baselines/{filter}"
       ],
       tools: RegisteredToolCatalog.map((tool) => ({
         name: tool.name,
@@ -609,6 +611,27 @@ function registerCoreResources(server: McpServer, context: ToolContext): void {
     "unity://semantic/index",
     "Read a project-wide semantic summary for game-development planning and refactor risk triage.",
     () => readUnityResource(context, "semantic.project_index_summary", { includeDiagnostics: true, limit: 200 })
+  );
+
+  registerJsonResource(
+    server,
+    "Unity Screenshot Baselines",
+    "unity://screenshots/baselines",
+    "List recent Ghost screenshot baselines for visual regression comparisons.",
+    () => readUnityResource(context, "screenshot.baselines_list", { limit: 50, includeDimensions: true })
+  );
+
+  registerJsonResourceTemplate(
+    server,
+    "Unity Screenshot Baselines Filtered",
+    "unity://screenshots/baselines/{filter}",
+    "List Ghost screenshot baselines filtered by label, scene, camera, or filename.",
+    (variables) =>
+      readUnityResource(context, "screenshot.baselines_list", {
+        filter: decodeURIComponent(firstVariable(variables.filter)),
+        limit: 50,
+        includeDimensions: true
+      })
   );
 }
 
@@ -881,7 +904,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       scaleZ: z.number().optional(),
       dryRun: DryRunSchema
     },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 1 },
+    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 1, relatedResources: ["unity://screenshots/baselines"] },
     (args) => (args.primitive ? "gameobject.create_primitive" : "gameobject.create")
   );
 
@@ -935,8 +958,22 @@ export function createMcpServer(context: ToolContext): McpServer {
       threshold: z.number().nonnegative().max(1).default(0.02),
       maxSamples: z.number().int().positive().max(200000).default(20000)
     },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://screenshots/baselines", "unity://screenshots/baselines/{filter}"] },
     "screenshot.diff"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "screenshot_baselines_list",
+    "List recent Ghost screenshot captures that can be used as visual baselines for repair_loop_run or screenshot_diff.",
+    {
+      filter: z.string().default(""),
+      limit: z.number().int().positive().max(500).default(50),
+      includeDimensions: z.boolean().default(true)
+    },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://screenshots/baselines", "unity://screenshots/baselines/{filter}"] },
+    "screenshot.baselines_list"
   );
 
   registerUnityRequestTool(
@@ -1810,7 +1847,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       screenshotThreshold: z.number().nonnegative().max(1).default(0.02),
       screenshotWaitMs: z.number().int().positive().max(30000).default(5000)
     },
-    { risk: "test-execution", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors", "unity://tests/{mode}", "unity://semantic/index"] },
+    { risk: "test-execution", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors", "unity://tests/{mode}", "unity://semantic/index", "unity://screenshots/baselines"] },
     async (args) => {
       const startedAt = Date.now();
       try {

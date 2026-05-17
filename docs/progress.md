@@ -528,7 +528,27 @@ Slice 16 validation on KOTOR Unity project:
 - `screenshot.diff` compared the two captures with 5,000 sampled pixels and returned `differentRatio: 0`, `meanAbsoluteDifference: 0`, and `withinThreshold: true`.
 - `repair_loop_run` with `captureScreenshot: true` returned `screenshotValidation.capture.bytes: 354502`, `wait.exists: true`, and included the `screenshot_capture` step after semantic test planning.
 
+Completed in Slice 17:
+
+- Screenshot baseline discovery:
+  - Unity bridge command `screenshot.baselines_list`
+  - MCP tool `screenshot_baselines_list`
+  - MCP resources `unity://screenshots/baselines` and `unity://screenshots/baselines/{filter}`
+  - `screenshot.capture` now writes a JSON sidecar beside each PNG with label, timestamp, camera, active scene, dimensions, byte count, and capture mode.
+
+Game-development fit:
+
+- Agents can now browse recent visual baselines before running a repair-loop screenshot diff, instead of requiring the user to paste an absolute PNG path.
+- Baselines are filterable by label, scene, camera, filename, or sidecar metadata, which fits repeated validation of KOTOR menus, imported modules, UI screens, and camera states.
+- Older screenshots without sidecars are still discoverable; Ghost reads PNG dimensions from the file header and infers labels from filenames.
+
+Slice 17 validation on KOTOR Unity project:
+
+- `screenshot.baselines_list` filtered by `repair-loop` found prior repair-loop captures and read dimensions from existing PNG files.
+- MCP `screenshot_capture` created a fresh `kotor-main-menu-baseline` PNG plus sidecar metadata in `Library/UnityMcpGhost/screenshots`.
+- MCP `screenshot_baselines_list` and `unity://screenshots/baselines/kotor-main-menu-baseline` both returned the fresh baseline with `640x360`, `Main Camera`, and active scene `Assets/MCPGhostTests/MainMenuRecreation/MCP_Kotor_MainMenu_Recreation.unity`.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add screenshot baseline selection resources so agents can discover prior visual baselines by scene/objective before requesting a diff.
+- Add automatic baseline selection to `repair_loop_run` via a `screenshotBaselineFilter` argument.

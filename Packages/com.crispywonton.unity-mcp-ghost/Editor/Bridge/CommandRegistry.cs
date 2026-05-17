@@ -83,6 +83,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("prefab.instantiate", HandlePrefabInstantiate);
             Register("screenshot.capture", HandleScreenshotCapture);
             Register("screenshot.diff", HandleScreenshotDiff);
+            Register("screenshot.baselines_list", HandleScreenshotBaselinesList);
             Register("batch.execute", HandleBatchExecute);
         }
 
@@ -1882,7 +1883,26 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             var info = new FileInfo(path);
-            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"mode\":\"" + JsonRpcUtil.Escape(mode) + "\",\"camera\":\"" + JsonRpcUtil.Escape(camera.name) + "\",\"width\":" + width + ",\"height\":" + height + ",\"bytes\":" + info.Length + ",\"superSize\":" + superSize + ",\"note\":\"Screenshot rendered synchronously from the selected Unity camera.\"}";
+            var metadataPath = path + ".json";
+            var activeScene = SceneManager.GetActiveScene();
+            File.WriteAllText(
+                metadataPath,
+                "{"
+                    + "\"label\":\"" + JsonRpcUtil.Escape(label) + "\","
+                    + "\"timestampUtc\":\"" + DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture) + "\","
+                    + "\"path\":\"" + JsonRpcUtil.Escape(path) + "\","
+                    + "\"mode\":\"" + JsonRpcUtil.Escape(mode) + "\","
+                    + "\"camera\":\"" + JsonRpcUtil.Escape(camera.name) + "\","
+                    + "\"activeScenePath\":\"" + JsonRpcUtil.Escape(activeScene.path) + "\","
+                    + "\"activeSceneName\":\"" + JsonRpcUtil.Escape(activeScene.name) + "\","
+                    + "\"width\":" + width + ","
+                    + "\"height\":" + height + ","
+                    + "\"bytes\":" + info.Length + ","
+                    + "\"superSize\":" + superSize
+                    + "}",
+                Encoding.UTF8);
+
+            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"metadataPath\":\"" + JsonRpcUtil.Escape(metadataPath) + "\",\"mode\":\"" + JsonRpcUtil.Escape(mode) + "\",\"camera\":\"" + JsonRpcUtil.Escape(camera.name) + "\",\"width\":" + width + ",\"height\":" + height + ",\"bytes\":" + info.Length + ",\"superSize\":" + superSize + ",\"note\":\"Screenshot rendered synchronously from the selected Unity camera.\"}";
         }
 
         private static string HandleScreenshotDiff(UnityMcpRequest request)
@@ -1933,6 +1953,69 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 UnityEngine.Object.DestroyImmediate(baseline);
                 UnityEngine.Object.DestroyImmediate(current);
             }
+        }
+
+        private static string HandleScreenshotBaselinesList(UnityMcpRequest request)
+        {
+            var filter = JsonRpcUtil.ReadString(request.RawJson, "filter", string.Empty);
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 50), 500));
+            var includeDimensions = JsonRpcUtil.ReadBool(request.RawJson, "includeDimensions", true);
+            var directory = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Library", "UnityMcpGhost", "screenshots"));
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"source\":\"screenshot-baseline-files\",\"directory\":\"");
+            builder.Append(JsonRpcUtil.Escape(directory));
+            builder.Append("\",\"filter\":\"");
+            builder.Append(JsonRpcUtil.Escape(filter));
+            builder.Append("\",\"baselines\":[");
+
+            var count = 0;
+            var scanned = 0;
+            if (Directory.Exists(directory))
+            {
+                var files = new List<FileInfo>();
+                foreach (var path in Directory.GetFiles(directory, "*.png", SearchOption.TopDirectoryOnly))
+                {
+                    files.Add(new FileInfo(path));
+                }
+
+                files.Sort(delegate (FileInfo left, FileInfo right)
+                {
+                    return right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc);
+                });
+
+                foreach (var file in files)
+                {
+                    if (count >= limit)
+                    {
+                        break;
+                    }
+
+                    scanned++;
+                    var metadataPath = file.FullName + ".json";
+                    var metadata = File.Exists(metadataPath) ? File.ReadAllText(metadataPath) : string.Empty;
+                    if (!ScreenshotBaselineMatches(file, metadata, filter))
+                    {
+                        continue;
+                    }
+
+                    if (count > 0)
+                    {
+                        builder.Append(",");
+                    }
+
+                    AppendScreenshotBaseline(builder, file, metadataPath, metadata, includeDimensions);
+                    count++;
+                }
+            }
+
+            builder.Append("],\"baselineCount\":");
+            builder.Append(count);
+            builder.Append(",\"scannedCount\":");
+            builder.Append(scanned);
+            builder.Append(",\"truncated\":");
+            builder.Append(Bool(count >= limit));
+            builder.Append(",\"note\":\"Use a returned path as repair_loop_run.screenshotBaselinePath or screenshot_diff.baselinePath.\"}");
+            return builder.ToString();
         }
 
         private static void AppendGameObject(StringBuilder builder, GameObject gameObject, int depth, int maxDepth, bool includeInactive)
@@ -3534,6 +3617,97 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             return builder.Length == 0 ? "ghost" : builder.ToString();
+        }
+
+        private static bool ScreenshotBaselineMatches(FileInfo file, string metadata, string filter)
+        {
+            if (string.IsNullOrEmpty(filter))
+            {
+                return true;
+            }
+
+            return file.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0
+                || file.FullName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0
+                || (metadata ?? string.Empty).IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static void AppendScreenshotBaseline(StringBuilder builder, FileInfo file, string metadataPath, string metadata, bool includeDimensions)
+        {
+            var label = JsonRpcUtil.ReadString(metadata, "label", ReadScreenshotLabel(file.Name));
+            var timestamp = JsonRpcUtil.ReadString(metadata, "timestampUtc", file.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture));
+            var mode = JsonRpcUtil.ReadString(metadata, "mode", string.Empty);
+            var camera = JsonRpcUtil.ReadString(metadata, "camera", string.Empty);
+            var activeScenePath = JsonRpcUtil.ReadString(metadata, "activeScenePath", string.Empty);
+            var activeSceneName = JsonRpcUtil.ReadString(metadata, "activeSceneName", string.Empty);
+            var width = JsonRpcUtil.ReadInt(metadata, "width", 0);
+            var height = JsonRpcUtil.ReadInt(metadata, "height", 0);
+            if (includeDimensions && (width <= 0 || height <= 0))
+            {
+                ReadPngDimensions(file.FullName, out width, out height);
+            }
+
+            builder.Append("{\"path\":\"");
+            builder.Append(JsonRpcUtil.Escape(file.FullName));
+            builder.Append("\",\"metadataPath\":\"");
+            builder.Append(JsonRpcUtil.Escape(File.Exists(metadataPath) ? metadataPath : string.Empty));
+            builder.Append("\",\"fileName\":\"");
+            builder.Append(JsonRpcUtil.Escape(file.Name));
+            builder.Append("\",\"label\":\"");
+            builder.Append(JsonRpcUtil.Escape(label));
+            builder.Append("\",\"timestampUtc\":\"");
+            builder.Append(JsonRpcUtil.Escape(timestamp));
+            builder.Append("\",\"bytes\":");
+            builder.Append(file.Length);
+            builder.Append(",\"width\":");
+            builder.Append(width);
+            builder.Append(",\"height\":");
+            builder.Append(height);
+            builder.Append(",\"mode\":\"");
+            builder.Append(JsonRpcUtil.Escape(mode));
+            builder.Append("\",\"camera\":\"");
+            builder.Append(JsonRpcUtil.Escape(camera));
+            builder.Append("\",\"activeScenePath\":\"");
+            builder.Append(JsonRpcUtil.Escape(activeScenePath));
+            builder.Append("\",\"activeSceneName\":\"");
+            builder.Append(JsonRpcUtil.Escape(activeSceneName));
+            builder.Append("\"}");
+        }
+
+        private static string ReadScreenshotLabel(string fileName)
+        {
+            var name = Path.GetFileNameWithoutExtension(fileName ?? string.Empty);
+            var match = Regex.Match(name, @"^(?<label>.+)-\d{8}-\d{6}$");
+            return match.Success ? match.Groups["label"].Value : name;
+        }
+
+        private static void ReadPngDimensions(string path, out int width, out int height)
+        {
+            width = 0;
+            height = 0;
+            try
+            {
+                using (var stream = File.OpenRead(path))
+                {
+                    var header = new byte[24];
+                    if (stream.Read(header, 0, header.Length) != header.Length)
+                    {
+                        return;
+                    }
+
+                    if (header[0] != 137 || header[1] != 80 || header[2] != 78 || header[3] != 71)
+                    {
+                        return;
+                    }
+
+                    width = (header[16] << 24) + (header[17] << 16) + (header[18] << 8) + header[19];
+                    height = (header[20] << 24) + (header[21] << 16) + (header[22] << 8) + header[23];
+                }
+            }
+            catch
+            {
+                width = 0;
+                height = 0;
+            }
         }
 
         private static Camera ResolveScreenshotCamera(string mode)
