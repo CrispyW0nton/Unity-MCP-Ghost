@@ -333,6 +333,173 @@ function firstScreenshotBaseline(baselineList: Record<string, unknown> | null): 
   return baselines.length > 0 ? baselines[0] : null;
 }
 
+function screenshotListEntries(list: Record<string, unknown> | null): Record<string, unknown>[] {
+  return arrayValue(list?.baselines).map(asObject);
+}
+
+function screenshotPath(entry: Record<string, unknown> | null | undefined): string {
+  return stringValue(entry?.path);
+}
+
+function screenshotLooksLikeBaseline(entry: Record<string, unknown>): boolean {
+  const haystack = [entry.label, entry.fileName, entry.path, entry.scenePath, entry.cameraName]
+    .map((value) => stringValue(value).toLowerCase())
+    .join(" ");
+  return haystack.includes("baseline");
+}
+
+function firstDistinctScreenshot(entries: Record<string, unknown>[], currentPath: string): Record<string, unknown> | null {
+  return entries.find((entry) => screenshotPath(entry) && screenshotPath(entry) !== currentPath) ?? null;
+}
+
+function cleanupPlannedCount(cleanupPlan: Record<string, unknown> | null): number {
+  const direct = cleanupPlan?.plannedCount;
+  if (typeof direct === "number" && Number.isFinite(direct)) {
+    return direct;
+  }
+
+  const candidates = arrayValue(cleanupPlan?.candidates);
+  if (candidates.length > 0) {
+    return candidates.length;
+  }
+
+  const deletions = arrayValue(cleanupPlan?.deletions);
+  return deletions.length;
+}
+
+function visualValidationRecommendations(report: {
+  currentCapture: Record<string, unknown> | null;
+  selectedBaseline: Record<string, unknown> | null;
+  diff: Record<string, unknown> | null;
+  cleanupPlan: Record<string, unknown> | null;
+}): string[] {
+  const recommendations: string[] = [];
+
+  if (!report.currentCapture) {
+    recommendations.push("Capture a repair-loop screenshot before running visual validation.");
+  }
+
+  if (!report.selectedBaseline) {
+    recommendations.push("Create or label a baseline screenshot for the active scene before treating visual diffs as authoritative.");
+  }
+
+  if (report.diff) {
+    if (report.diff.withinThreshold === true) {
+      recommendations.push("Visual diff is within threshold; continue with semantic/test validation before committing gameplay changes.");
+    } else if (report.diff.withinThreshold === false) {
+      recommendations.push("Visual diff exceeded threshold; inspect the diff image before accepting the repair-loop result.");
+    }
+  } else if (report.currentCapture && report.selectedBaseline) {
+    recommendations.push("Diff could not be produced from the selected screenshots; verify both PNG files still exist.");
+  }
+
+  if (report.cleanupPlan && cleanupPlannedCount(report.cleanupPlan) > 0) {
+    recommendations.push("Run screenshot_baselines_cleanup with dryRun=false after reviewing the cleanup plan.");
+  }
+
+  return recommendations;
+}
+
+type VisualValidationReportOptions = {
+  currentFilter: string;
+  baselineFilter: string;
+  threshold: number;
+  maxSamples: number;
+  cleanupFilter: string;
+  cleanupKeepNewest: number;
+  includeCleanup: boolean;
+};
+
+async function buildVisualValidationReport(context: ToolContext, options: VisualValidationReportOptions): Promise<Record<string, unknown>> {
+  const currentList = asObject(
+    await context.unity.request("screenshot.baselines_list", {
+      filter: options.currentFilter,
+      limit: 10,
+      includeDimensions: true
+    })
+  );
+  const currentEntries = screenshotListEntries(currentList);
+  const currentCapture = currentEntries[0] ?? null;
+  const currentPath = screenshotPath(currentCapture);
+
+  let baselineList: Record<string, unknown> | null = null;
+  let selectedBaseline: Record<string, unknown> | null = null;
+  let baselineSource = "none";
+
+  if (options.baselineFilter) {
+    baselineList = asObject(
+      await context.unity.request("screenshot.baselines_list", {
+        filter: options.baselineFilter,
+        limit: 10,
+        includeDimensions: true
+      })
+    );
+    selectedBaseline = firstDistinctScreenshot(screenshotListEntries(baselineList), currentPath);
+    baselineSource = "baseline-filter";
+  } else {
+    baselineList = asObject(
+      await context.unity.request("screenshot.baselines_list", {
+        filter: "baseline",
+        limit: 25,
+        includeDimensions: true
+      })
+    );
+    selectedBaseline = firstDistinctScreenshot(screenshotListEntries(baselineList).filter(screenshotLooksLikeBaseline), currentPath);
+    baselineSource = "baseline-label";
+  }
+
+  if (!selectedBaseline && currentEntries.length > 1) {
+    selectedBaseline = firstDistinctScreenshot(currentEntries, currentPath);
+    baselineSource = "previous-current-capture";
+  }
+
+  const baselinePath = screenshotPath(selectedBaseline);
+  let diff: Record<string, unknown> | null = null;
+  if (currentPath && baselinePath) {
+    diff = asObject(
+      await context.unity.request("screenshot.diff", {
+        baselinePath,
+        currentPath,
+        threshold: options.threshold,
+        maxSamples: options.maxSamples
+      })
+    );
+  }
+
+  let cleanupPlan: Record<string, unknown> | null = null;
+  if (options.includeCleanup) {
+    cleanupPlan = asObject(
+      await context.unity.request("screenshot.baselines_cleanup", {
+        filter: options.cleanupFilter,
+        keepNewest: options.cleanupKeepNewest,
+        limit: 100,
+        includeUnlabeled: true,
+        allowDeleteBaselines: false,
+        dryRun: true
+      })
+    );
+  }
+
+  const report = {
+    ok: true,
+    source: "visual_validation_report",
+    currentFilter: options.currentFilter,
+    baselineFilter: options.baselineFilter || null,
+    baselineSource,
+    threshold: options.threshold,
+    currentList,
+    baselineList,
+    currentCapture,
+    selectedBaseline,
+    diff,
+    cleanupPlan,
+    recommendations: [] as string[]
+  };
+  report.recommendations = visualValidationRecommendations(report);
+
+  return report;
+}
+
 async function compilerFirstDiagnostics(
   context: ToolContext,
   pathFilter: string,
@@ -512,7 +679,9 @@ function registerCoreResources(server: McpServer, context: ToolContext): void {
         "unity://tests/{mode}",
         "unity://semantic/index",
         "unity://screenshots/baselines",
-        "unity://screenshots/baselines/{filter}"
+        "unity://screenshots/baselines/{filter}",
+        "unity://visual/validation/latest",
+        "unity://visual/validation/{filter}"
       ],
       tools: RegisteredToolCatalog.map((tool) => ({
         name: tool.name,
@@ -637,6 +806,42 @@ function registerCoreResources(server: McpServer, context: ToolContext): void {
         limit: 50,
         includeDimensions: true
       })
+  );
+
+  registerJsonResource(
+    server,
+    "Unity Visual Validation Latest",
+    "unity://visual/validation/latest",
+    "Summarize the latest repair-loop screenshot, selected baseline, diff status, and screenshot cleanup advice.",
+    () =>
+      buildVisualValidationReport(context, {
+        currentFilter: "repair-loop",
+        baselineFilter: "",
+        threshold: 0.02,
+        maxSamples: 20000,
+        cleanupFilter: "repair-loop",
+        cleanupKeepNewest: 20,
+        includeCleanup: true
+      })
+  );
+
+  registerJsonResourceTemplate(
+    server,
+    "Unity Visual Validation By Filter",
+    "unity://visual/validation/{filter}",
+    "Summarize visual validation state for a screenshot label, scene, camera, or filename filter.",
+    (variables) => {
+      const filter = decodeURIComponent(firstVariable(variables.filter));
+      return buildVisualValidationReport(context, {
+        currentFilter: filter || "repair-loop",
+        baselineFilter: "",
+        threshold: 0.02,
+        maxSamples: 20000,
+        cleanupFilter: filter || "repair-loop",
+        cleanupKeepNewest: 20,
+        includeCleanup: true
+      });
+    }
   );
 }
 
@@ -999,6 +1204,49 @@ export function createMcpServer(context: ToolContext): McpServer {
     },
     { risk: "destructive", mutates: true, supportsDryRun: true, phase: 3, relatedResources: ["unity://screenshots/baselines", "unity://screenshots/baselines/{filter}"] },
     "screenshot.baselines_cleanup"
+  );
+
+  registerTool(
+    server,
+    "visual_validation_report",
+    "Summarize the latest Unity screenshot capture, selected visual baseline, sampled diff result, and dry-run screenshot cleanup recommendations.",
+    {
+      currentFilter: z.string().default("repair-loop"),
+      baselineFilter: z.string().default(""),
+      threshold: z.number().nonnegative().max(1).default(0.02),
+      maxSamples: z.number().int().positive().max(200000).default(20000),
+      cleanupFilter: z.string().default("repair-loop"),
+      cleanupKeepNewest: z.number().int().nonnegative().max(1000).default(20),
+      includeCleanup: z.boolean().default(true)
+    },
+    {
+      risk: "read",
+      mutates: false,
+      supportsDryRun: false,
+      phase: 3,
+      relatedResources: [
+        "unity://screenshots/baselines",
+        "unity://screenshots/baselines/{filter}",
+        "unity://visual/validation/latest",
+        "unity://visual/validation/{filter}"
+      ],
+      examples: [
+        {
+          currentFilter: "repair-loop",
+          baselineFilter: "kotor-main-menu-baseline",
+          cleanupKeepNewest: 3
+        }
+      ]
+    },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const data = await buildVisualValidationReport(context, args);
+        return successResponse("visual_validation_report completed.", data, startedAt);
+      } catch (error) {
+        return failureResponse("visual_validation_report failed", error, startedAt);
+      }
+    }
   );
 
   registerUnityRequestTool(

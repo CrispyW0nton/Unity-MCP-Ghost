@@ -204,7 +204,7 @@ npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C
 
 ## Phase 3: Ghost Moat
 
-Status: in progress, diagnostics substrate and the first repair-loop scaffold implemented.
+Status: in progress, diagnostics, semantic project understanding, screenshot validation, and the first repair-loop visual triage layer are implemented.
 
 Completed in Slice 1:
 
@@ -589,7 +589,29 @@ Slice 19 validation on KOTOR Unity project:
 - Dry-run cleanup filtered by `kotor-main-menu-baseline` planned zero deletions because named baselines are protected by default.
 - A controlled `ghost-cleanup-test` capture was deleted with `dryRun=false`; follow-up baseline listing returned zero matching captures.
 
+Completed in Slice 20:
+
+- Visual validation triage:
+  - MCP tool `visual_validation_report`
+  - MCP resource `unity://visual/validation/latest`
+  - MCP resource template `unity://visual/validation/{filter}`
+  - The report composes existing Unity screenshot commands to summarize the latest capture, selected baseline, sampled diff result, and screenshot cleanup dry-run recommendations.
+  - Baseline selection prefers an explicit filter, then labeled baselines, then the previous matching capture as a fallback.
+
+Game-development fit:
+
+- Agents can now inspect the visual state of a repair loop as one game-dev oriented report instead of manually chaining baseline listing, diffing, and cleanup planning.
+- The report is tuned for scenes, menus, cameras, UI, and imported KOTOR module validation where visual drift is a real gameplay/content regression signal.
+- Cleanup advice remains dry-run based, so named visual baselines are preserved unless the user explicitly approves pruning.
+
+Slice 20 validation on KOTOR Unity project:
+
+- Direct MCP `visual_validation_report` selected `kotor-main-menu-baseline-20260517-034301.png` as the baseline for the latest `repair-loop-20260517-042931-959.png` capture.
+- The report ran `screenshot.diff` and returned `withinThreshold: true` with `differentRatio: 0`.
+- `unity://visual/validation/latest` resolved through MCP resources and selected the same KOTOR baseline by label.
+- `npm run build`, `git diff --check`, `npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 20000`, and `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 90000` passed.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add a compact `visual_validation_report` tool/resource that summarizes latest capture, selected baseline, diff result, and cleanup recommendations.
+- Start the Phase 4 game-system coverage kickoff with the smallest high-value domain tools for KOTOR scene work.
