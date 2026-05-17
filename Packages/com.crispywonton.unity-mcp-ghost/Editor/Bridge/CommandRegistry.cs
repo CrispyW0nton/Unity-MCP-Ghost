@@ -84,6 +84,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("screenshot.capture", HandleScreenshotCapture);
             Register("screenshot.diff", HandleScreenshotDiff);
             Register("screenshot.baselines_list", HandleScreenshotBaselinesList);
+            Register("screenshot.baselines_cleanup", HandleScreenshotBaselinesCleanup);
             Register("batch.execute", HandleBatchExecute);
         }
 
@@ -1846,7 +1847,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var width = Math.Max(1, JsonRpcUtil.ReadInt(request.RawJson, "width", 1280) * Math.Max(1, superSize));
             var height = Math.Max(1, JsonRpcUtil.ReadInt(request.RawJson, "height", 720) * Math.Max(1, superSize));
             var directory = Path.Combine(Application.dataPath, "..", "Library", "UnityMcpGhost", "screenshots");
-            var fileName = label + "-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".png";
+            var fileName = label + "-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + ".png";
             var path = Path.GetFullPath(Path.Combine(directory, fileName));
 
             if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
@@ -2015,6 +2016,104 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append(",\"truncated\":");
             builder.Append(Bool(count >= limit));
             builder.Append(",\"note\":\"Use a returned path as repair_loop_run.screenshotBaselinePath or screenshot_diff.baselinePath.\"}");
+            return builder.ToString();
+        }
+
+        private static string HandleScreenshotBaselinesCleanup(UnityMcpRequest request)
+        {
+            var filter = JsonRpcUtil.ReadString(request.RawJson, "filter", string.Empty);
+            var olderThanDays = Math.Max(0, JsonRpcUtil.ReadInt(request.RawJson, "olderThanDays", 0));
+            var minBytes = Math.Max(0, JsonRpcUtil.ReadInt(request.RawJson, "minBytes", 1));
+            var keepNewest = Math.Max(0, JsonRpcUtil.ReadInt(request.RawJson, "keepNewest", 20));
+            var limit = Math.Max(1, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "limit", 100), 1000));
+            var includeUnlabeled = JsonRpcUtil.ReadBool(request.RawJson, "includeUnlabeled", true);
+            var allowDeleteBaselines = JsonRpcUtil.ReadBool(request.RawJson, "allowDeleteBaselines", false);
+            var dryRun = JsonRpcUtil.ReadBool(request.RawJson, "dryRun", true);
+            var protectedLabels = ReadRuleSet(JsonRpcUtil.ReadString(request.RawJson, "protectedLabels", string.Empty));
+            var cutoffUtc = olderThanDays > 0 ? DateTime.UtcNow.AddDays(-olderThanDays) : DateTime.MinValue;
+            var directory = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "Library", "UnityMcpGhost", "screenshots"));
+            var files = new List<FileInfo>();
+            if (Directory.Exists(directory))
+            {
+                foreach (var path in Directory.GetFiles(directory, "*.png", SearchOption.TopDirectoryOnly))
+                {
+                    files.Add(new FileInfo(path));
+                }
+            }
+
+            files.Sort(delegate (FileInfo left, FileInfo right)
+            {
+                return right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc);
+            });
+
+            var builder = new StringBuilder();
+            builder.Append("{\"ok\":true,\"source\":\"screenshot-baseline-cleanup\",\"dryRun\":");
+            builder.Append(Bool(dryRun));
+            builder.Append(",\"directory\":\"");
+            builder.Append(JsonRpcUtil.Escape(directory));
+            builder.Append("\",\"filter\":\"");
+            builder.Append(JsonRpcUtil.Escape(filter));
+            builder.Append("\",\"planned\":[");
+
+            var scanned = 0;
+            var matched = 0;
+            var planned = 0;
+            var deleted = 0;
+            foreach (var file in files)
+            {
+                if (planned >= limit)
+                {
+                    break;
+                }
+
+                scanned++;
+                var metadataPath = file.FullName + ".json";
+                var metadata = File.Exists(metadataPath) ? File.ReadAllText(metadataPath) : string.Empty;
+                if (!ScreenshotBaselineMatches(file, metadata, filter))
+                {
+                    continue;
+                }
+
+                var label = JsonRpcUtil.ReadString(metadata, "label", ReadScreenshotLabel(file.Name));
+                var protectedReason = ScreenshotCleanupProtectionReason(label, protectedLabels, includeUnlabeled, allowDeleteBaselines);
+                if (!string.IsNullOrEmpty(protectedReason))
+                {
+                    continue;
+                }
+
+                var matchIndex = matched;
+                matched++;
+                var reasons = ScreenshotCleanupReasons(file, matchIndex, keepNewest, olderThanDays, cutoffUtc, minBytes);
+                if (string.IsNullOrEmpty(reasons))
+                {
+                    continue;
+                }
+
+                if (planned > 0)
+                {
+                    builder.Append(",");
+                }
+
+                AppendScreenshotCleanupItem(builder, file, metadataPath, metadata, reasons, dryRun);
+                planned++;
+                if (!dryRun)
+                {
+                    DeleteScreenshotPair(file.FullName, metadataPath);
+                    deleted++;
+                }
+            }
+
+            builder.Append("],\"scannedCount\":");
+            builder.Append(scanned);
+            builder.Append(",\"matchedCount\":");
+            builder.Append(matched);
+            builder.Append(",\"plannedCount\":");
+            builder.Append(planned);
+            builder.Append(",\"deletedCount\":");
+            builder.Append(deleted);
+            builder.Append(",\"truncated\":");
+            builder.Append(Bool(planned >= limit));
+            builder.Append(",\"note\":\"Dry-run by default. Named labels containing 'baseline' and protectedLabels are skipped unless allowDeleteBaselines=true.\"}");
             return builder.ToString();
         }
 
@@ -3631,6 +3730,81 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 || (metadata ?? string.Empty).IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private static string ScreenshotCleanupProtectionReason(string label, HashSet<string> protectedLabels, bool includeUnlabeled, bool allowDeleteBaselines)
+        {
+            if (string.IsNullOrEmpty(label) && !includeUnlabeled)
+            {
+                return "unlabeled";
+            }
+
+            if (!allowDeleteBaselines && !string.IsNullOrEmpty(label) && label.IndexOf("baseline", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return "named-baseline";
+            }
+
+            if (!string.IsNullOrEmpty(label) && protectedLabels.Contains(label))
+            {
+                return "protected-label";
+            }
+
+            return string.Empty;
+        }
+
+        private static string ScreenshotCleanupReasons(FileInfo file, int matchIndex, int keepNewest, int olderThanDays, DateTime cutoffUtc, int minBytes)
+        {
+            var reasons = new List<string>();
+            if (keepNewest >= 0 && matchIndex >= keepNewest)
+            {
+                reasons.Add("beyond-keep-newest");
+            }
+
+            if (olderThanDays > 0 && file.LastWriteTimeUtc < cutoffUtc)
+            {
+                reasons.Add("older-than-" + olderThanDays + "-days");
+            }
+
+            if (file.Length <= minBytes)
+            {
+                reasons.Add("empty-or-too-small");
+            }
+
+            return string.Join(",", reasons.ToArray());
+        }
+
+        private static void AppendScreenshotCleanupItem(StringBuilder builder, FileInfo file, string metadataPath, string metadata, string reasons, bool dryRun)
+        {
+            builder.Append("{\"path\":\"");
+            builder.Append(JsonRpcUtil.Escape(file.FullName));
+            builder.Append("\",\"metadataPath\":\"");
+            builder.Append(JsonRpcUtil.Escape(File.Exists(metadataPath) ? metadataPath : string.Empty));
+            builder.Append("\",\"fileName\":\"");
+            builder.Append(JsonRpcUtil.Escape(file.Name));
+            builder.Append("\",\"label\":\"");
+            builder.Append(JsonRpcUtil.Escape(JsonRpcUtil.ReadString(metadata, "label", ReadScreenshotLabel(file.Name))));
+            builder.Append("\",\"bytes\":");
+            builder.Append(file.Length);
+            builder.Append(",\"lastWriteUtc\":\"");
+            builder.Append(file.LastWriteTimeUtc.ToString("O", CultureInfo.InvariantCulture));
+            builder.Append("\",\"reasons\":\"");
+            builder.Append(JsonRpcUtil.Escape(reasons));
+            builder.Append("\",\"deleted\":");
+            builder.Append(Bool(!dryRun));
+            builder.Append("}");
+        }
+
+        private static void DeleteScreenshotPair(string screenshotPath, string metadataPath)
+        {
+            if (File.Exists(screenshotPath))
+            {
+                File.Delete(screenshotPath);
+            }
+
+            if (File.Exists(metadataPath))
+            {
+                File.Delete(metadataPath);
+            }
+        }
+
         private static void AppendScreenshotBaseline(StringBuilder builder, FileInfo file, string metadataPath, string metadata, bool includeDimensions)
         {
             var label = JsonRpcUtil.ReadString(metadata, "label", ReadScreenshotLabel(file.Name));
@@ -3676,7 +3850,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static string ReadScreenshotLabel(string fileName)
         {
             var name = Path.GetFileNameWithoutExtension(fileName ?? string.Empty);
-            var match = Regex.Match(name, @"^(?<label>.+)-\d{8}-\d{6}$");
+            var match = Regex.Match(name, @"^(?<label>.+)-\d{8}-\d{6}(?:-\d{3})?$");
             return match.Success ? match.Groups["label"].Value : name;
         }
 

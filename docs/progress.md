@@ -568,7 +568,28 @@ Slice 18 validation on KOTOR Unity project:
 - The diff returned `differentRatio: 0`, `meanAbsoluteDifference: 0`, and `withinThreshold: true`.
 - `npm run build`, `git diff --check`, `npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 20000`, and `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 90000` passed.
 
+Completed in Slice 19:
+
+- Screenshot baseline hygiene:
+  - Unity bridge command `screenshot.baselines_cleanup`
+  - MCP tool `screenshot_baselines_cleanup`
+  - Cleanup is dry-run by default and supports `filter`, `olderThanDays`, `minBytes`, `keepNewest`, `limit`, `protectedLabels`, `includeUnlabeled`, and `allowDeleteBaselines`.
+  - Labels containing `baseline` are protected by default unless `allowDeleteBaselines=true`.
+  - Screenshot filenames now include milliseconds to prevent rapid same-label capture collisions.
+
+Game-development fit:
+
+- Repair loops can generate many visual artifacts while iterating on scenes, UI, menus, and imported KOTOR modules; cleanup lets agents manage that history safely.
+- Named baselines remain protected from routine cleanup, preserving visual references for repeated regression checks.
+- Empty or tiny historical screenshot files can be surfaced and pruned without touching validated baselines.
+
+Slice 19 validation on KOTOR Unity project:
+
+- Dry-run cleanup filtered by `repair-loop` planned excess captures with `reasons: "beyond-keep-newest"` and deleted nothing.
+- Dry-run cleanup filtered by `kotor-main-menu-baseline` planned zero deletions because named baselines are protected by default.
+- A controlled `ghost-cleanup-test` capture was deleted with `dryRun=false`; follow-up baseline listing returned zero matching captures.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Add baseline hygiene helpers for pruning stale/empty screenshot captures and protecting named baselines from accidental cleanup.
+- Add a compact `visual_validation_report` tool/resource that summarizes latest capture, selected baseline, diff result, and cleanup recommendations.

@@ -984,6 +984,26 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "screenshot_baselines_cleanup",
+    "Dry-run or prune stale, empty, or excess Ghost screenshot captures while protecting named baselines by default.",
+    {
+      filter: z.string().default(""),
+      olderThanDays: z.number().int().nonnegative().max(3650).default(0),
+      minBytes: z.number().int().nonnegative().max(10_000_000).default(1),
+      keepNewest: z.number().int().nonnegative().max(1000).default(20),
+      limit: z.number().int().positive().max(1000).default(100),
+      includeUnlabeled: z.boolean().default(true),
+      allowDeleteBaselines: z.boolean().default(false),
+      protectedLabels: z.string().default(""),
+      dryRun: z.boolean().default(true)
+    },
+    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 3, relatedResources: ["unity://screenshots/baselines", "unity://screenshots/baselines/{filter}"] },
+    "screenshot.baselines_cleanup"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "scene_create",
     "Create a new Unity scene for level, menu, or gameplay prototyping work.",
     {
