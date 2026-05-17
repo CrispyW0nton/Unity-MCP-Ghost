@@ -485,7 +485,28 @@ Slice 14 validation on KOTOR Unity project:
 - The KOTOR sample reported low risk, 2 script references, 0 serialized prefab/scene references, 10 suggested test candidates, and a validation plan of `script_validate`, `lint_unity_run`, `compile_wait`, and filtered `tests_run`.
 - MCP-level validation confirmed the `test_scope_suggest` tool returns structured content through stdio.
 
+Completed in Slice 15:
+
+- Repair-loop semantic validation planning:
+  - `repair_loop_run` now calls `semantic.test_scope_suggest` when a `scriptPath` is provided and `useSemanticTestScope` is enabled.
+  - The loop returns `semanticTestScope` and `plannedTestScope` in structured content.
+  - The dry-run or live `tests_run` pass uses the semantic filter unless the caller explicitly supplies `testFilter`.
+  - `compile_wait` now tolerates transient bridge disconnects while Unity is compiling or reloading after `script.validate`.
+  - `phase3:repair-smoke` now verifies semantic test-scope planning and retries transient Unity reload disconnects.
+
+Game-development fit:
+
+- Repair loops now choose validation based on gameplay-script impact instead of relying on a generic test mode/filter.
+- Unity's domain reload after script validation is treated as expected editor behavior, not as a failed repair loop.
+- The structured `plannedTestScope` makes it clear which EditMode/PlayMode test pass the agent intends to run before it mutates or executes broader validation.
+
+Slice 15 validation on KOTOR Unity project:
+
+- `repair_loop_run` for `Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs` completed through MCP stdio and returned step order: `editor_state`, `script_validate`, `compile_wait`, `test_scope_suggest`, compiler diagnostics, console diagnostics, and `tests_run_dry_run`.
+- The loop selected `plannedTestScope: { mode: "editmode", filter: "ParityTestRunner", source: "semantic-test-scope" }`.
+- `npm run build`, `git diff --check`, `npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 20000`, and `npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 90000` passed.
+
 Next Phase 3 targets:
 
 - Add automated assertions for `phase3:repair-smoke` in CI once a Unity test environment is available.
-- Wire `test_scope_suggest` into `repair_loop_run` so repair plans automatically carry focused validation recommendations.
+- Add screenshot capture/diff hooks to `repair_loop_run` so scene-facing changes can validate visual regressions after tests pass.

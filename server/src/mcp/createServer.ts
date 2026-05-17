@@ -213,8 +213,15 @@ async function pollOperation(context: ToolContext, operationId: string, timeoutM
 
 async function waitForUnityCompile(context: ToolContext, timeoutMs: number, intervalMs = 250): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
-  let state = asObject(await context.unity.request("editor.get_state"));
   while (Date.now() - startedAt < timeoutMs) {
+    let state: Record<string, unknown>;
+    try {
+      state = asObject(await context.unity.request("editor.get_state"));
+    } catch (error) {
+      await new Promise((resolve) => setTimeout(resolve, Math.max(intervalMs, 1000)));
+      continue;
+    }
+
     if (state.isCompiling !== true && state.isUpdating !== true) {
       return {
         ok: true,
@@ -225,14 +232,13 @@ async function waitForUnityCompile(context: ToolContext, timeoutMs: number, inte
     }
 
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    state = asObject(await context.unity.request("editor.get_state"));
   }
 
   return {
     ok: false,
     status: "timeout",
     elapsedMs: Date.now() - startedAt,
-    state
+    state: null
   };
 }
 
@@ -260,6 +266,45 @@ function diagnosticsFromPayload(payload: Record<string, unknown>): Record<string
 
 function diagnosticCount(payload: Record<string, unknown>): number {
   return diagnosticsFromPayload(payload).length;
+}
+
+function chooseRepairLoopTestScope(
+  semanticTestScope: Record<string, unknown> | null,
+  fallbackMode: "editmode" | "playmode",
+  fallbackFilter: string
+): { mode: "editmode" | "playmode"; filter: string; source: string } {
+  if (fallbackFilter) {
+    return {
+      mode: fallbackMode,
+      filter: fallbackFilter,
+      source: "caller"
+    };
+  }
+
+  const validationPlan = arrayValue(semanticTestScope?.validationPlan);
+  for (const step of validationPlan) {
+    const record = asObject(step);
+    if (record.tool !== "tests_run") {
+      continue;
+    }
+
+    const args = asObject(record.arguments);
+    const mode = stringValue(args.mode);
+    const filter = stringValue(args.filter);
+    if ((mode === "editmode" || mode === "playmode") && filter) {
+      return {
+        mode,
+        filter,
+        source: "semantic-test-scope"
+      };
+    }
+  }
+
+  return {
+    mode: fallbackMode,
+    filter: fallbackFilter,
+    source: "caller-default"
+  };
 }
 
 async function compilerFirstDiagnostics(
@@ -1716,11 +1761,12 @@ export function createMcpServer(context: ToolContext): McpServer {
       scriptPath: z.string().optional(),
       maxIterations: z.number().int().positive().max(5).default(1),
       compileTimeoutMs: z.number().int().positive().max(300000).default(30000),
+      useSemanticTestScope: z.boolean().default(true),
       runTests: z.boolean().default(false),
       testMode: z.enum(["editmode", "playmode"]).default("editmode"),
       testFilter: z.string().default("")
     },
-    { risk: "test-execution", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors", "unity://tests/{mode}"] },
+    { risk: "test-execution", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors", "unity://tests/{mode}", "unity://semantic/index"] },
     async (args) => {
       const startedAt = Date.now();
       try {
@@ -1736,6 +1782,18 @@ export function createMcpServer(context: ToolContext): McpServer {
 
         const compileStatus = await waitForUnityCompile(context, args.compileTimeoutMs);
         steps.push({ name: "compile_wait", ok: compileStatus.ok, data: compileStatus });
+
+        let semanticTestScope: Record<string, unknown> | null = null;
+        if (args.scriptPath && args.useSemanticTestScope) {
+          semanticTestScope = asObject(
+            await context.unity.request("semantic.test_scope_suggest", {
+              path: args.scriptPath,
+              includePlayMode: true,
+              limit: 10
+            })
+          );
+          steps.push({ name: "test_scope_suggest", ok: semanticTestScope.ok, data: semanticTestScope });
+        }
 
         const compileDiagnostics = asObject(
           await context.unity.request("compile.diagnostics_get", {
@@ -1765,20 +1823,21 @@ export function createMcpServer(context: ToolContext): McpServer {
           steps.push({ name: "patch_propose", ok: true, data: { proposalCount: patchProposals.length, proposals: patchProposals } });
         }
 
+        const plannedTestScope = chooseRepairLoopTestScope(semanticTestScope, args.testMode, args.testFilter);
         let tests: Record<string, unknown>;
         if (args.runTests) {
           const testStart = asObject(
             await context.unity.request("tests.run", {
-              mode: args.testMode,
-              filter: args.testFilter
+              mode: plannedTestScope.mode,
+              filter: plannedTestScope.filter
             })
           );
           tests = typeof testStart.operationId === "string" ? await pollOperation(context, testStart.operationId, 120000, 500) : testStart;
         } else {
           tests = asObject(
             await context.unity.request("tests.run", {
-              mode: args.testMode,
-              filter: args.testFilter,
+              mode: plannedTestScope.mode,
+              filter: plannedTestScope.filter,
               dryRun: true
             })
           );
@@ -1794,12 +1853,14 @@ export function createMcpServer(context: ToolContext): McpServer {
             maxIterations: args.maxIterations,
             scriptPath: args.scriptPath ?? null,
             diagnosticSource: compileDiagnosticList.length > 0 ? "compilation-pipeline" : "console-log-buffer",
+            semanticTestScope,
+            plannedTestScope,
             steps,
             patchProposals,
             nextActions: [
               "If diagnostics are present, propose minimal ranged edits with patch_propose.",
               "Apply accepted edits through repair_apply_edits with dryRun=true first.",
-              "Run tests with runTests=true only after diagnostics are clear or intentionally scoped."
+              "Use plannedTestScope for the smallest useful tests_run pass once diagnostics are clear."
             ]
           },
           startedAt

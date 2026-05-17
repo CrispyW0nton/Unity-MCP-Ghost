@@ -50,6 +50,15 @@ async function main(): Promise<void> {
   try {
     await client.connect(transport);
     await record(steps, "compile wait", () => callTool(client, "compile_wait", { timeoutMs: config.requestTimeoutMs }));
+    await record(steps, "repair loop semantic test scope", () =>
+      callTool(client, "repair_loop_run", {
+        objective: "Verify repair loop includes semantic test-scope planning for the target gameplay script.",
+        scriptPath: flags.scriptPath,
+        useSemanticTestScope: true,
+        runTests: false,
+        compileTimeoutMs: config.requestTimeoutMs
+      })
+    );
     await record(steps, "repair apply dry-run against target script", () =>
       callTool(client, "repair_apply_edits", {
         objective: "Preview a no-op ranged repair edit without mutating gameplay code.",
@@ -179,6 +188,24 @@ async function record(steps: SmokeStep[], name: string, run: () => Promise<Recor
 }
 
 async function callTool(client: Client, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    try {
+      return await callToolOnce(client, name, args);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientUnityBridgeError(error) || attempt === 8) {
+        throw error;
+      }
+
+      await delay(1500);
+    }
+  }
+
+  throw lastError;
+}
+
+async function callToolOnce(client: Client, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const result = await client.callTool({ name, arguments: args });
   const content = result.structuredContent as { ok?: boolean; data?: unknown; diagnostics?: unknown[] } | undefined;
   if (!content) {
@@ -195,6 +222,19 @@ async function callTool(client: Client, name: string, args: Record<string, unkno
   };
 }
 
+function isTransientUnityBridgeError(error: unknown): boolean {
+  const text = message(error);
+  return text.includes("ECONNREFUSED")
+    || text.includes("fetch failed")
+    || text.includes("socket hang up")
+    || text.includes("other side closed")
+    || text.includes("Unity HTTP bridge responded 503");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function summarize(result: Record<string, unknown>): unknown {
   const data = result.data;
   if (!data || typeof data !== "object") {
@@ -209,6 +249,7 @@ function summarize(result: Record<string, unknown>): unknown {
     editCount: record.editCount,
     scopedErrorCount: record.scopedErrorCount,
     testsFailed: record.testsFailed,
+    plannedTestScope: record.plannedTestScope,
     stepCount: Array.isArray(record.steps) ? record.steps.length : undefined
   };
 }
