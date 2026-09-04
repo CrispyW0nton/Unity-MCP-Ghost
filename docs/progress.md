@@ -55,10 +55,15 @@ Commits and verified gates:
   - Passed 16 Node tests, 73 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
   - Live Unity `2022.3.62f1` security validation passed HTTP missing/wrong-token and browser-Origin rejection, exact project/editor mismatch errors, destructive and package/network default-deny, pinned HTTP health, WebSocket missing-token/Origin rejection, fragmented WebSocket health, and oversized WebSocket close code `1009`.
   - Live authenticated durable-queue fallback passed all 8 read-only/dry-run smoke checks. The bridge token ACL was verified as non-inherited and restricted to the current Windows user.
+- `0e95a69` — `feat(runtime): control play mode, console boundaries, and test input`
+  - Added reload-resilient normal Play mode get/set/step operations, persisted Console clear/mark/wait/assert boundaries, and verified keyboard/pointer simulation through the Unity Input System or a project-scoped deterministic driver.
+  - Added a clean-room runtime fixture proving PageUp, PageDown, pointer clicks, and exact one-frame stepping through observable fixture state and Console evidence; unsupported inputs return typed `UNSUPPORTED_INPUT_BACKEND` failures.
+  - Passed 19 Node tests, 84 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+  - Live Unity `2022.3.62f1` runtime smoke passed scene open, Console clear/boundary assertions, normal Play transition across domain reload, verified PageUp/PageDown and pointer delivery, typed unsupported-input rejection, pause, exact frame `19 -> 20`, and clean stop. Project/editor identity remained pinned across reload.
 
 Next required slice:
 
-- Implement normal Play mode, Console boundary, and verified input operations for Workstream 4.
+- Implement durable, cancellable `scenario_matrix_run` orchestration and deterministic `evidence_bundle_create` output for Workstream 5.
 
 ## Phase 1: Foundation
 
