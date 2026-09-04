@@ -50,7 +50,12 @@ async function main(): Promise<void> {
 
   try {
     await client.connect(transport);
-    await record(steps, "compile wait", () => callTool(client, "compile_wait", { timeoutMs: config.requestTimeoutMs }), assertCompileWait);
+    await record(steps, "target script validation", () =>
+      callTool(client, "script_validate", {
+        path: flags.scriptPath,
+        timeoutMs: config.requestTimeoutMs
+      })
+    );
     await record(
       steps,
       "repair loop semantic test scope",
@@ -148,7 +153,12 @@ async function runMutationRollbackSmoke(client: Client, steps: SmokeStep[], time
       return;
     }
 
-    await record(steps, "compile scratch script", () => callTool(client, "compile_wait", { timeoutMs }));
+    await record(steps, "validate scratch script", () =>
+      callTool(client, "script_validate", {
+        path: ScratchScriptPath,
+        timeoutMs
+      })
+    );
     const repairRan = await record(steps, "apply invalid edit and roll back", () =>
       callTool(client, "repair_apply_edits", {
         objective: "Verify non-dry-run repair rollback on a controlled scratch C# script.",
@@ -171,13 +181,19 @@ async function runMutationRollbackSmoke(client: Client, steps: SmokeStep[], time
       });
     }
   } finally {
+    let cleanupGeneration = 0;
     if (scriptCreated) {
-      await record(steps, "delete scratch script", () =>
-        callTool(client, "script_delete", {
+      try {
+        const result = await callTool(client, "script_delete", {
           path: ScratchScriptPath,
           dryRun: false
-        })
-      );
+        });
+        const ok = result.ok !== false;
+        cleanupGeneration = Number(asRecord(result.data).requestedCompileGeneration ?? 0);
+        steps.push({ name: "delete scratch script", ok, summary: summarize(result) });
+      } catch (error) {
+        steps.push({ name: "delete scratch script", ok: false, error: message(error) });
+      }
     }
 
     if (folderCreated) {
@@ -190,8 +206,13 @@ async function runMutationRollbackSmoke(client: Client, steps: SmokeStep[], time
       );
     }
 
-    if (scriptCreated || folderCreated) {
-      await record(steps, "compile after scratch cleanup", () => callTool(client, "compile_wait", { timeoutMs }));
+    if (cleanupGeneration > 0) {
+      await record(
+        steps,
+        "compile after scratch cleanup",
+        () => callTool(client, "compile_wait", { requestedCompileGeneration: cleanupGeneration, timeoutMs }),
+        assertCompileWait
+      );
     }
   }
 }

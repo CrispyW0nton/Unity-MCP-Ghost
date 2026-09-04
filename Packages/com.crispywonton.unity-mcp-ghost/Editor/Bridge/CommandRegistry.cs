@@ -3,9 +3,13 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEditor;
+using UnityEditor.Compilation;
 using UnityEditor.PackageManager;
 using UnityEditor.PackageManager.Requests;
 using UnityEditor.SceneManagement;
@@ -78,6 +82,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("operation.get", HandleOperationGet);
             Register("operation.list", HandleOperationList);
             Register("compile.wait", HandleCompileWait);
+            Register("compile.status_get", HandleCompileStatusGet);
             Register("tests.run", HandleTestsRun);
             Register("prefab.create", HandlePrefabCreate);
             Register("prefab.instantiate", HandlePrefabInstantiate);
@@ -189,7 +194,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var severity = JsonRpcUtil.ReadString(request.RawJson, "severity", "error");
             var limit = JsonRpcUtil.ReadInt(request.RawJson, "limit", 200);
             var pathFilter = JsonRpcUtil.ReadString(request.RawJson, "pathFilter", string.Empty);
-            return CompileDiagnosticBuffer.Diagnostics(severity, limit, pathFilter);
+            var generation = JsonRpcUtil.ReadInt(request.RawJson, "generation", 0);
+            return CompileDiagnosticBuffer.Diagnostics(severity, limit, pathFilter, generation);
         }
 
         private static string HandleSceneHierarchy(UnityMcpRequest request)
@@ -1502,7 +1508,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             EnsureAssetExists(path);
             var fullPath = FullAssetPath(path);
             var content = File.ReadAllText(fullPath);
-            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"content\":\"" + JsonRpcUtil.Escape(content) + "\"}";
+            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"content\":\"" + JsonRpcUtil.Escape(content) + "\",\"sha256\":\"" + Sha256File(fullPath) + "\"}";
         }
 
         private static string HandleScriptCreate(UnityMcpRequest request)
@@ -1582,9 +1588,12 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"script.apply_edits\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"editCount\":" + ranges.Count + ",\"originalBytes\":" + Encoding.UTF8.GetByteCount(original) + ",\"updatedBytes\":" + Encoding.UTF8.GetByteCount(updated) + "}}";
             }
 
+            var preWriteSha256 = Sha256File(fullPath);
+            var requestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
             File.WriteAllText(fullPath, updated, Encoding.UTF8);
             AssetDatabase.ImportAsset(path);
-            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"editCount\":" + ranges.Count + ",\"originalBytes\":" + Encoding.UTF8.GetByteCount(original) + ",\"updatedBytes\":" + Encoding.UTF8.GetByteCount(updated) + "}";
+            CompilationPipeline.RequestScriptCompilation();
+            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"editCount\":" + ranges.Count + ",\"originalBytes\":" + Encoding.UTF8.GetByteCount(original) + ",\"updatedBytes\":" + Encoding.UTF8.GetByteCount(updated) + ",\"preWriteSha256\":\"" + preWriteSha256 + "\",\"afterSha256\":\"" + Sha256File(fullPath) + "\",\"requestedCompileGeneration\":" + requestedCompileGeneration + "}";
         }
 
         private static string HandleScriptDelete(UnityMcpRequest request)
@@ -1597,8 +1606,12 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"script.delete\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\"}}";
             }
 
+            var fullPath = FullAssetPath(path);
+            var preWriteSha256 = Sha256File(fullPath);
+            var requestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
             var deleted = AssetDatabase.MoveAssetToTrash(path);
-            return "{\"ok\":" + Bool(deleted) + ",\"path\":\"" + JsonRpcUtil.Escape(path) + "\"}";
+            CompilationPipeline.RequestScriptCompilation();
+            return "{\"ok\":" + Bool(deleted) + ",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"preWriteSha256\":\"" + preWriteSha256 + "\",\"requestedCompileGeneration\":" + requestedCompileGeneration + "}";
         }
 
         private static string HandleScriptValidate(UnityMcpRequest request)
@@ -1610,9 +1623,15 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"script.validate\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\"}}";
             }
 
-            AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
-            var diagnostics = ConsoleLogBuffer.Diagnostics("error", JsonRpcUtil.ReadInt(request.RawJson, "limit", 100), path);
-            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"isCompiling\":" + Bool(EditorApplication.isCompiling) + ",\"result\":" + diagnostics + "}";
+            var requestedCompileGeneration = JsonRpcUtil.ReadInt(request.RawJson, "requestedCompileGeneration", 0);
+            if (requestedCompileGeneration <= 0)
+            {
+                requestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+                CompilationPipeline.RequestScriptCompilation();
+            }
+
+            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"requestedCompileGeneration\":" + requestedCompileGeneration + "}";
         }
 
         private static string HandlePackageList(UnityMcpRequest request)
@@ -1681,10 +1700,26 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static string HandleCompileWait(UnityMcpRequest request)
         {
             var timeoutMs = Math.Max(1000, JsonRpcUtil.ReadInt(request.RawJson, "timeoutMs", 30000));
-            var startedAt = DateTime.UtcNow;
-            var deadline = startedAt.AddMilliseconds(timeoutMs);
-            var id = OperationStore.Register("compile", "compile.wait", () => CompileWaitState(startedAt, deadline));
+            var generation = JsonRpcUtil.ReadInt(request.RawJson, "requestedCompileGeneration", 0);
+            if (generation <= 0)
+            {
+                throw new InvalidOperationException("compile.wait requires requestedCompileGeneration from a mutation or validation request.");
+            }
+
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            var id = OperationStore.Register("compile", "compile.wait " + generation, () => CompileWaitState(generation, deadline));
             return OperationStarted(id, "compile.wait");
+        }
+
+        private static string HandleCompileStatusGet(UnityMcpRequest request)
+        {
+            var generation = JsonRpcUtil.ReadInt(request.RawJson, "requestedCompileGeneration", 0);
+            if (generation <= 0)
+            {
+                throw new InvalidOperationException("compile.status_get requires requestedCompileGeneration.");
+            }
+
+            return CompileDiagnosticBuffer.WaitState(generation, false);
         }
 
         private static string HandleTestsRun(UnityMcpRequest request)
@@ -4819,10 +4854,29 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"" + JsonRpcUtil.Escape(action) + "\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"overwrite\":" + Bool(overwrite) + ",\"bytes\":" + Encoding.UTF8.GetByteCount(contents) + "}}";
             }
 
+            var preWriteSha256 = exists ? Sha256File(fullPath) : string.Empty;
+            var requestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
             File.WriteAllText(fullPath, contents, Encoding.UTF8);
             AssetDatabase.ImportAsset(path);
+            CompilationPipeline.RequestScriptCompilation();
             var guid = AssetDatabase.AssetPathToGUID(path);
-            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"guid\":\"" + JsonRpcUtil.Escape(guid) + "\",\"created\":" + Bool(!exists) + "}";
+            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"guid\":\"" + JsonRpcUtil.Escape(guid) + "\",\"created\":" + Bool(!exists) + ",\"preWriteSha256\":\"" + preWriteSha256 + "\",\"afterSha256\":\"" + Sha256File(fullPath) + "\",\"requestedCompileGeneration\":" + requestedCompileGeneration + "}";
+        }
+
+        private static string Sha256File(string path)
+        {
+            using (var stream = File.OpenRead(path))
+            using (var sha256 = SHA256.Create())
+            {
+                var bytes = sha256.ComputeHash(stream);
+                var builder = new StringBuilder(bytes.Length * 2);
+                foreach (var value in bytes)
+                {
+                    builder.Append(value.ToString("x2", CultureInfo.InvariantCulture));
+                }
+
+                return builder.ToString();
+            }
         }
 
         private static string BuildScriptTemplate(string className, string namespaceName)
@@ -4999,18 +5053,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return "{\"status\":\"failed\",\"error\":\"" + JsonRpcUtil.Escape(message) + "\"}";
         }
 
-        private static string CompileWaitState(DateTime startedAt, DateTime deadline)
+        private static string CompileWaitState(int generation, DateTime deadline)
         {
-            var isCompiling = EditorApplication.isCompiling;
-            var isUpdating = EditorApplication.isUpdating;
-            var status = (!isCompiling && !isUpdating) ? "success" : DateTime.UtcNow > deadline ? "failed" : "running";
-            return "{"
-                + "\"status\":\"" + status + "\","
-                + "\"isCompiling\":" + Bool(isCompiling) + ","
-                + "\"isUpdating\":" + Bool(isUpdating) + ","
-                + "\"startedAtUtc\":\"" + startedAt.ToString("O", CultureInfo.InvariantCulture) + "\","
-                + "\"elapsedMs\":" + (int)(DateTime.UtcNow - startedAt).TotalMilliseconds
-                + "}";
+            return CompileDiagnosticBuffer.WaitState(generation, DateTime.UtcNow > deadline);
         }
 
         private static void AppendPackageInfo(StringBuilder builder, UnityEditor.PackageManager.PackageInfo package)
@@ -5055,6 +5100,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private int passed;
         private int failed;
         private int skipped;
+        private readonly List<JObject> failedTests = new List<JObject>();
 
         public GhostTestRunCallbacks(string operationId)
         {
@@ -5073,17 +5119,31 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         public void RunFinished(ITestResultAdaptor result)
         {
-            StateJson = "{"
-                + "\"status\":\"success\","
-                + "\"operationId\":\"" + JsonRpcUtil.Escape(OperationId) + "\","
-                + "\"total\":" + total + ","
-                + "\"passed\":" + passed + ","
-                + "\"failed\":" + failed + ","
-                + "\"skipped\":" + skipped + ","
-                + "\"duration\":" + result.Duration.ToString("R", CultureInfo.InvariantCulture) + ","
-                + "\"resultState\":\"" + JsonRpcUtil.Escape(result.ResultState) + "\","
-                + "\"message\":\"" + JsonRpcUtil.Escape(result.Message) + "\""
-                + "}";
+            var status = ClassifyRunStatus(result != null ? result.ResultState : "InfrastructureError", failed);
+            var response = new JObject
+            {
+                ["ok"] = status == "success",
+                ["status"] = status,
+                ["operationId"] = OperationId,
+                ["total"] = total,
+                ["passed"] = passed,
+                ["failed"] = failed,
+                ["skipped"] = skipped,
+                ["duration"] = result != null ? result.Duration : 0,
+                ["resultState"] = result != null ? result.ResultState : "InfrastructureError",
+                ["message"] = result != null ? result.Message : "Unity Test Runner returned no result.",
+                ["failedTests"] = new JArray(failedTests)
+            };
+            if (status != "success")
+            {
+                response["error"] = new JObject
+                {
+                    ["code"] = status == "cancelled" ? "UNITY_TEST_RUN_CANCELLED" : "UNITY_TEST_RUN_FAILED",
+                    ["message"] = status == "cancelled" ? "Unity test run was cancelled." : failed + " Unity tests failed or the runner aborted."
+                };
+            }
+
+            StateJson = response.ToString(Formatting.None);
         }
 
         public void TestStarted(ITestAdaptor test)
@@ -5092,21 +5152,48 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         public void TestFinished(ITestResultAdaptor result)
         {
-            if (result.Test == null || !result.Test.IsTestAssembly)
+            if (result == null || result.Test == null || result.Test.HasChildren)
             {
-                if (string.Equals(result.ResultState, "Passed", StringComparison.OrdinalIgnoreCase))
-                {
-                    passed++;
-                }
-                else if (string.Equals(result.ResultState, "Skipped", StringComparison.OrdinalIgnoreCase))
-                {
-                    skipped++;
-                }
-                else if (!string.Equals(result.ResultState, "Inconclusive", StringComparison.OrdinalIgnoreCase))
-                {
-                    failed++;
-                }
+                return;
             }
+
+            if (string.Equals(result.ResultState, "Passed", StringComparison.OrdinalIgnoreCase))
+            {
+                passed++;
+            }
+            else if (string.Equals(result.ResultState, "Skipped", StringComparison.OrdinalIgnoreCase) || string.Equals(result.ResultState, "Inconclusive", StringComparison.OrdinalIgnoreCase))
+            {
+                skipped++;
+            }
+            else
+            {
+                failed++;
+                failedTests.Add(new JObject
+                {
+                    ["name"] = result.Test.Name,
+                    ["fullName"] = result.Test.FullName,
+                    ["resultState"] = result.ResultState,
+                    ["message"] = result.Message,
+                    ["stackTrace"] = result.StackTrace,
+                    ["duration"] = result.Duration
+                });
+            }
+        }
+
+        internal static string ClassifyRunStatus(string resultState, int failedCount)
+        {
+            var normalized = (resultState ?? string.Empty).ToLowerInvariant();
+            if (normalized.Contains("cancel"))
+            {
+                return "cancelled";
+            }
+
+            if (failedCount > 0 || normalized.Contains("fail") || normalized.Contains("abort") || normalized.Contains("error"))
+            {
+                return "failed";
+            }
+
+            return "success";
         }
     }
 

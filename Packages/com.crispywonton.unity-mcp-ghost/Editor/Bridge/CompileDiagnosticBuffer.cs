@@ -1,131 +1,308 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Text;
+using System.IO;
+using System.Linq;
 using System.Text.RegularExpressions;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditor.Compilation;
+using UnityEngine;
 
 namespace CrispyWonton.UnityMcpGhost.Editor
 {
     [InitializeOnLoad]
     internal static class CompileDiagnosticBuffer
     {
-        private const int MaxEntries = 1000;
-        private static readonly List<Entry> Entries = new List<Entry>();
-        private static int nextSequence = 1;
+        private const int MaxGenerations = 50;
+        private const int MaxDiagnostics = 1000;
+        private static readonly object Gate = new object();
+        private static readonly string StatePath = Path.Combine(Directory.GetParent(Application.dataPath).FullName, "Library", "UnityMcpGhost", "compile-state.json");
+        private static CompileState state = Load();
 
         static CompileDiagnosticBuffer()
         {
+            CompilationPipeline.compilationStarted -= HandleCompilationStarted;
+            CompilationPipeline.compilationStarted += HandleCompilationStarted;
             CompilationPipeline.assemblyCompilationFinished -= HandleAssemblyCompilationFinished;
             CompilationPipeline.assemblyCompilationFinished += HandleAssemblyCompilationFinished;
+            CompilationPipeline.compilationFinished -= HandleCompilationFinished;
+            CompilationPipeline.compilationFinished += HandleCompilationFinished;
+            EditorApplication.delayCall += RecoverAfterReload;
         }
 
-        public static string Diagnostics(string severity, int limit, string pathFilter)
+        public static int LatestRequestedGeneration
+        {
+            get
+            {
+                lock (Gate)
+                {
+                    return state.Generations.Count == 0 ? 0 : state.Generations.Max(entry => entry.Generation);
+                }
+            }
+        }
+
+        public static int RequestGeneration(string sourcePath)
+        {
+            lock (Gate)
+            {
+                var generation = Math.Max(1, state.NextGeneration++);
+                state.Generations.Add(new GenerationRecord
+                {
+                    Generation = generation,
+                    SourcePath = NormalizePath(sourcePath),
+                    Status = "waiting",
+                    RequestedAtUtc = UtcNow()
+                });
+                TrimAndSave();
+                return generation;
+            }
+        }
+
+        public static string Diagnostics(string severity, int limit, string pathFilter, int generation = 0)
         {
             var normalizedSeverity = string.IsNullOrEmpty(severity) ? "error" : severity.ToLowerInvariant();
             var normalizedPath = NormalizePath(pathFilter ?? string.Empty);
-            var max = Math.Max(1, Math.Min(limit, MaxEntries));
-            var builder = new StringBuilder();
-            builder.Append("{\"ok\":true,\"source\":\"compilation-pipeline\",\"diagnostics\":[");
+            var max = Math.Max(1, Math.Min(limit, MaxDiagnostics));
 
-            var written = 0;
-            lock (Entries)
+            lock (Gate)
             {
-                for (var index = Entries.Count - 1; index >= 0 && written < max; index--)
+                var diagnostics = state.Generations
+                    .Where(entry => generation <= 0 || entry.Generation == generation)
+                    .SelectMany(entry => entry.Diagnostics)
+                    .Where(entry => MatchesSeverity(entry, normalizedSeverity))
+                    .Where(entry => string.IsNullOrEmpty(normalizedPath) || NormalizePath(entry.File).IndexOf(normalizedPath, StringComparison.OrdinalIgnoreCase) >= 0)
+                    .OrderByDescending(entry => entry.Sequence)
+                    .Take(max)
+                    .Select(ToDiagnosticJson)
+                    .ToArray();
+
+                return new JObject
                 {
-                    var entry = Entries[index];
-                    if (!MatchesSeverity(entry, normalizedSeverity))
-                    {
-                        continue;
-                    }
-
-                    if (!string.IsNullOrEmpty(normalizedPath) && !NormalizePath(entry.File).Contains(normalizedPath))
-                    {
-                        continue;
-                    }
-
-                    if (written > 0)
-                    {
-                        builder.Append(",");
-                    }
-
-                    AppendDiagnostic(builder, entry);
-                    written++;
-                }
+                    ["ok"] = true,
+                    ["source"] = "compilation-pipeline",
+                    ["generation"] = generation > 0 ? generation : (int?)null,
+                    ["diagnostics"] = new JArray(diagnostics),
+                    ["truncated"] = diagnostics.Length == max,
+                    ["note"] = "Diagnostics are scoped to persisted compile/import generations."
+                }.ToString(Formatting.None);
             }
+        }
 
-            builder.Append("],\"note\":\"Diagnostics are captured from UnityEditor.Compilation.CompilationPipeline while the Ghost bridge is loaded.\"}");
-            return builder.ToString();
+        public static string WaitState(int generation, bool timedOut)
+        {
+            lock (Gate)
+            {
+                var record = state.Generations.FirstOrDefault(entry => entry.Generation == generation);
+                if (record == null)
+                {
+                    return FailureState("UNKNOWN_COMPILE_GENERATION", "Unknown compile generation: " + generation, generation, "failed");
+                }
+
+                if (timedOut && record.Status != "success" && record.Status != "failed")
+                {
+                    return FailureState("COMPILE_GENERATION_TIMEOUT", "Timed out before compile generation " + generation + " completed.", generation, "timeout", record);
+                }
+
+                var response = new JObject
+                {
+                    ["ok"] = record.Status != "failed",
+                    ["status"] = record.Status,
+                    ["generation"] = record.Generation,
+                    ["observed"] = !string.IsNullOrEmpty(record.ObservedAtUtc),
+                    ["requestedAtUtc"] = record.RequestedAtUtc,
+                    ["observedAtUtc"] = NullOrString(record.ObservedAtUtc),
+                    ["completedAtUtc"] = NullOrString(record.CompletedAtUtc),
+                    ["sourcePath"] = record.SourcePath,
+                    ["diagnostics"] = new JArray(record.Diagnostics.Select(ToDiagnosticJson))
+                };
+
+                if (record.Status == "failed")
+                {
+                    response["error"] = new JObject
+                    {
+                        ["code"] = "COMPILE_GENERATION_FAILED",
+                        ["message"] = "Compile generation " + generation + " completed with compiler errors."
+                    };
+                }
+
+                return response.ToString(Formatting.None);
+            }
+        }
+
+        internal static void ResetForTests()
+        {
+            lock (Gate)
+            {
+                state = new CompileState();
+                Save();
+            }
+        }
+
+        internal static void BeginCompilationForTests()
+        {
+            BeginCompilation();
+        }
+
+        internal static void CompleteCompilationForTests()
+        {
+            CompleteCompilation();
+        }
+
+        internal static void AddDiagnosticForTests(int generation, string assembly, CompilerMessageType type, string file, int line, int column, string message)
+        {
+            lock (Gate)
+            {
+                var record = state.Generations.First(entry => entry.Generation == generation);
+                AddDiagnostic(record, assembly, type, file, line, column, message);
+                Save();
+            }
+        }
+
+        private static void HandleCompilationStarted(object context)
+        {
+            BeginCompilation();
+        }
+
+        private static void BeginCompilation()
+        {
+            lock (Gate)
+            {
+                var pending = state.Generations.Where(entry => entry.Status == "waiting").ToList();
+                if (pending.Count == 0)
+                {
+                    var generation = Math.Max(1, state.NextGeneration++);
+                    pending.Add(new GenerationRecord
+                    {
+                        Generation = generation,
+                        SourcePath = string.Empty,
+                        Status = "waiting",
+                        RequestedAtUtc = UtcNow()
+                    });
+                    state.Generations.Add(pending[0]);
+                }
+
+                var observedAt = UtcNow();
+                foreach (var record in pending)
+                {
+                    record.Status = "running";
+                    record.ObservedAtUtc = observedAt;
+                }
+
+                TrimAndSave();
+            }
         }
 
         private static void HandleAssemblyCompilationFinished(string assemblyPath, CompilerMessage[] messages)
         {
-            if (messages == null || messages.Length == 0)
+            lock (Gate)
             {
-                return;
-            }
-
-            lock (Entries)
-            {
-                foreach (var message in messages)
+                var active = state.Generations.Where(entry => entry.Status == "running").ToList();
+                if (active.Count == 0)
                 {
-                    Entries.Add(new Entry
+                    BeginCompilation();
+                    active = state.Generations.Where(entry => entry.Status == "running").ToList();
+                }
+
+                if (messages != null)
+                {
+                    foreach (var record in active)
                     {
-                        Sequence = nextSequence++,
-                        UtcTimestamp = DateTime.UtcNow,
-                        AssemblyPath = assemblyPath ?? string.Empty,
-                        File = NormalizePath(message.file ?? string.Empty),
-                        Line = message.line,
-                        Column = message.column,
-                        Type = message.type,
-                        Message = message.message ?? string.Empty
-                    });
+                        foreach (var message in messages)
+                        {
+                            AddDiagnostic(record, assemblyPath, message.type, message.file, message.line, message.column, message.message);
+                        }
+                    }
                 }
 
-                if (Entries.Count > MaxEntries)
+                TrimAndSave();
+            }
+        }
+
+        private static void HandleCompilationFinished(object context)
+        {
+            CompleteCompilation();
+        }
+
+        private static void CompleteCompilation()
+        {
+            lock (Gate)
+            {
+                var completedAt = UtcNow();
+                foreach (var record in state.Generations.Where(entry => entry.Status == "running"))
                 {
-                    Entries.RemoveRange(0, Entries.Count - MaxEntries);
+                    record.CompletedAtUtc = completedAt;
+                    record.Status = record.Diagnostics.Any(entry => entry.Severity == "error") ? "failed" : "success";
                 }
+
+                TrimAndSave();
             }
         }
 
-        private static bool MatchesSeverity(Entry entry, string severity)
+        private static void RecoverAfterReload()
         {
-            if (severity == "all")
+            if (!EditorApplication.isCompiling)
             {
-                return true;
+                CompleteCompilation();
             }
-
-            if (severity == "warning")
-            {
-                return entry.Type == CompilerMessageType.Warning;
-            }
-
-            return entry.Type == CompilerMessageType.Error;
         }
 
-        private static void AppendDiagnostic(StringBuilder builder, Entry entry)
+        private static void AddDiagnostic(GenerationRecord record, string assembly, CompilerMessageType type, string file, int line, int column, string message)
         {
-            builder.Append("{\"sequence\":");
-            builder.Append(entry.Sequence);
-            builder.Append(",\"timestampUtc\":\"");
-            builder.Append(entry.UtcTimestamp.ToString("O", CultureInfo.InvariantCulture));
-            builder.Append("\",\"severity\":\"");
-            builder.Append(entry.Type == CompilerMessageType.Warning ? "warning" : "error");
-            builder.Append("\",\"code\":\"");
-            builder.Append(JsonRpcUtil.Escape(ReadCode(entry.Message)));
-            builder.Append("\",\"message\":\"");
-            builder.Append(JsonRpcUtil.Escape(entry.Message));
-            builder.Append("\",\"file\":\"");
-            builder.Append(JsonRpcUtil.Escape(entry.File));
-            builder.Append("\",\"line\":");
-            builder.Append(entry.Line);
-            builder.Append(",\"column\":");
-            builder.Append(entry.Column);
-            builder.Append(",\"assemblyPath\":\"");
-            builder.Append(JsonRpcUtil.Escape(entry.AssemblyPath));
-            builder.Append("\"}");
+            record.Diagnostics.Add(new DiagnosticRecord
+            {
+                Sequence = state.NextDiagnosticSequence++,
+                Generation = record.Generation,
+                TimestampUtc = UtcNow(),
+                Assembly = assembly ?? string.Empty,
+                Severity = type == CompilerMessageType.Warning ? "warning" : "error",
+                Code = ReadCode(message),
+                Message = message ?? string.Empty,
+                File = NormalizePath(file ?? string.Empty),
+                Line = line,
+                Column = column
+            });
+        }
+
+        private static bool MatchesSeverity(DiagnosticRecord entry, string severity)
+        {
+            return severity == "all" || string.Equals(entry.Severity, severity, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static JObject ToDiagnosticJson(DiagnosticRecord entry)
+        {
+            return new JObject
+            {
+                ["sequence"] = entry.Sequence,
+                ["generation"] = entry.Generation,
+                ["timestampUtc"] = entry.TimestampUtc,
+                ["assembly"] = entry.Assembly,
+                ["severity"] = entry.Severity,
+                ["code"] = entry.Code,
+                ["message"] = entry.Message,
+                ["file"] = entry.File,
+                ["line"] = entry.Line,
+                ["column"] = entry.Column
+            };
+        }
+
+        private static string FailureState(string code, string message, int generation, string status, GenerationRecord record = null)
+        {
+            return new JObject
+            {
+                ["ok"] = false,
+                ["status"] = status,
+                ["generation"] = generation,
+                ["observed"] = record != null && !string.IsNullOrEmpty(record.ObservedAtUtc),
+                ["diagnostics"] = record == null ? new JArray() : new JArray(record.Diagnostics.Select(ToDiagnosticJson)),
+                ["error"] = new JObject { ["code"] = code, ["message"] = message }
+            }.ToString(Formatting.None);
+        }
+
+        private static JToken NullOrString(string value)
+        {
+            return string.IsNullOrEmpty(value) ? JValue.CreateNull() : new JValue(value);
         }
 
         private static string ReadCode(string message)
@@ -138,24 +315,103 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         {
             var normalized = (path ?? string.Empty).Replace("\\", "/");
             var assetsIndex = normalized.IndexOf("/Assets/", StringComparison.OrdinalIgnoreCase);
-            if (assetsIndex >= 0)
-            {
-                return normalized.Substring(assetsIndex + 1);
-            }
-
-            return normalized;
+            return assetsIndex >= 0 ? normalized.Substring(assetsIndex + 1) : normalized;
         }
 
-        private sealed class Entry
+        private static string UtcNow()
+        {
+            return DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        private static CompileState Load()
+        {
+            try
+            {
+                if (File.Exists(StatePath))
+                {
+                    return JsonConvert.DeserializeObject<CompileState>(File.ReadAllText(StatePath)) ?? new CompileState();
+                }
+            }
+            catch (Exception)
+            {
+                // A corrupt cache must not prevent Unity from loading. A later save replaces it.
+            }
+
+            return new CompileState();
+        }
+
+        private static void TrimAndSave()
+        {
+            if (state.Generations.Count > MaxGenerations)
+            {
+                state.Generations.RemoveRange(0, state.Generations.Count - MaxGenerations);
+            }
+
+            var totalDiagnostics = state.Generations.Sum(entry => entry.Diagnostics.Count);
+            while (totalDiagnostics > MaxDiagnostics)
+            {
+                var oldest = state.Generations.FirstOrDefault(entry => entry.Diagnostics.Count > 0);
+                if (oldest == null)
+                {
+                    break;
+                }
+
+                oldest.Diagnostics.RemoveAt(0);
+                totalDiagnostics--;
+            }
+
+            Save();
+        }
+
+        private static void Save()
+        {
+            var directory = Path.GetDirectoryName(StatePath);
+            Directory.CreateDirectory(directory);
+            var temporaryPath = StatePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            File.WriteAllText(temporaryPath, JsonConvert.SerializeObject(state, Formatting.Indented));
+            if (File.Exists(StatePath))
+            {
+                File.Replace(temporaryPath, StatePath, null);
+            }
+            else
+            {
+                File.Move(temporaryPath, StatePath);
+            }
+        }
+
+        [Serializable]
+        private sealed class CompileState
+        {
+            public int NextGeneration = 1;
+            public int NextDiagnosticSequence = 1;
+            public List<GenerationRecord> Generations = new List<GenerationRecord>();
+        }
+
+        [Serializable]
+        private sealed class GenerationRecord
+        {
+            public int Generation;
+            public string SourcePath = string.Empty;
+            public string Status = "waiting";
+            public string RequestedAtUtc = string.Empty;
+            public string ObservedAtUtc = string.Empty;
+            public string CompletedAtUtc = string.Empty;
+            public List<DiagnosticRecord> Diagnostics = new List<DiagnosticRecord>();
+        }
+
+        [Serializable]
+        private sealed class DiagnosticRecord
         {
             public int Sequence;
-            public DateTime UtcTimestamp;
-            public string AssemblyPath;
-            public string File;
+            public int Generation;
+            public string TimestampUtc = string.Empty;
+            public string Assembly = string.Empty;
+            public string Severity = string.Empty;
+            public string Code = string.Empty;
+            public string Message = string.Empty;
+            public string File = string.Empty;
             public int Line;
             public int Column;
-            public CompilerMessageType Type;
-            public string Message;
         }
     }
 }

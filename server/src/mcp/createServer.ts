@@ -203,7 +203,7 @@ async function pollOperation(context: ToolContext, operationId: string, timeoutM
   let last = asObject(await context.unity.request("operation.get", { operationId }));
   while (Date.now() - startedAt < timeoutMs) {
     const state = asObject(last.state);
-    if (state.status !== "running") {
+    if (state.status !== "running" && state.status !== "waiting") {
       return last;
     }
 
@@ -214,23 +214,32 @@ async function pollOperation(context: ToolContext, operationId: string, timeoutM
   return last;
 }
 
-async function waitForUnityCompile(context: ToolContext, timeoutMs: number, intervalMs = 250): Promise<Record<string, unknown>> {
+async function waitForUnityCompile(
+  context: ToolContext,
+  requestedCompileGeneration: number,
+  timeoutMs: number,
+  intervalMs = 250
+): Promise<Record<string, unknown>> {
   const startedAt = Date.now();
+  let lastState: Record<string, unknown> | null = null;
   while (Date.now() - startedAt < timeoutMs) {
-    let state: Record<string, unknown>;
     try {
-      state = asObject(await context.unity.request("editor.get_state"));
-    } catch (error) {
+      lastState = asObject(
+        await context.unity.request("compile.status_get", {
+          requestedCompileGeneration
+        })
+      );
+    } catch {
       await new Promise((resolve) => setTimeout(resolve, Math.max(intervalMs, 1000)));
       continue;
     }
 
-    if (state.isCompiling !== true && state.isUpdating !== true) {
+    if (lastState.status === "success" || lastState.status === "failed") {
       return {
-        ok: true,
-        status: "success",
+        ...lastState,
+        ok: lastState.status === "success" && lastState.ok !== false,
         elapsedMs: Date.now() - startedAt,
-        state
+        requestedCompileGeneration
       };
     }
 
@@ -240,8 +249,13 @@ async function waitForUnityCompile(context: ToolContext, timeoutMs: number, inte
   return {
     ok: false,
     status: "timeout",
+    error: {
+      code: "COMPILE_GENERATION_TIMEOUT",
+      message: `Timed out waiting for compile generation ${requestedCompileGeneration}.`
+    },
     elapsedMs: Date.now() - startedAt,
-    state: null
+    requestedCompileGeneration,
+    state: lastState
   };
 }
 
@@ -1210,6 +1224,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     {
       severity: z.enum(["error", "warning", "all"]).default("error"),
       pathFilter: z.string().default(""),
+      generation: z.number().int().positive().optional(),
       limit: z.number().int().positive().max(500).default(100)
     },
     { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors"] },
@@ -2049,18 +2064,77 @@ export function createMcpServer(context: ToolContext): McpServer {
     "script.delete"
   );
 
-  registerUnityRequestTool(
+  registerTool(
     server,
-    context,
     "script_validate",
-    "Import and validate a Unity C# script, returning bridge-session compiler diagnostics for repair loops.",
+    "Compile and validate a Unity C# script against an exact import generation.",
     {
       path: z.string().min(1),
+      requestedCompileGeneration: z.number().int().positive().optional(),
+      timeoutMs: z.number().int().positive().max(300000).default(30000),
       limit: z.number().int().positive().max(500).default(100),
       dryRun: DryRunSchema
     },
     { risk: "read", mutates: false, supportsDryRun: true, phase: 3, relatedResources: ["unity://console/errors"] },
-    "script.validate"
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const validationStart = asObject(
+          await context.unity.request("script.validate", {
+            path: args.path,
+            requestedCompileGeneration: args.requestedCompileGeneration,
+            limit: args.limit,
+            dryRun: args.dryRun
+          })
+        );
+        if (args.dryRun) {
+          return successResponse("script_validate dry run completed.", validationStart, startedAt);
+        }
+
+        const generation = numberValue(validationStart.requestedCompileGeneration);
+        if (generation <= 0) {
+          return failureResponse("script_validate failed", new Error("Unity did not return a compile generation."), startedAt, [], {
+            code: "MISSING_COMPILE_GENERATION",
+            data: validationStart
+          });
+        }
+
+        const compile = await waitForUnityCompile(context, generation, args.timeoutMs);
+        const diagnosticResult = asObject(
+          await context.unity.request("compile.diagnostics_get", {
+            severity: "error",
+            pathFilter: args.path,
+            generation,
+            limit: args.limit
+          })
+        );
+        const diagnostics = diagnosticsFromPayload(diagnosticResult);
+        const validationOk = compile.ok === true && diagnostics.length === 0;
+        return successResponse(
+          "script_validate completed.",
+          {
+            ok: validationOk,
+            error: validationOk
+              ? null
+              : {
+                  code: compile.status === "timeout" ? "COMPILE_GENERATION_TIMEOUT" : "SCRIPT_COMPILER_ERRORS",
+                  message:
+                    compile.status === "timeout"
+                      ? `Timed out waiting for compile generation ${generation}.`
+                      : `Compile generation ${generation} produced ${diagnostics.length} scoped error${diagnostics.length === 1 ? "" : "s"}.`
+                },
+            path: args.path,
+            requestedCompileGeneration: generation,
+            compile,
+            diagnostics
+          },
+          startedAt,
+          { confidence: validationOk ? 1 : 0 }
+        );
+      } catch (error) {
+        return failureResponse("script_validate failed", error, startedAt);
+      }
+    }
   );
 
   registerUnityRequestTool(
@@ -2167,15 +2241,16 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerTool(
     server,
     "compile_wait",
-    "Wait until Unity is no longer compiling or updating by polling editor state from the MCP server.",
+    "Wait for one exact Unity compile/import generation to be observed and completed.",
     {
+      requestedCompileGeneration: z.number().int().positive(),
       timeoutMs: z.number().int().positive().max(300000).default(30000)
     },
     { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
     async (args) => {
       const startedAt = Date.now();
       try {
-        const data = await waitForUnityCompile(context, args.timeoutMs);
+        const data = await waitForUnityCompile(context, args.requestedCompileGeneration, args.timeoutMs);
         return successResponse("compile_wait completed.", data, startedAt, {
           confidence: data.status === "success" ? 1 : 0.5
         });
@@ -2333,16 +2408,27 @@ export function createMcpServer(context: ToolContext): McpServer {
         );
         steps.push({ name: "script_apply_edits", ok: applyResult.ok, data: applyResult });
 
-        const compileStatus = await waitForUnityCompile(context, args.compileTimeoutMs);
+        const requestedCompileGeneration = numberValue(applyResult.requestedCompileGeneration);
+        if (requestedCompileGeneration <= 0) {
+          throw new Error("script.apply_edits did not return requestedCompileGeneration.");
+        }
+        const compileStatus = await waitForUnityCompile(context, requestedCompileGeneration, args.compileTimeoutMs);
         steps.push({ name: "compile_wait", ok: compileStatus.ok, data: compileStatus });
 
-        const validation = asObject(await context.unity.request("script.validate", { path: args.scriptPath, limit: 100 }));
+        const validation = asObject(
+          await context.unity.request("script.validate", {
+            path: args.scriptPath,
+            requestedCompileGeneration,
+            limit: 100
+          })
+        );
         steps.push({ name: "script_validate", ok: validation.ok, data: validation });
 
         const compileDiagnostics = asObject(
           await context.unity.request("compile.diagnostics_get", {
             severity: "error",
             pathFilter: args.scriptPath,
+            generation: requestedCompileGeneration,
             limit: 100
           })
         );
@@ -2386,8 +2472,18 @@ export function createMcpServer(context: ToolContext): McpServer {
               dryRun: false
             })
           );
-          const rollbackCompile = await waitForUnityCompile(context, args.compileTimeoutMs);
-          const rollbackValidation = asObject(await context.unity.request("script.validate", { path: args.scriptPath, limit: 100 }));
+          const rollbackGeneration = numberValue(writeBack.requestedCompileGeneration);
+          if (rollbackGeneration <= 0) {
+            throw new Error("rollback script.write did not return requestedCompileGeneration.");
+          }
+          const rollbackCompile = await waitForUnityCompile(context, rollbackGeneration, args.compileTimeoutMs);
+          const rollbackValidation = asObject(
+            await context.unity.request("script.validate", {
+              path: args.scriptPath,
+              requestedCompileGeneration: rollbackGeneration,
+              limit: 100
+            })
+          );
           rollback = {
             writeBack,
             compile: rollbackCompile,
@@ -2458,12 +2554,20 @@ export function createMcpServer(context: ToolContext): McpServer {
         steps.push({ name: "editor_state", ok: editorState.ok, data: editorState });
 
         let validation: Record<string, unknown> | undefined;
+        let requestedCompileGeneration = 0;
         if (args.scriptPath) {
           validation = asObject(await context.unity.request("script.validate", { path: args.scriptPath, limit: 100 }));
+          requestedCompileGeneration = numberValue(validation.requestedCompileGeneration);
+          if (requestedCompileGeneration <= 0) {
+            throw new Error("script.validate did not return requestedCompileGeneration.");
+          }
           steps.push({ name: "script_validate", ok: validation.ok, data: validation });
         }
 
-        const compileStatus = await waitForUnityCompile(context, args.compileTimeoutMs);
+        const compileStatus =
+          requestedCompileGeneration > 0
+            ? await waitForUnityCompile(context, requestedCompileGeneration, args.compileTimeoutMs)
+            : { ok: true, status: "not-requested", requestedCompileGeneration: null };
         steps.push({ name: "compile_wait", ok: compileStatus.ok, data: compileStatus });
 
         let semanticTestScope: Record<string, unknown> | null = null;
@@ -2482,6 +2586,7 @@ export function createMcpServer(context: ToolContext): McpServer {
           await context.unity.request("compile.diagnostics_get", {
             severity: "error",
             pathFilter: args.scriptPath ?? "",
+            ...(requestedCompileGeneration > 0 ? { generation: requestedCompileGeneration } : {}),
             limit: 100
           })
         );
