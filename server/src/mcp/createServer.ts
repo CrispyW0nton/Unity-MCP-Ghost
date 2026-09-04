@@ -2016,6 +2016,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       namespace: z.string().optional(),
       content: z.string().optional(),
       overwrite: z.boolean().default(false),
+      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
       dryRun: DryRunSchema
     },
     { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
@@ -2031,6 +2032,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       path: z.string().min(1),
       content: z.string(),
       overwrite: z.boolean().default(true),
+      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
       dryRun: DryRunSchema
     },
     { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
@@ -2045,6 +2047,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     {
       path: z.string().min(1),
       edits: z.array(ScriptEditSchema).min(1),
+      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
       dryRun: DryRunSchema
     },
     { risk: "code-write", mutates: true, supportsDryRun: true, phase: 2 },
@@ -2058,10 +2061,39 @@ export function createMcpServer(context: ToolContext): McpServer {
     "Move a Unity C# script asset to trash through AssetDatabase.",
     {
       path: z.string().min(1),
+      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
       dryRun: DryRunSchema
     },
     { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
     "script.delete"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "script_restore",
+    "Restore a byte-identical C# script from a Ghost transaction backup.",
+    {
+      path: z.string().min(1),
+      backupPath: z.string().min(1),
+      backupMetaPath: z.string().default(""),
+      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional()
+    },
+    { risk: "code-write", mutates: true, supportsDryRun: false, phase: 3 },
+    "script.restore"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "script_transaction_complete",
+    "Discard bounded Ghost recovery backups only after compile and required tests pass.",
+    {
+      backupPath: z.string().default(""),
+      backupMetaPath: z.string().default("")
+    },
+    { risk: "safe-write", mutates: true, supportsDryRun: false, phase: 3 },
+    "script.transaction_complete"
   );
 
   registerTool(
@@ -2378,6 +2410,7 @@ export function createMcpServer(context: ToolContext): McpServer {
           await context.unity.request("script.apply_edits", {
             path: args.scriptPath,
             edits: args.edits,
+            expectedSha256: stringValue(script.sha256),
             dryRun: true
           })
         );
@@ -2403,6 +2436,7 @@ export function createMcpServer(context: ToolContext): McpServer {
           await context.unity.request("script.apply_edits", {
             path: args.scriptPath,
             edits: args.edits,
+            expectedSha256: stringValue(script.sha256),
             dryRun: false
           })
         );
@@ -2459,19 +2493,30 @@ export function createMcpServer(context: ToolContext): McpServer {
         const compilerErrorCount = diagnosticCount(compileDiagnostics);
         const effectiveErrorCount = Math.max(scopedErrorCount, compilerErrorCount);
         const testState = tests ? asObject(tests.state) : {};
-        const testsFailed = tests ? testState.status === "failed" || tests.status === "failed" : false;
+        const testsFailed = tests ? testState.status !== "success" || numberValue(testState.failed) > 0 || tests.status === "failed" : false;
         const shouldRollback = args.rollbackOnFailure && (compileStatus.ok === false || effectiveErrorCount > 0 || testsFailed);
         let rollback: Record<string, unknown> | null = null;
 
         if (shouldRollback) {
-          const writeBack = asObject(
-            await context.unity.request("script.write", {
-              path: args.scriptPath,
-              content: originalContent,
-              overwrite: true,
-              dryRun: false
-            })
-          );
+          const backupPath = stringValue(applyResult.backupPath);
+          const writeBack = backupPath
+            ? asObject(
+                await context.unity.request("script.restore", {
+                  path: args.scriptPath,
+                  backupPath,
+                  backupMetaPath: stringValue(applyResult.backupMetaPath),
+                  expectedSha256: stringValue(applyResult.afterSha256)
+                })
+              )
+            : asObject(
+                await context.unity.request("script.write", {
+                  path: args.scriptPath,
+                  content: originalContent,
+                  overwrite: true,
+                  expectedSha256: stringValue(applyResult.afterSha256),
+                  dryRun: false
+                })
+              );
           const rollbackGeneration = numberValue(writeBack.requestedCompileGeneration);
           if (rollbackGeneration <= 0) {
             throw new Error("rollback script.write did not return requestedCompileGeneration.");
@@ -2484,14 +2529,43 @@ export function createMcpServer(context: ToolContext): McpServer {
               limit: 100
             })
           );
+          const rollbackRead = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+          const byteIdentical = stringValue(rollbackRead.sha256) === stringValue(script.sha256);
+          const cleanup = asObject(
+            await context.unity.request("script.transaction_complete", {
+              backupPath,
+              backupMetaPath: stringValue(applyResult.backupMetaPath)
+            })
+          );
+          const restoreCleanup = asObject(
+            await context.unity.request("script.transaction_complete", {
+              backupPath: stringValue(writeBack.backupPath),
+              backupMetaPath: stringValue(writeBack.backupMetaPath)
+            })
+          );
           rollback = {
             writeBack,
             compile: rollbackCompile,
-            validation: rollbackValidation
+            validation: rollbackValidation,
+            readBack: rollbackRead,
+            expectedSha256: stringValue(script.sha256),
+            restoredSha256: stringValue(rollbackRead.sha256),
+            byteIdentical,
+            cleanup,
+            restoreCleanup
           };
           steps.push({ name: "rollback_script_write", ok: writeBack.ok, data: writeBack });
           steps.push({ name: "rollback_compile_wait", ok: rollbackCompile.ok, data: rollbackCompile });
           steps.push({ name: "rollback_script_validate", ok: rollbackValidation.ok, data: rollbackValidation });
+          steps.push({ name: "rollback_hash_verify", ok: byteIdentical, data: rollback });
+        } else if (effectiveErrorCount === 0 && compileStatus.ok !== false && !testsFailed) {
+          const cleanup = asObject(
+            await context.unity.request("script.transaction_complete", {
+              backupPath: stringValue(applyResult.backupPath),
+              backupMetaPath: stringValue(applyResult.backupMetaPath)
+            })
+          );
+          steps.push({ name: "script_transaction_complete", ok: cleanup.ok, data: cleanup });
         }
 
         return successResponse(
@@ -2739,6 +2813,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       let originalSha256 = "";
       let sourceChanged = false;
       let restored: Record<string, unknown> | null = null;
+      const transactionBackups: Array<{ backupPath: string; backupMetaPath: string }> = [];
 
       const compileAndDiagnose = async (requestedCompileGeneration?: number): Promise<Record<string, unknown>> => {
         const validationStart = asObject(
@@ -2783,14 +2858,26 @@ export function createMcpServer(context: ToolContext): McpServer {
       };
 
       const restoreOriginal = async (): Promise<Record<string, unknown>> => {
-        const write = asObject(
-          await context.unity.request("script.write", {
-            path: args.scriptPath,
-            content: originalContent,
-            overwrite: true,
-            dryRun: false
-          })
-        );
+        const current = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+        const originalBackup = transactionBackups[0];
+        const write = originalBackup?.backupPath
+          ? asObject(
+              await context.unity.request("script.restore", {
+                path: args.scriptPath,
+                backupPath: originalBackup.backupPath,
+                backupMetaPath: originalBackup.backupMetaPath,
+                expectedSha256: stringValue(current.sha256)
+              })
+            )
+          : asObject(
+              await context.unity.request("script.write", {
+                path: args.scriptPath,
+                content: originalContent,
+                overwrite: true,
+                expectedSha256: stringValue(current.sha256),
+                dryRun: false
+              })
+            );
         const generation = numberValue(write.requestedCompileGeneration);
         if (generation <= 0) {
           return { ok: false, error: { code: "ROLLBACK_GENERATION_MISSING", message: "Rollback write returned no compile generation." }, write };
@@ -2798,6 +2885,12 @@ export function createMcpServer(context: ToolContext): McpServer {
         const compile = await waitForUnityCompile(context, generation, args.compileTimeoutMs);
         const readBack = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
         const restoredHash = stringValue(readBack.sha256);
+        if (stringValue(write.backupPath)) {
+          transactionBackups.push({
+            backupPath: stringValue(write.backupPath),
+            backupMetaPath: stringValue(write.backupMetaPath)
+          });
+        }
         return {
           ok: compile.ok === true && restoredHash === originalSha256,
           write,
@@ -2805,6 +2898,21 @@ export function createMcpServer(context: ToolContext): McpServer {
           expectedSha256: originalSha256,
           restoredSha256: restoredHash
         };
+      };
+
+      const completeTransactions = async (): Promise<Record<string, unknown>[]> => {
+        const completed: Record<string, unknown>[] = [];
+        for (const backup of transactionBackups) {
+          completed.push(
+            asObject(
+              await context.unity.request("script.transaction_complete", {
+                backupPath: backup.backupPath,
+                backupMetaPath: backup.backupMetaPath
+              })
+            )
+          );
+        }
+        return completed;
       };
 
       try {
@@ -2828,6 +2936,7 @@ export function createMcpServer(context: ToolContext): McpServer {
             iterationReceipt.ok = testsOk;
             iterations.push(iterationReceipt);
             if (testsOk) {
+              const transactionCleanup = await completeTransactions();
               return successResponse(
                 "repair_loop_run completed with a verified green result.",
                 {
@@ -2838,7 +2947,8 @@ export function createMcpServer(context: ToolContext): McpServer {
                   iterationCount: iterations.length,
                   originalSha256,
                   finalSha256: stringValue(asObject(await context.unity.request("script.read", { path: args.scriptPath })).sha256),
-                  restored: null
+                  restored: null,
+                  transactionCleanup
                 },
                 startedAt
               );
@@ -2867,6 +2977,7 @@ export function createMcpServer(context: ToolContext): McpServer {
             await context.unity.request("script.apply_edits", {
               path: args.scriptPath,
               edits,
+              expectedSha256: stringValue(currentScript.sha256),
               dryRun: true
             })
           );
@@ -2883,10 +2994,17 @@ export function createMcpServer(context: ToolContext): McpServer {
             await context.unity.request("script.apply_edits", {
               path: args.scriptPath,
               edits,
+              expectedSha256: stringValue(currentScript.sha256),
               dryRun: false
             })
           );
           sourceChanged = true;
+          if (stringValue(applied.backupPath)) {
+            transactionBackups.push({
+              backupPath: stringValue(applied.backupPath),
+              backupMetaPath: stringValue(applied.backupMetaPath)
+            });
+          }
           const appliedGeneration = numberValue(applied.requestedCompileGeneration);
           current = await compileAndDiagnose(appliedGeneration);
           const tests = current.ok === true ? await runRequiredTests() : null;
@@ -2901,6 +3019,7 @@ export function createMcpServer(context: ToolContext): McpServer {
 
           if (iterationOk) {
             const finalRead = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+            const transactionCleanup = await completeTransactions();
             return successResponse(
               "repair_loop_run applied and verified a repair.",
               {
@@ -2911,7 +3030,8 @@ export function createMcpServer(context: ToolContext): McpServer {
                 iterationCount: iterations.length,
                 originalSha256,
                 finalSha256: stringValue(finalRead.sha256),
-                restored: null
+                restored: null,
+                transactionCleanup
               },
               startedAt
             );
@@ -2921,6 +3041,7 @@ export function createMcpServer(context: ToolContext): McpServer {
         if (sourceChanged) {
           restored = await restoreOriginal();
         }
+        const transactionCleanup = await completeTransactions();
         return successResponse(
           "repair_loop_run exhausted without a green result.",
           {
@@ -2934,7 +3055,8 @@ export function createMcpServer(context: ToolContext): McpServer {
             iterations,
             iterationCount: iterations.length,
             originalSha256,
-            restored
+            restored,
+            transactionCleanup
           },
           startedAt,
           { confidence: 0 }
@@ -2947,9 +3069,17 @@ export function createMcpServer(context: ToolContext): McpServer {
             restored = { ok: false, error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError) };
           }
         }
+        let transactionCleanup: Record<string, unknown>[] = [];
+        if (!sourceChanged || restored?.ok === true) {
+          try {
+            transactionCleanup = await completeTransactions();
+          } catch {
+            // Preserve backups when cleanup fails so a caller can still recover manually.
+          }
+        }
         return failureResponse("repair_loop_run failed", error, startedAt, [], {
           code: restored && restored.ok === false ? "REPAIR_ROLLBACK_FAILED" : "REPAIR_LOOP_FAILED",
-          data: { objective: args.objective, scriptPath: args.scriptPath, iterations, originalSha256, restored }
+          data: { objective: args.objective, scriptPath: args.scriptPath, iterations, originalSha256, restored, transactionCleanup }
         });
       }
     }

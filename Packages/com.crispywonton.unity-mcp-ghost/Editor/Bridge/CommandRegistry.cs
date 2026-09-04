@@ -3,13 +3,11 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
-using UnityEditor.Compilation;
 using UnityEditor.PackageManager;
 using UnityEditor.PackageManager.Requests;
 using UnityEditor.SceneManagement;
@@ -74,6 +72,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("script.write", HandleScriptWrite);
             Register("script.apply_edits", HandleScriptApplyEdits);
             Register("script.delete", HandleScriptDelete);
+            Register("script.restore", HandleScriptRestore);
+            Register("script.transaction_complete", HandleScriptTransactionComplete);
             Register("script.validate", HandleScriptValidate);
             Register("package.list", HandlePackageList);
             Register("package.search", HandlePackageSearch);
@@ -1507,8 +1507,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var path = EnsureScriptPath(JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty));
             EnsureAssetExists(path);
             var fullPath = FullAssetPath(path);
-            var content = File.ReadAllText(fullPath);
-            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"content\":\"" + JsonRpcUtil.Escape(content) + "\",\"sha256\":\"" + Sha256File(fullPath) + "\"}";
+            var snapshot = ScriptFileTransaction.Read(fullPath);
+            return new JObject
+            {
+                ["ok"] = true,
+                ["path"] = path,
+                ["content"] = snapshot.Content,
+                ["sha256"] = snapshot.Sha256,
+                ["encoding"] = snapshot.EncodingName,
+                ["newline"] = snapshot.Newline == "\r\n" ? "crlf" : snapshot.Newline == "\r" ? "cr" : "lf"
+            }.ToString(Formatting.None);
         }
 
         private static string HandleScriptCreate(UnityMcpRequest request)
@@ -1523,7 +1531,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 contents = BuildScriptTemplate(className, namespaceName);
             }
 
-            return WriteScript(path, contents, overwrite, JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false), "script.create");
+            return WriteScript(path, contents, overwrite, JsonRpcUtil.ReadString(request.RawJson, "expectedSha256", string.Empty), JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false), "script.create");
         }
 
         private static string HandleScriptWrite(UnityMcpRequest request)
@@ -1531,7 +1539,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var path = EnsureScriptPath(JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty));
             var overwrite = JsonRpcUtil.ReadBool(request.RawJson, "overwrite", true);
             var contents = JsonRpcUtil.ReadString(request.RawJson, "content", string.Empty);
-            return WriteScript(path, contents, overwrite, JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false), "script.write");
+            return WriteScript(path, contents, overwrite, JsonRpcUtil.ReadString(request.RawJson, "expectedSha256", string.Empty), JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false), "script.write");
         }
 
         private static string HandleScriptApplyEdits(UnityMcpRequest request)
@@ -1545,7 +1553,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             var fullPath = FullAssetPath(path);
-            var original = File.ReadAllText(fullPath);
+            var snapshot = ScriptFileTransaction.Read(fullPath);
+            var original = snapshot.Content;
             var ranges = new List<TextEditRange>();
             for (var index = 0; index < edits.Count; index++)
             {
@@ -1583,17 +1592,20 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 updated = updated.Substring(0, range.StartOffset) + range.Text + updated.Substring(range.EndOffset);
             }
 
-            if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
+            var dryRun = JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false);
+            var receipt = ScriptFileTransaction.Write(fullPath, path, updated, JsonRpcUtil.ReadString(request.RawJson, "expectedSha256", string.Empty), dryRun);
+            if (receipt.Ok && !dryRun)
             {
-                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"script.apply_edits\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"editCount\":" + ranges.Count + ",\"originalBytes\":" + Encoding.UTF8.GetByteCount(original) + ",\"updatedBytes\":" + Encoding.UTF8.GetByteCount(updated) + "}}";
+                receipt.RequestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
             }
 
-            var preWriteSha256 = Sha256File(fullPath);
-            var requestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
-            File.WriteAllText(fullPath, updated, Encoding.UTF8);
-            AssetDatabase.ImportAsset(path);
-            CompilationPipeline.RequestScriptCompilation();
-            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"editCount\":" + ranges.Count + ",\"originalBytes\":" + Encoding.UTF8.GetByteCount(original) + ",\"updatedBytes\":" + Encoding.UTF8.GetByteCount(updated) + ",\"preWriteSha256\":\"" + preWriteSha256 + "\",\"afterSha256\":\"" + Sha256File(fullPath) + "\",\"requestedCompileGeneration\":" + requestedCompileGeneration + "}";
+            var result = JObject.Parse(ScriptFileTransaction.ToJson(receipt));
+            result["action"] = "script.apply_edits";
+            result["editCount"] = ranges.Count;
+            result["originalBytes"] = receipt.BeforeBytes;
+            result["updatedBytes"] = receipt.AfterBytes;
+            return result.ToString(Formatting.None);
         }
 
         private static string HandleScriptDelete(UnityMcpRequest request)
@@ -1601,17 +1613,49 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var path = EnsureScriptPath(JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty));
             EnsureAssetExists(path);
 
-            if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
+            var fullPath = FullAssetPath(path);
+            var dryRun = JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false);
+            var receipt = ScriptFileTransaction.Delete(fullPath, path, JsonRpcUtil.ReadString(request.RawJson, "expectedSha256", string.Empty), dryRun);
+            if (receipt.Ok && !dryRun)
             {
-                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"script.delete\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\"}}";
+                receipt.RequestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
+                AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
             }
 
-            var fullPath = FullAssetPath(path);
-            var preWriteSha256 = Sha256File(fullPath);
-            var requestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
-            var deleted = AssetDatabase.MoveAssetToTrash(path);
-            CompilationPipeline.RequestScriptCompilation();
-            return "{\"ok\":" + Bool(deleted) + ",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"preWriteSha256\":\"" + preWriteSha256 + "\",\"requestedCompileGeneration\":" + requestedCompileGeneration + "}";
+            return ScriptFileTransaction.ToJson(receipt);
+        }
+
+        private static string HandleScriptRestore(UnityMcpRequest request)
+        {
+            var path = EnsureScriptPath(JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty));
+            var receipt = ScriptFileTransaction.Restore(
+                FullAssetPath(path),
+                path,
+                JsonRpcUtil.ReadString(request.RawJson, "backupPath", string.Empty),
+                JsonRpcUtil.ReadString(request.RawJson, "backupMetaPath", string.Empty),
+                JsonRpcUtil.ReadString(request.RawJson, "expectedSha256", string.Empty));
+            if (receipt.Ok)
+            {
+                receipt.RequestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            }
+
+            return ScriptFileTransaction.ToJson(receipt);
+        }
+
+        private static string HandleScriptTransactionComplete(UnityMcpRequest request)
+        {
+            var backupPath = JsonRpcUtil.ReadString(request.RawJson, "backupPath", string.Empty);
+            var backupMetaPath = JsonRpcUtil.ReadString(request.RawJson, "backupMetaPath", string.Empty);
+            var removed = ScriptFileTransaction.DiscardBackup(backupPath);
+            var removedMeta = ScriptFileTransaction.DiscardBackup(backupMetaPath);
+            return new JObject
+            {
+                ["ok"] = true,
+                ["backupPath"] = backupPath,
+                ["backupRemoved"] = removed,
+                ["backupMetaRemoved"] = removedMeta
+            }.ToString(Formatting.None);
         }
 
         private static string HandleScriptValidate(UnityMcpRequest request)
@@ -1628,7 +1672,6 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             {
                 requestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
                 AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
-                CompilationPipeline.RequestScriptCompilation();
             }
 
             return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"requestedCompileGeneration\":" + requestedCompileGeneration + "}";
@@ -4839,7 +4882,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return Path.Combine(Application.dataPath, relative.Replace("/", Path.DirectorySeparatorChar.ToString()));
         }
 
-        private static string WriteScript(string path, string contents, bool overwrite, bool dryRun, string action)
+        private static string WriteScript(string path, string contents, bool overwrite, string expectedSha256, bool dryRun, string action)
         {
             EnsureAssetParentFolder(path);
             var fullPath = FullAssetPath(path);
@@ -4849,34 +4892,17 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 throw new InvalidOperationException("Script already exists and overwrite is false: " + path);
             }
 
-            if (dryRun)
+            var receipt = ScriptFileTransaction.Write(fullPath, path, contents, expectedSha256, dryRun);
+            if (receipt.Ok && !dryRun)
             {
-                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"" + JsonRpcUtil.Escape(action) + "\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"overwrite\":" + Bool(overwrite) + ",\"bytes\":" + Encoding.UTF8.GetByteCount(contents) + "}}";
+                receipt.RequestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
             }
 
-            var preWriteSha256 = exists ? Sha256File(fullPath) : string.Empty;
-            var requestedCompileGeneration = CompileDiagnosticBuffer.RequestGeneration(path);
-            File.WriteAllText(fullPath, contents, Encoding.UTF8);
-            AssetDatabase.ImportAsset(path);
-            CompilationPipeline.RequestScriptCompilation();
-            var guid = AssetDatabase.AssetPathToGUID(path);
-            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"guid\":\"" + JsonRpcUtil.Escape(guid) + "\",\"created\":" + Bool(!exists) + ",\"preWriteSha256\":\"" + preWriteSha256 + "\",\"afterSha256\":\"" + Sha256File(fullPath) + "\",\"requestedCompileGeneration\":" + requestedCompileGeneration + "}";
-        }
-
-        private static string Sha256File(string path)
-        {
-            using (var stream = File.OpenRead(path))
-            using (var sha256 = SHA256.Create())
-            {
-                var bytes = sha256.ComputeHash(stream);
-                var builder = new StringBuilder(bytes.Length * 2);
-                foreach (var value in bytes)
-                {
-                    builder.Append(value.ToString("x2", CultureInfo.InvariantCulture));
-                }
-
-                return builder.ToString();
-            }
+            var result = JObject.Parse(ScriptFileTransaction.ToJson(receipt));
+            result["action"] = action;
+            result["guid"] = receipt.Ok && !dryRun ? AssetDatabase.AssetPathToGUID(path) : string.Empty;
+            return result.ToString(Formatting.None);
         }
 
         private static string BuildScriptTemplate(string className, string namespaceName)

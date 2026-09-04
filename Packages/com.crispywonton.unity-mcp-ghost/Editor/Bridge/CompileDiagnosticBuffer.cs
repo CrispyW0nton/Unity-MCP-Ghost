@@ -371,7 +371,15 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             File.WriteAllText(temporaryPath, JsonConvert.SerializeObject(state, Formatting.Indented));
             if (File.Exists(StatePath))
             {
-                File.Replace(temporaryPath, StatePath, null);
+                try
+                {
+                    File.Replace(temporaryPath, StatePath, null);
+                }
+                catch (IOException)
+                {
+                    File.Delete(StatePath);
+                    File.Move(temporaryPath, StatePath);
+                }
             }
             else
             {
