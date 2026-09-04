@@ -28,11 +28,23 @@ Commits and verified gates:
   - Live headless Unity smoke created a valid script as generation 2, observed a clean completion after domain reload, deleted it as generation 3, observed clean cleanup completion, and verified the temporary file was absent.
 - `625f2af` — `docs(audit): record course-ready reliability scope and progress`
   - Added the deep audit, executable milestone prompt, and this commit/gate ledger to the repository.
+- `ac32c51` — `docs(audit): normalize report metadata`
+  - Normalized the audit timestamp and provenance metadata used by the executable milestone prompt.
+- `ddf507c` — `fix(core): make repair loops bounded and restorative`
+  - Replaced the proposal-only repair behavior with bounded propose/apply/compile/test/verify iterations and last-known-good restoration.
+  - Passed 9 Node tests, 19 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+- `cfc4468` — `fix(reliability): make script mutations transactional`
+  - Added optimistic SHA-256 concurrency, bounded unified dry-run diffs, encoding/newline preservation, flushed sibling writes, retained recovery backups, and byte-identical restore receipts.
+  - Live Unity smoke proved create, stale-hash rejection, dry-run, expected-hash write, generation-scoped compile, byte-identical restore, transaction completion, and delete cleanup.
+  - Passed 9 Node tests, 25 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+- `f561f1b` — `fix(reliability): make batches preflighted and reversible`
+  - Added full preflight before mutation, exact maximum-risk acceptance, fail-fast required-item behavior, reverse-order file/Undo compensation, and truthful incomplete-rollback reporting.
+  - Passed 9 Node tests, 29 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
 
 Next required slice:
 
-- Complete Workstream 1 by replacing the misleading diagnostic-only repair loop with a real bounded apply/compile/test/verify/rollback loop.
-- Continue with transactional mutation/rollback and durable transport semantics from Workstream 2.
+- Complete durable, deduplicated, cancellable operation transport with bounded queues, leases, backpressure, TTL cleanup, fragmented WebSocket handling, and explicit outcome-unknown semantics.
+- Then implement project-pinned authenticated bridge routing and the Workstream 3 security boundary.
 
 ## Phase 1: Foundation
 
