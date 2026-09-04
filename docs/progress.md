@@ -60,10 +60,15 @@ Commits and verified gates:
   - Added a clean-room runtime fixture proving PageUp, PageDown, pointer clicks, and exact one-frame stepping through observable fixture state and Console evidence; unsupported inputs return typed `UNSUPPORTED_INPUT_BACKEND` failures.
   - Passed 19 Node tests, 84 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
   - Live Unity `2022.3.62f1` runtime smoke passed scene open, Console clear/boundary assertions, normal Play transition across domain reload, verified PageUp/PageDown and pointer delivery, typed unsupported-input rejection, pause, exact frame `19 -> 20`, and clean stop. Project/editor identity remained pinned across reload.
+- `df2c115` — `feat(validation): run restorable scenario matrices with evidence bundles`
+  - Added project/editor-pinned durable scenario jobs with get/list/cancel/result lifecycle, exact-generation source transactions, normal Play/input/Console/object/screenshot assertions, reload recovery, byte-identical restoration, and resource-backed evidence artifacts.
+  - Added deterministic manifest, result, compiler, Console, Markdown, redacted source-diff, and screenshot evidence with bounded artifact handles and no upload behavior.
+  - Passed 22 Node tests, 86 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+  - Live Unity `2022.3.62f1` scenario smoke passed green, expected compiler-failure, unexpected assertion-failure, expected timeout, and cancellation paths. All five emitted local evidence bundles and restored `Gam215InputDriver.cs` to SHA-256 `faddda91a571d64e4bb14507c1e7224d3b323c2586e98eccf092528f1c376b0f`.
 
 Next required slice:
 
-- Implement durable, cancellable `scenario_matrix_run` orchestration and deterministic `evidence_bundle_create` output for Workstream 5.
+- Implement the complete clean-room GAM 215 Module 1–2 fixture and automated course matrix for Workstream 6.
 
 ## Phase 1: Foundation
 
