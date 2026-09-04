@@ -2,7 +2,7 @@
 
 ## Course-Ready Reliability milestone
 
-Status: active; GAM 215-equivalent fixture coverage and real course-project certification are not yet complete.
+Status: active; GAM 215-equivalent fixture coverage is complete and real course-project certification remains pending.
 
 Milestone source documents:
 
@@ -71,6 +71,9 @@ Commits and verified gates:
   - Fixed Ghost's reload-unsafe variable-length IMGUI command history after the scenario Console boundary correctly detected Ghost's own layout exception.
   - Passed 24 Node tests, 86 Unity EditMode tests, `npm run typecheck`, `npm run build`, `npm test`, `npm run test:course`, and `git diff --check`.
   - Live Unity `2022.3.62f1` course evidence: Module 1 operation `fe63864a-c14a-4b68-8797-ce57580022cd` passed 23/23 with 13 screenshots; Module 2 operation `164d63b4-d697-4da4-9ae1-870a13ea6159` passed 43/43 with 42 screenshots. Separate cancellations `aa2b7bb7-8be5-4ae2-bd7d-dabfb5f605f1` and `0ebcf0c8-afaf-4769-b37f-a9a5f47f53bc` restored cleanly. The baseline source remained SHA-256 `0ff9034f3593c47b17f158f0538127eab5d84aeaadcb58c5716018ef82a99a89`, with zero retained source transactions.
+- `c0263d8` — `chore(deps): patch runtime dependencies and clear audit findings`
+  - Updated the MCP SDK, `ws`, Zod, `tsx`, and Node type declarations within their compatible release lines and re-locked transitive dependencies.
+  - Passed `npm run typecheck`, `npm run build`, 24 Node tests, `npm audit --audit-level=high` with zero vulnerabilities, and `git diff --check`.
 
 Next required slice:
 
