@@ -1,0 +1,4 @@
+# Unity serializes empty YAML and metadata values with a significant-looking
+# trailing space. Treat that generated convention as valid for diff checks.
+*.asset whitespace=-trailing-space
+*.meta whitespace=-trailing-space

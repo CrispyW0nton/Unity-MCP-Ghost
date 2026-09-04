@@ -92,21 +92,21 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         {
             if (request == null || string.IsNullOrEmpty(request.Method))
             {
-                return JsonRpcUtil.Error(request != null ? request.Id : string.Empty, -32600, "Invalid JSON-RPC request.");
+                return JsonRpcUtil.Error(request, -32600, "Invalid JSON-RPC request.");
             }
 
             if (!handlers.TryGetValue(request.Method, out var handler))
             {
-                return JsonRpcUtil.Error(request.Id, -32601, "Unknown Unity MCP command: " + request.Method);
+                return JsonRpcUtil.Error(request, -32601, "Unknown Unity MCP command: " + request.Method);
             }
 
             try
             {
-                return JsonRpcUtil.Success(request.Id, ExecuteResult(request));
+                return JsonRpcUtil.Success(request, ExecuteResult(request));
             }
             catch (Exception exception)
             {
-                return JsonRpcUtil.Error(request.Id, -32000, exception.Message);
+                return JsonRpcUtil.Error(request, -32000, exception.Message);
             }
         }
 

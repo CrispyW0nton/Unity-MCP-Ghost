@@ -13,6 +13,7 @@
     "phase3:repair-smoke": "tsx server/src/phase3RepairSmoke.ts --transport stdio",
     "smoke": "tsx server/src/devSmoke.ts --transport stdio",
     "test": "node --import tsx --test \"server/test/**/*.test.ts\"",
+    "test:unity:editmode": "tsx server/scripts/runUnityTests.ts EditMode",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {

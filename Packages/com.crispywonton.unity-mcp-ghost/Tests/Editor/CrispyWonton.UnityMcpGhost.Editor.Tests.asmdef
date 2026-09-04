@@ -1,0 +1,25 @@
+{
+  "name": "CrispyWonton.UnityMcpGhost.Editor.Tests",
+  "rootNamespace": "CrispyWonton.UnityMcpGhost.Editor.Tests",
+  "references": [
+    "CrispyWonton.UnityMcpGhost.Editor"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "Newtonsoft.Json.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

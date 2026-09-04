@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "com.crispywonton.unity-mcp-ghost": "file:../../Packages/com.crispywonton.unity-mcp-ghost",
+    "com.unity.test-framework": "1.1.33"
+  },
+  "testables": [
+    "com.crispywonton.unity-mcp-ghost"
+  ]
+}

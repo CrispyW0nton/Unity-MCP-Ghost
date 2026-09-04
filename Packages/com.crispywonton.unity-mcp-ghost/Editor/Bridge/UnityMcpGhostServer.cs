@@ -110,7 +110,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             LastRequest = requestJson;
-            var request = JsonRpcUtil.ParseRequest(requestJson);
+            UnityMcpRequest request;
+            try
+            {
+                request = JsonRpcUtil.ParseRequest(requestJson);
+            }
+            catch (JsonRpcProtocolException exception)
+            {
+                await WriteHttpResponse(context, JsonRpcUtil.Error(exception), token);
+                return;
+            }
             RecordCommand(request.Method);
 
             var completion = new TaskCompletionSource<string>();
@@ -122,11 +131,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 }
                 catch (Exception exception)
                 {
-                    completion.SetResult(JsonRpcUtil.Error(request.Id, -32000, exception.Message));
+                    completion.SetResult(JsonRpcUtil.Error(request, -32000, exception.Message));
                 }
             });
 
             var responseJson = await completion.Task;
+            await WriteHttpResponse(context, responseJson, token);
+        }
+
+        private static async Task WriteHttpResponse(HttpListenerContext context, string responseJson, CancellationToken token)
+        {
             var bytes = Encoding.UTF8.GetBytes(responseJson);
             context.Response.StatusCode = 200;
             context.Response.ContentType = "application/json";
@@ -153,7 +167,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
                     var requestJson = Encoding.UTF8.GetString(buffer, 0, result.Count);
                     LastRequest = requestJson;
-                    var request = JsonRpcUtil.ParseRequest(requestJson);
+                    UnityMcpRequest request;
+                    try
+                    {
+                        request = JsonRpcUtil.ParseRequest(requestJson);
+                    }
+                    catch (JsonRpcProtocolException exception)
+                    {
+                        await Send(socket, JsonRpcUtil.Error(exception), token);
+                        continue;
+                    }
                     RecordCommand(request.Method);
 
                     MainThreadDispatcher.Enqueue(() =>
