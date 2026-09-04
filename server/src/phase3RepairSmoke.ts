@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       steps,
       "repair loop semantic test scope",
       () =>
-        callTool(client, "repair_loop_run", {
+        callTool(client, "repair_inspect", {
         objective: "Verify repair loop includes semantic test-scope planning for the target gameplay script.",
         scriptPath: flags.scriptPath,
         useSemanticTestScope: true,

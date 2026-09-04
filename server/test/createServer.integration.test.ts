@@ -117,4 +117,130 @@ describe("MCP result adaptation", () => {
       await server.close();
     }
   });
+
+  it("runs a bounded repair proposal through apply, compile, and verification", async () => {
+    let activeGeneration = 1;
+    let changed = false;
+    const applyModes: boolean[] = [];
+    const fakeUnity = {
+      request: async (method: string, params: unknown) => {
+        const request = params as Record<string, unknown>;
+        if (method === "script.read") {
+          return {
+            ok: true,
+            content: "public class Broken { void Run() { int score = 1 } }",
+            sha256: changed ? "changed-hash" : "original-hash"
+          };
+        }
+        if (method === "script.validate") {
+          return { ok: true, requestedCompileGeneration: request.requestedCompileGeneration ?? activeGeneration };
+        }
+        if (method === "compile.status_get") {
+          const generation = Number(request.requestedCompileGeneration);
+          return { ok: generation === 2, status: generation === 2 ? "success" : "failed", generation, observed: true };
+        }
+        if (method === "compile.diagnostics_get") {
+          return Number(request.generation) === 1
+            ? { ok: true, diagnostics: [{ generation: 1, severity: "error", code: "CS1002", message: "error CS1002: ; expected", line: 1, column: 50 }] }
+            : { ok: true, diagnostics: [] };
+        }
+        if (method === "script.apply_edits") {
+          applyModes.push(request.dryRun === true);
+          if (request.dryRun !== true) {
+            changed = true;
+            activeGeneration = 2;
+          }
+          return { ok: true, dryRun: request.dryRun, requestedCompileGeneration: request.dryRun ? undefined : 2 };
+        }
+        throw new Error(`Unexpected method: ${method}`);
+      }
+    } as unknown as UnityClient;
+    const server = createMcpServer({ unity: fakeUnity });
+    const client = new Client({ name: "unity-mcp-ghost-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+      const result = await client.callTool({
+        name: "repair_loop_run",
+        arguments: { objective: "repair missing semicolon", scriptPath: "Assets/Broken.cs", maxIterations: 1, compileTimeoutMs: 2000 }
+      });
+
+      assert.equal(result.isError, undefined);
+      assert.deepEqual(applyModes, [true, false]);
+      const data = (result.structuredContent as { data: Record<string, unknown> }).data;
+      assert.equal(data.ok, true);
+      assert.equal(data.iterationCount, 1);
+      assert.equal(data.finalSha256, "changed-hash");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("restores the original hash when every repair iteration fails", async () => {
+    let activeGeneration = 1;
+    let sourceChanged = false;
+    let restoreWrites = 0;
+    const fakeUnity = {
+      request: async (method: string, params: unknown) => {
+        const request = params as Record<string, unknown>;
+        if (method === "script.read") {
+          return {
+            ok: true,
+            content: "public class Broken { void Run() { int score = 1 } }",
+            sha256: sourceChanged ? "changed-hash" : "original-hash"
+          };
+        }
+        if (method === "script.validate") {
+          return { ok: true, requestedCompileGeneration: request.requestedCompileGeneration ?? activeGeneration };
+        }
+        if (method === "compile.status_get") {
+          const generation = Number(request.requestedCompileGeneration);
+          return { ok: generation === 3, status: generation === 3 ? "success" : "failed", generation, observed: true };
+        }
+        if (method === "compile.diagnostics_get") {
+          return {
+            ok: true,
+            diagnostics: [{ generation: request.generation, severity: "error", code: "CS1002", message: "error CS1002: ; expected", line: 1, column: 50 }]
+          };
+        }
+        if (method === "script.apply_edits") {
+          if (request.dryRun !== true) {
+            sourceChanged = true;
+            activeGeneration = 2;
+          }
+          return { ok: true, requestedCompileGeneration: request.dryRun ? undefined : 2 };
+        }
+        if (method === "script.write") {
+          restoreWrites++;
+          sourceChanged = false;
+          activeGeneration = 3;
+          return { ok: true, requestedCompileGeneration: 3 };
+        }
+        throw new Error(`Unexpected method: ${method}`);
+      }
+    } as unknown as UnityClient;
+    const server = createMcpServer({ unity: fakeUnity });
+    const client = new Client({ name: "unity-mcp-ghost-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+      const result = await client.callTool({
+        name: "repair_loop_run",
+        arguments: { objective: "repair then restore", scriptPath: "Assets/Broken.cs", maxIterations: 1, compileTimeoutMs: 2000 }
+      });
+
+      assert.equal(result.isError, true);
+      assert.equal(restoreWrites, 1);
+      const envelope = result.structuredContent as { error: { code: string }; data: { restored: { ok: boolean; restoredSha256: string } } };
+      assert.equal(envelope.error.code, "REPAIR_EXHAUSTED");
+      assert.equal(envelope.data.restored.ok, true);
+      assert.equal(envelope.data.restored.restoredSha256, "original-hash");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });

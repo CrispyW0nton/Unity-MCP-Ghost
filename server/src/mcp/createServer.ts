@@ -2525,8 +2525,8 @@ export function createMcpServer(context: ToolContext): McpServer {
 
   registerTool(
     server,
-    "repair_loop_run",
-    "Run the first Ghost repair-loop skeleton: validate, wait for compile, read diagnostics, and optionally run tests.",
+    "repair_inspect",
+    "Inspect one script/compiler/test/visual state and propose repairs without applying them.",
     {
       objective: z.string().min(1),
       scriptPath: z.string().optional(),
@@ -2690,7 +2690,7 @@ export function createMcpServer(context: ToolContext): McpServer {
         }
 
         return successResponse(
-          "repair_loop_run completed diagnostic pass.",
+          "repair_inspect completed diagnostic pass.",
           {
             ok: true,
             objective: args.objective,
@@ -2713,6 +2713,244 @@ export function createMcpServer(context: ToolContext): McpServer {
         );
       } catch (error) {
         return failureResponse("repair_loop_run failed", error, startedAt);
+      }
+    }
+  );
+
+  registerTool(
+    server,
+    "repair_loop_run",
+    "Run a bounded deterministic repair loop and restore the original script if no iteration passes.",
+    {
+      objective: z.string().min(1),
+      scriptPath: z.string().min(1),
+      maxIterations: z.number().int().positive().max(5).default(3),
+      minimumConfidence: z.number().min(0).max(1).default(0.6),
+      compileTimeoutMs: z.number().int().positive().max(300000).default(30000),
+      runTests: z.boolean().default(false),
+      testMode: z.enum(["editmode", "playmode"]).default("editmode"),
+      testFilter: z.string().default("")
+    },
+    { risk: "code-write", mutates: true, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors", "unity://tests/{mode}"] },
+    async (args) => {
+      const startedAt = Date.now();
+      const iterations: Record<string, unknown>[] = [];
+      let originalContent = "";
+      let originalSha256 = "";
+      let sourceChanged = false;
+      let restored: Record<string, unknown> | null = null;
+
+      const compileAndDiagnose = async (requestedCompileGeneration?: number): Promise<Record<string, unknown>> => {
+        const validationStart = asObject(
+          await context.unity.request("script.validate", {
+            path: args.scriptPath,
+            ...(requestedCompileGeneration ? { requestedCompileGeneration } : {}),
+            limit: 100
+          })
+        );
+        const generation = numberValue(validationStart.requestedCompileGeneration);
+        if (generation <= 0) {
+          throw new Error("Unity did not return requestedCompileGeneration during repair validation.");
+        }
+        const compile = await waitForUnityCompile(context, generation, args.compileTimeoutMs);
+        const diagnosticResult = asObject(
+          await context.unity.request("compile.diagnostics_get", {
+            severity: "error",
+            pathFilter: args.scriptPath,
+            generation,
+            limit: 100
+          })
+        );
+        return {
+          ok: compile.ok === true && diagnosticsFromPayload(diagnosticResult).length === 0,
+          generation,
+          compile,
+          diagnostics: diagnosticsFromPayload(diagnosticResult)
+        };
+      };
+
+      const runRequiredTests = async (): Promise<Record<string, unknown> | null> => {
+        if (!args.runTests) {
+          return null;
+        }
+        const started = asObject(
+          await context.unity.request("tests.run", {
+            mode: args.testMode,
+            filter: args.testFilter
+          })
+        );
+        return typeof started.operationId === "string" ? pollOperation(context, started.operationId, 120000, 500) : started;
+      };
+
+      const restoreOriginal = async (): Promise<Record<string, unknown>> => {
+        const write = asObject(
+          await context.unity.request("script.write", {
+            path: args.scriptPath,
+            content: originalContent,
+            overwrite: true,
+            dryRun: false
+          })
+        );
+        const generation = numberValue(write.requestedCompileGeneration);
+        if (generation <= 0) {
+          return { ok: false, error: { code: "ROLLBACK_GENERATION_MISSING", message: "Rollback write returned no compile generation." }, write };
+        }
+        const compile = await waitForUnityCompile(context, generation, args.compileTimeoutMs);
+        const readBack = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+        const restoredHash = stringValue(readBack.sha256);
+        return {
+          ok: compile.ok === true && restoredHash === originalSha256,
+          write,
+          compile,
+          expectedSha256: originalSha256,
+          restoredSha256: restoredHash
+        };
+      };
+
+      try {
+        const original = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+        originalContent = stringValue(original.content);
+        originalSha256 = stringValue(original.sha256);
+
+        let current = await compileAndDiagnose();
+        for (let iteration = 1; iteration <= args.maxIterations; iteration += 1) {
+          const currentDiagnostics = arrayValue(current.diagnostics).map(asObject);
+          const iterationReceipt: Record<string, unknown> = {
+            iteration,
+            before: current
+          };
+
+          if (current.ok === true) {
+            const tests = await runRequiredTests();
+            const testState = asObject(tests?.state);
+            const testsOk = tests === null || (tests.ok !== false && testState.status === "success" && numberValue(testState.failed) === 0);
+            iterationReceipt.tests = tests;
+            iterationReceipt.ok = testsOk;
+            iterations.push(iterationReceipt);
+            if (testsOk) {
+              return successResponse(
+                "repair_loop_run completed with a verified green result.",
+                {
+                  ok: true,
+                  objective: args.objective,
+                  scriptPath: args.scriptPath,
+                  iterations,
+                  iterationCount: iterations.length,
+                  originalSha256,
+                  finalSha256: stringValue(asObject(await context.unity.request("script.read", { path: args.scriptPath })).sha256),
+                  restored: null
+                },
+                startedAt
+              );
+            }
+
+            iterationReceipt.terminalReason = "required-tests-failed";
+            break;
+          }
+
+          const currentScript = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+          const proposals = buildPatchProposals(currentDiagnostics, args.scriptPath, stringValue(currentScript.content));
+          const candidate = proposals
+            .filter((proposal) => arrayValue(proposal.edits).length > 0 && numberValue(proposal.confidence) >= args.minimumConfidence)
+            .sort((left, right) => numberValue(right.confidence) - numberValue(left.confidence))[0];
+          iterationReceipt.proposals = proposals;
+
+          if (!candidate) {
+            iterationReceipt.ok = false;
+            iterationReceipt.terminalReason = "no-safe-proposal";
+            iterations.push(iterationReceipt);
+            break;
+          }
+
+          const edits = arrayValue(candidate.edits);
+          const preview = asObject(
+            await context.unity.request("script.apply_edits", {
+              path: args.scriptPath,
+              edits,
+              dryRun: true
+            })
+          );
+          iterationReceipt.selectedProposal = candidate;
+          iterationReceipt.preview = preview;
+          if (preview.ok === false) {
+            iterationReceipt.ok = false;
+            iterationReceipt.terminalReason = "dry-run-failed";
+            iterations.push(iterationReceipt);
+            break;
+          }
+
+          const applied = asObject(
+            await context.unity.request("script.apply_edits", {
+              path: args.scriptPath,
+              edits,
+              dryRun: false
+            })
+          );
+          sourceChanged = true;
+          const appliedGeneration = numberValue(applied.requestedCompileGeneration);
+          current = await compileAndDiagnose(appliedGeneration);
+          const tests = current.ok === true ? await runRequiredTests() : null;
+          const testState = asObject(tests?.state);
+          const testsOk = tests === null || (tests.ok !== false && testState.status === "success" && numberValue(testState.failed) === 0);
+          const iterationOk = current.ok === true && testsOk;
+          iterationReceipt.applied = applied;
+          iterationReceipt.after = current;
+          iterationReceipt.tests = tests;
+          iterationReceipt.ok = iterationOk;
+          iterations.push(iterationReceipt);
+
+          if (iterationOk) {
+            const finalRead = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+            return successResponse(
+              "repair_loop_run applied and verified a repair.",
+              {
+                ok: true,
+                objective: args.objective,
+                scriptPath: args.scriptPath,
+                iterations,
+                iterationCount: iterations.length,
+                originalSha256,
+                finalSha256: stringValue(finalRead.sha256),
+                restored: null
+              },
+              startedAt
+            );
+          }
+        }
+
+        if (sourceChanged) {
+          restored = await restoreOriginal();
+        }
+        return successResponse(
+          "repair_loop_run exhausted without a green result.",
+          {
+            ok: false,
+            error: {
+              code: restored && restored.ok === false ? "REPAIR_ROLLBACK_FAILED" : "REPAIR_EXHAUSTED",
+              message: restored && restored.ok === false ? "Repair failed and original-source restoration was incomplete." : "No repair iteration passed all required checks."
+            },
+            objective: args.objective,
+            scriptPath: args.scriptPath,
+            iterations,
+            iterationCount: iterations.length,
+            originalSha256,
+            restored
+          },
+          startedAt,
+          { confidence: 0 }
+        );
+      } catch (error) {
+        if (sourceChanged && originalContent) {
+          try {
+            restored = await restoreOriginal();
+          } catch (rollbackError) {
+            restored = { ok: false, error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError) };
+          }
+        }
+        return failureResponse("repair_loop_run failed", error, startedAt, [], {
+          code: restored && restored.ok === false ? "REPAIR_ROLLBACK_FAILED" : "REPAIR_LOOP_FAILED",
+          data: { objective: args.objective, scriptPath: args.scriptPath, iterations, originalSha256, restored }
+        });
       }
     }
   );
