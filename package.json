@@ -12,6 +12,7 @@
     "dev": "tsx server/src/index.ts",
     "phase3:repair-smoke": "tsx server/src/phase3RepairSmoke.ts --transport stdio",
     "smoke": "tsx server/src/devSmoke.ts --transport stdio",
+    "test": "node --import tsx --test \"server/test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {
