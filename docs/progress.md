@@ -65,10 +65,16 @@ Commits and verified gates:
   - Added deterministic manifest, result, compiler, Console, Markdown, redacted source-diff, and screenshot evidence with bounded artifact handles and no upload behavior.
   - Passed 22 Node tests, 86 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
   - Live Unity `2022.3.62f1` scenario smoke passed green, expected compiler-failure, unexpected assertion-failure, expected timeout, and cancellation paths. All five emitted local evidence bundles and restored `Gam215InputDriver.cs` to SHA-256 `faddda91a571d64e4bb14507c1e7224d3b323c2586e98eccf092528f1c376b0f`.
+- `6af0e6d` — `test(course): prove GAM 215 module 1 and 2 automation loops`
+  - Added a clean-room Marvin-compatible fixture with the exported two- and three-argument `Write` overload families plus `Play`, `Draw`, and `ShowOrHide`, deterministic serialized/visual state, and PageUp/PageDown navigation.
+  - Added declarative 23-case Module 1 and 43-case Module 2 matrices covering all requested constructs, compiler and semantic defects, boolean tables, exactly 16 comparison plays, assignment steps, early return, navigation, timeout, and separate per-module cancellation restoration.
+  - Fixed Ghost's reload-unsafe variable-length IMGUI command history after the scenario Console boundary correctly detected Ghost's own layout exception.
+  - Passed 24 Node tests, 86 Unity EditMode tests, `npm run typecheck`, `npm run build`, `npm test`, `npm run test:course`, and `git diff --check`.
+  - Live Unity `2022.3.62f1` course evidence: Module 1 operation `fe63864a-c14a-4b68-8797-ce57580022cd` passed 23/23 with 13 screenshots; Module 2 operation `164d63b4-d697-4da4-9ae1-870a13ea6159` passed 43/43 with 42 screenshots. Separate cancellations `aa2b7bb7-8be5-4ae2-bd7d-dabfb5f605f1` and `0ebcf0c8-afaf-4769-b37f-a9a5f47f53bc` restored cleanly. The baseline source remained SHA-256 `0ff9034f3593c47b17f158f0538127eab5d84aeaadcb58c5716018ef82a99a89`, with zero retained source transactions.
 
 Next required slice:
 
-- Implement the complete clean-room GAM 215 Module 1–2 fixture and automated course matrix for Workstream 6.
+- Implement generated contracts, progressive discovery, output schemas, protocol/dependency/CI coverage, and release hardening for Workstream 7.
 
 ## Phase 1: Foundation
 
