@@ -18,45 +18,49 @@ See [docs/development-plan.md](docs/development-plan.md) for the full strategic 
 - Return structured JSON for reliable follow-up tool calls.
 - Build toward diagnostics, repair loops, tests, screenshots, and knowledge-base guided workflows.
 
-## Early Local Flow
+## Secure Local Flow
 
 1. Open a Unity project that has `Packages/com.crispywonton.unity-mcp-ghost` installed.
-2. The bridge auto-starts on `http://127.0.0.1:6400/unity-mcp-ghost/`. Use `Window > Unity MCP Ghost` to inspect status, stop it, or restart it.
-3. Run the MCP server from this repo:
+2. Open `Window > Unity MCP Ghost`. Ghost creates an owner-only project token plus a project/editor identity under `Library/UnityMcpGhost`, selects a deterministic per-project loopback port, and starts the bridge.
+3. Use the window's **Copy Cursor Config Snippet**, or run the MCP server with the exact Unity project path:
 
 ```bash
-npm install
+npm ci
 npm run build
-node dist/index.js --transport stdio --unity-host 127.0.0.1 --unity-port 6400
+node dist/index.js --transport stdio --unity-project-path C:/Path/To/UnityProject
 ```
 
-To enable the durable file-queue fallback that survives Unity domain reloads, pass either the Unity project path or the queue directory:
+`--unity-project-path` reads the generated identity, token-file location, editor instance, HTTP port, and separately advertised WebSocket port, then enables the authenticated durable queue. Ghost refuses unpinned projects, stale editor identities, missing tokens, and non-loopback bridge hosts. Custom `--unity-port` and `--unity-websocket-port` values are only needed for transport-fallback testing or explicitly persisted ports.
 
-```bash
-node dist/index.js --transport stdio --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Path/To/UnityProject
-```
+Destructive, package/network, arbitrary-code, and reflection capabilities default to disabled per project. Review [SECURITY.md](SECURITY.md) before enabling any of them in the Unity window.
 
 ## Smoke Test
 
 Run the read-only/dry-run smoke suite against an open Unity project with the Ghost bridge started:
 
 ```bash
-npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --request-timeout-ms 20000
+npm run smoke -- --unity-project-path C:/Path/To/UnityProject --request-timeout-ms 20000
 ```
 
-Add `--unity-project-path` to exercise the durable file queue fallback:
+Override the port with an unused loopback port to force the durable queue fallback:
 
 ```bash
-npm run smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Path/To/UnityProject --request-timeout-ms 20000
+npm run smoke -- --unity-project-path C:/Path/To/UnityProject --unity-port 6400 --request-timeout-ms 20000
 ```
 
 Run the Phase 3 repair-loop smoke against an open Unity project:
 
 ```bash
-npm run phase3:repair-smoke -- --unity-host 127.0.0.1 --unity-port 6400 --unity-project-path C:/Path/To/UnityProject --request-timeout-ms 30000
+npm run phase3:repair-smoke -- --unity-project-path C:/Path/To/UnityProject --request-timeout-ms 30000
 ```
 
 Add `--allow-mutation` only for a controlled scratch-script rollback test. It creates and removes `Assets/UnityMcpGhostScratch`.
+
+Run the repeatable security boundary smoke, including missing/wrong credentials, browser Origin rejection, capability default-deny, fragmented WebSocket delivery, and the WebSocket message-size limit:
+
+```bash
+npm run smoke:security -- --unity-project-path C:/Path/To/UnityProject
+```
 
 ## Cursor MCP Config
 
@@ -69,10 +73,8 @@ Add `--allow-mutation` only for a controlled scratch-script rollback test. It cr
         "C:/Dev/Unity-MCP-Ghost/server/dist/index.js",
         "--transport",
         "stdio",
-        "--unity-host",
-        "127.0.0.1",
-        "--unity-port",
-        "6400"
+        "--unity-project-path",
+        "C:/Path/To/UnityProject"
       ]
     }
   }

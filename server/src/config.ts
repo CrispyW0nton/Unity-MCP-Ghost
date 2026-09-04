@@ -1,50 +1,147 @@
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { platform } from "node:os";
+import { join, resolve } from "node:path";
+
 export type TransportKind = "stdio";
 
 export interface ServerConfig {
   transport: TransportKind;
   unityHost: string;
   unityPort: number;
+  unityWebSocketPort: number;
   unityQueueDir?: string;
+  unityProjectPath?: string;
+  unityProjectId: string;
+  unityEditorInstanceId: string;
+  unityTokenFile: string;
   requestTimeoutMs: number;
 }
 
+interface BridgeIdentity {
+  projectId?: unknown;
+  editorInstanceId?: unknown;
+  port?: unknown;
+  webSocketPort?: unknown;
+  tokenFile?: unknown;
+}
+
 export function readConfig(argv: string[]): ServerConfig {
-  const args = new Map<string, string>();
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const current = argv[index];
-    if (!current.startsWith("--")) {
-      continue;
-    }
-
-    const next = argv[index + 1];
-    args.set(current.slice(2), next && !next.startsWith("--") ? next : "true");
-  }
-
+  const args = parseArgs(argv);
   const transport = args.get("transport") ?? "stdio";
   if (transport !== "stdio") {
-    throw new Error(`Unsupported transport '${transport}'. Only stdio is implemented in this scaffold.`);
+    throw new Error(`Unsupported transport '${transport}'. Only stdio is implemented.`);
   }
+
+  const unityHost = args.get("unity-host") ?? "127.0.0.1";
+  if (!isLoopbackHost(unityHost)) {
+    throw new Error("Remote Unity bridge hosts are disabled. Use an authenticated local secure tunnel that terminates on loopback.");
+  }
+
+  const projectInput = args.get("unity-project-path");
+  const unityProjectPath = projectInput ? resolve(projectInput) : undefined;
+  const identityPath = args.get("unity-identity-file") ?? (unityProjectPath ? join(unityProjectPath, "Library", "UnityMcpGhost", "bridge-identity.json") : undefined);
+  const identity = identityPath ? readIdentity(identityPath) : undefined;
+  const computedProjectId = unityProjectPath ? projectIdForPath(unityProjectPath) : undefined;
+  const unityProjectId = args.get("unity-project-id") ?? readString(identity?.projectId) ?? computedProjectId;
+  const unityEditorInstanceId = args.get("unity-editor-id") ?? readString(identity?.editorInstanceId);
+  const unityTokenFile =
+    args.get("unity-token-file") ?? readString(identity?.tokenFile) ?? (unityProjectPath ? join(unityProjectPath, "Library", "UnityMcpGhost", "bridge-token.txt") : undefined);
+
+  if (!unityProjectId || !unityEditorInstanceId || !unityTokenFile) {
+    throw new Error(
+      "Secure Unity routing requires --unity-project-path with a generated bridge identity, or explicit --unity-project-id, --unity-editor-id, and --unity-token-file values."
+    );
+  }
+  if (computedProjectId && computedProjectId !== unityProjectId) {
+    throw new Error(`Bridge identity project mismatch: expected ${computedProjectId}, found ${unityProjectId}.`);
+  }
+  if (!existsSync(unityTokenFile)) {
+    throw new Error(`Unity bridge token file does not exist: ${unityTokenFile}`);
+  }
+
+  const identityPort = typeof identity?.port === "number" && Number.isInteger(identity.port) ? identity.port : undefined;
+  const identityWebSocketPort = typeof identity?.webSocketPort === "number" && Number.isInteger(identity.webSocketPort) ? identity.webSocketPort : undefined;
+  const unityPort = parseInteger(args.get("unity-port"), identityPort ?? deterministicPort(unityProjectId), "unity-port", 1024, 65535);
+  const unityWebSocketPort = parseInteger(
+    args.get("unity-websocket-port"),
+    identityWebSocketPort ?? unityPort,
+    "unity-websocket-port",
+    1024,
+    65535
+  );
+  const requestTimeoutMs = parseInteger(args.get("request-timeout-ms"), 30000, "request-timeout-ms", 100, 3600000);
 
   return {
     transport,
-    unityHost: args.get("unity-host") ?? "127.0.0.1",
-    unityPort: Number.parseInt(args.get("unity-port") ?? "6400", 10),
-    unityQueueDir: readQueueDir(args),
-    requestTimeoutMs: Number.parseInt(args.get("request-timeout-ms") ?? "30000", 10)
+    unityHost,
+    unityPort,
+    unityWebSocketPort,
+    unityQueueDir: readQueueDir(args, unityProjectPath),
+    unityProjectPath,
+    unityProjectId,
+    unityEditorInstanceId,
+    unityTokenFile,
+    requestTimeoutMs
   };
 }
 
-function readQueueDir(args: Map<string, string>): string | undefined {
+export function projectIdForPath(projectPath: string): string {
+  let normalized = resolve(projectPath).replace(/\\/g, "/").replace(/\/+$/, "");
+  if (platform() === "win32") normalized = normalized.toUpperCase();
+  return `unity-project-${createHash("sha256").update(normalized, "utf8").digest("hex").slice(0, 24)}`;
+}
+
+function deterministicPort(projectId: string): number {
+  const prefix = "unity-project-";
+  const hex = projectId.startsWith(prefix) ? projectId.slice(prefix.length) : "";
+  if (!/^[0-9a-f]{24}$/.test(hex)) {
+    throw new Error("--unity-port is required when the project ID is not generated by Unity MCP Ghost.");
+  }
+  return 6400 + (Number.parseInt(hex.slice(0, 8), 16) % 1000);
+}
+
+function parseArgs(argv: string[]): Map<string, string> {
+  const args = new Map<string, string>();
+  for (let index = 0; index < argv.length; index += 1) {
+    const current = argv[index];
+    if (!current.startsWith("--")) continue;
+    const next = argv[index + 1];
+    args.set(current.slice(2), next && !next.startsWith("--") ? next : "true");
+  }
+  return args;
+}
+
+function readQueueDir(args: Map<string, string>, projectPath?: string): string | undefined {
   const explicitQueueDir = args.get("unity-queue-dir");
-  if (explicitQueueDir) {
-    return explicitQueueDir;
-  }
+  if (explicitQueueDir) return resolve(explicitQueueDir);
+  return projectPath ? join(projectPath, "Library", "UnityMcpGhost", "queue") : undefined;
+}
 
-  const projectPath = args.get("unity-project-path");
-  if (!projectPath) {
-    return undefined;
+function readIdentity(path: string): BridgeIdentity {
+  if (!existsSync(path)) {
+    throw new Error(`Unity bridge identity file does not exist: ${path}. Open the project in Unity and enable Unity MCP Ghost first.`);
   }
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as BridgeIdentity;
+  } catch (error) {
+    throw new Error(`Could not parse Unity bridge identity file ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
 
-  return `${projectPath.replace(/[\\/]$/, "")}/Library/UnityMcpGhost/queue`;
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function parseInteger(value: string | undefined, fallback: number, name: string, minimum: number, maximum: number): number {
+  const parsed = value === undefined ? fallback : Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`--${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return parsed;
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1" || normalized === "[::1]";
 }

@@ -1,7 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
 
-export type ToolRiskLevel = "read" | "safe-write" | "asset-write" | "code-write" | "destructive" | "build-system" | "test-execution";
+export type ToolRiskLevel = "read" | "safe-write" | "asset-write" | "code-write" | "destructive" | "external" | "arbitrary-code" | "build-system" | "test-execution";
 
 export interface ToolDiagnostic {
   severity: "info" | "warning" | "error";
@@ -37,6 +37,9 @@ export interface GhostToolMeta {
   phase: number;
   relatedResources?: string[];
   examples?: unknown[];
+  destructive?: boolean;
+  idempotent?: boolean;
+  openWorld?: boolean;
 }
 
 export function successResponse<TData>(
@@ -113,7 +116,7 @@ export function failureResponse(
     ],
     requestId: options.requestId ?? readErrorRequestId(error) ?? randomUUID(),
     operationId: options.operationId ?? null,
-    projectId: options.projectId ?? null,
+    projectId: options.projectId ?? readErrorString(error, "projectId"),
     confidence: 0,
     undoGroupId: null,
     durationMs: Date.now() - startedAt,
@@ -284,6 +287,14 @@ function readErrorRequestId(error: unknown): string | null {
   }
   const requestId = (error as { requestId?: unknown }).requestId;
   return typeof requestId === "string" && requestId.length > 0 ? requestId : null;
+}
+
+function readErrorString(error: unknown, key: string): string | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+  const value = (error as Record<string, unknown>)[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function readBoolean(value: unknown, key: string): boolean | null {

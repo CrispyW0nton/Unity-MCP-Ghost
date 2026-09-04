@@ -7,7 +7,6 @@ using System.Security.Cryptography;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using UnityEngine;
 
 namespace CrispyWonton.UnityMcpGhost.Editor
 {
@@ -305,7 +304,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             {
                 return Path.GetFullPath(RootOverrideForTests);
             }
-            var projectRoot = Directory.GetParent(Application.dataPath).FullName;
+            var projectRoot = ProjectPathPolicy.ProjectRoot;
             return Path.Combine(projectRoot, "Library", "UnityMcpGhost", "requests");
         }
 

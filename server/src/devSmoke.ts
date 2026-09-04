@@ -14,8 +14,12 @@ async function main(): Promise<void> {
   const unity = new UnityClient({
     host: config.unityHost,
     port: config.unityPort,
+    webSocketPort: config.unityWebSocketPort,
     queueDir: config.unityQueueDir,
-    requestTimeoutMs: config.requestTimeoutMs
+    requestTimeoutMs: config.requestTimeoutMs,
+    projectId: config.unityProjectId,
+    editorInstanceId: config.unityEditorInstanceId,
+    tokenFile: config.unityTokenFile
   });
 
   const steps: SmokeStep[] = [

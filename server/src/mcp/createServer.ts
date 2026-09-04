@@ -50,9 +50,9 @@ const DiagnosticInputSchema = z.object({}).passthrough();
 function annotationsFor(meta: GhostToolMeta): ToolAnnotations {
   return {
     readOnlyHint: !meta.mutates,
-    destructiveHint: meta.risk === "destructive",
-    idempotentHint: !meta.mutates,
-    openWorldHint: false
+    destructiveHint: meta.destructive ?? meta.risk === "destructive",
+    idempotentHint: meta.idempotent ?? !meta.mutates,
+    openWorldHint: meta.openWorld ?? meta.risk === "external"
   };
 }
 
@@ -1565,7 +1565,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       componentInstanceId: z.number().int(),
       dryRun: DryRunSchema
     },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2 },
     "component.remove"
   );
 
@@ -1578,7 +1578,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       action: z.enum(["add", "get", "modify", "remove"]),
       params: ParamsSchema
     },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2, destructive: true },
     (args) => `component.${args.action}`,
     (args) => args.params
   );
@@ -1976,7 +1976,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       moveToTrash: z.boolean().default(true),
       dryRun: DryRunSchema
     },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2 },
     "asset.delete"
   );
 
@@ -1989,7 +1989,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       action: z.enum(["find", "create_folder", "move", "copy", "delete", "refresh"]),
       params: ParamsSchema
     },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2, destructive: true },
     (args) => `asset.${args.action}`,
     (args) => args.params
   );
@@ -2065,7 +2065,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
       dryRun: DryRunSchema
     },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2 },
     "script.delete"
   );
 
@@ -2179,7 +2179,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       action: z.enum(["read", "create", "write", "apply_edits", "delete", "validate"]),
       params: ParamsSchema
     },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2, destructive: true },
     (args) => `script.${args.action}`,
     (args) => args.params
   );
@@ -2205,7 +2205,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     {
       query: z.string().default("")
     },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 2, relatedResources: ["unity://packages"] },
+    { risk: "external", mutates: false, supportsDryRun: false, phase: 2, openWorld: true, relatedResources: ["unity://packages"] },
     "package.search"
   );
 
@@ -2218,7 +2218,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       packageId: z.string().min(1),
       dryRun: DryRunSchema
     },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "external", mutates: true, supportsDryRun: true, phase: 2, openWorld: true },
     "package.add"
   );
 
@@ -2231,7 +2231,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       packageName: z.string().min(1),
       dryRun: DryRunSchema
     },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2, destructive: true },
     "package.remove"
   );
 
@@ -2244,7 +2244,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       action: z.enum(["list", "search", "add", "remove"]),
       params: ParamsSchema
     },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "external", mutates: true, supportsDryRun: true, phase: 2, destructive: true, openWorld: true },
     (args) => `package.${args.action}`,
     (args) => args.params
   );
@@ -3188,7 +3188,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       action: z.enum(["create", "create_primitive", "set_transform", "find", "get", "delete", "duplicate", "set_parent"]),
       params: ParamsSchema
     },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2, destructive: true },
     (args) => `gameobject.${args.action}`,
     (args) => args.params
   );
@@ -3214,7 +3214,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       acceptNonRollbackable: z.boolean().default(false),
       dryRun: DryRunSchema
     },
-    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 3 },
+    { risk: "external", mutates: true, supportsDryRun: true, phase: 3, destructive: true, openWorld: true },
     "batch.execute"
   );
 

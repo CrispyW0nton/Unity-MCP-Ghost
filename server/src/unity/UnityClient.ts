@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import WebSocket from "ws";
@@ -23,13 +23,20 @@ interface UnityRpcRequest {
   idempotencyKey: string;
   idempotent: boolean;
   deadlineUnixMs: number;
+  projectId: string;
+  editorInstanceId: string;
+  authProof: string;
 }
 
 export interface UnityClientOptions {
   host: string;
   port: number;
+  webSocketPort?: number;
   queueDir?: string;
   requestTimeoutMs: number;
+  projectId: string;
+  editorInstanceId: string;
+  tokenFile: string;
 }
 
 export interface UnityRequestOptions {
@@ -42,6 +49,7 @@ export interface UnityRequestOptions {
 export class UnityClient {
   private socket: WebSocket | undefined;
   private connecting: Promise<WebSocket> | undefined;
+  private token: string | undefined;
   private readonly pending = new Map<
     string,
     {
@@ -54,7 +62,7 @@ export class UnityClient {
   public constructor(private readonly options: UnityClientOptions) {}
 
   public get endpoint(): string {
-    return `ws://${this.options.host}:${this.options.port}/unity-mcp-ghost/`;
+    return `ws://${this.options.host}:${this.options.webSocketPort ?? this.options.port}/unity-mcp-ghost/`;
   }
 
   public get httpEndpoint(): string {
@@ -66,9 +74,10 @@ export class UnityClient {
   }
 
   public async isConnected(): Promise<boolean> {
-    const payload = createPayload("health", {}, randomUUID(), this.options.requestTimeoutMs);
+    const token = await this.readToken();
+    const payload = createPayload("health", {}, randomUUID(), this.options.requestTimeoutMs, this.options.projectId, this.options.editorInstanceId, token);
     try {
-      await this.requestViaHttp("health", payload, this.options.requestTimeoutMs);
+      await this.requestViaHttp("health", payload, this.options.requestTimeoutMs, token);
       return true;
     } catch {
       return false;
@@ -78,31 +87,36 @@ export class UnityClient {
   public async request<T = unknown>(method: string, params: unknown = {}, options: UnityRequestOptions = {}): Promise<T> {
     const id = options.requestId ?? readRequestId(params) ?? randomUUID();
     const timeoutMs = options.timeoutMs ?? this.options.requestTimeoutMs;
-    const payload = createPayload(method, params, id, timeoutMs, options.idempotencyKey);
+    const token = await this.readToken();
+    const payload = createPayload(method, params, id, timeoutMs, this.options.projectId, this.options.editorInstanceId, token, options.idempotencyKey);
 
     try {
-      return withRequestId(await this.requestViaHttp<T>(method, payload, timeoutMs, options.signal), id);
+      return withRequestMetadata(await this.requestViaHttp<T>(method, payload, timeoutMs, token, options.signal), id, this.options.projectId, this.options.editorInstanceId);
     } catch (error) {
       if (error instanceof UnityCommandError || error instanceof UnityRequestTimeoutError) {
-        throw error;
+        throw annotateError(error, id, this.options.projectId, this.options.editorInstanceId);
       }
 
       try {
-        const socket = await this.connect();
-        return withRequestId(await this.requestViaSocket<T>(socket, payload, method, timeoutMs, options.signal), id);
+        const socket = await this.connect(token);
+        return withRequestMetadata(await this.requestViaSocket<T>(socket, payload, method, timeoutMs, options.signal), id, this.options.projectId, this.options.editorInstanceId);
       } catch (socketError) {
         if (socketError instanceof UnityCommandError || socketError instanceof UnityRequestTimeoutError) {
-          throw socketError;
+          throw annotateError(socketError, id, this.options.projectId, this.options.editorInstanceId);
         }
         if (!this.options.queueDir) {
-          throw socketError;
+          throw annotateError(socketError, id, this.options.projectId, this.options.editorInstanceId);
         }
-        return withRequestId(await this.requestViaQueue<T>(payload, method, timeoutMs, options.signal), id);
+        try {
+          return withRequestMetadata(await this.requestViaQueue<T>(payload, method, timeoutMs, options.signal), id, this.options.projectId, this.options.editorInstanceId);
+        } catch (queueError) {
+          throw annotateError(queueError, id, this.options.projectId, this.options.editorInstanceId);
+        }
       }
     }
   }
 
-  private async requestViaHttp<T>(method: string, payload: UnityRpcRequest, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+  private async requestViaHttp<T>(method: string, payload: UnityRpcRequest, timeoutMs: number, token: string, signal?: AbortSignal): Promise<T> {
     const abortController = new AbortController();
     let timedOut = false;
     const timeout = setTimeout(() => {
@@ -118,11 +132,14 @@ export class UnityClient {
     try {
       const response = await fetch(this.httpEndpoint, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
         body: JSON.stringify(payload),
         signal: abortController.signal
       });
       if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          throw new UnityCommandError(`Unity bridge authentication failed (${response.status}).`, response.status, { code: "UNITY_BRIDGE_AUTHENTICATION_FAILED" }, payload.id);
+        }
         throw new Error(`Unity HTTP bridge responded ${response.status}: ${method}`);
       }
       return unwrapResponse<T>((await response.json()) as UnityRpcResponse<T>, payload.id);
@@ -214,9 +231,10 @@ export class UnityClient {
     const resultsDir = join(queueDir, "results");
     const cancellationDir = join(queueDir, "cancellations");
     await Promise.all([mkdir(pendingDir, { recursive: true }), mkdir(resultsDir, { recursive: true }), mkdir(cancellationDir, { recursive: true })]);
-    const pendingPath = join(pendingDir, `${payload.id}.json`);
+    const queueKey = createHash("sha256").update(payload.id, "utf8").digest("hex").slice(0, 24);
+    const pendingPath = join(pendingDir, `${queueKey}.json`);
     const tempPath = `${pendingPath}.${randomUUID()}.tmp`;
-    const resultPath = join(resultsDir, `${payload.id}.json`);
+    const resultPath = join(resultsDir, `${queueKey}.json`);
 
     await writeFile(tempPath, JSON.stringify(payload), "utf8");
     await rename(tempPath, pendingPath);
@@ -234,7 +252,7 @@ export class UnityClient {
     const pendingRemoved = await removeIfPresent(pendingPath);
     if (!pendingRemoved) {
       await writeFile(
-        join(cancellationDir, `${payload.id}.json`),
+        join(cancellationDir, `${queueKey}.json`),
         JSON.stringify({ requestId: payload.id, idempotencyKey: payload.idempotencyKey, requestedAt: new Date().toISOString() }),
         "utf8"
       );
@@ -266,7 +284,7 @@ export class UnityClient {
     }
   }
 
-  private async connect(): Promise<WebSocket> {
+  private async connect(token: string): Promise<WebSocket> {
     if (this.socket?.readyState === WebSocket.OPEN) {
       return this.socket;
     }
@@ -275,7 +293,7 @@ export class UnityClient {
     }
 
     this.socket?.terminate();
-    const socket = new WebSocket(this.endpoint);
+    const socket = new WebSocket(this.endpoint, { headers: { authorization: `Bearer ${token}` } });
     this.socket = socket;
     socket.on("message", (data) => this.handleMessage(data.toString()));
     socket.on("close", () => {
@@ -326,10 +344,29 @@ export class UnityClient {
       this.pending.delete(id);
     }
   }
+
+  private async readToken(): Promise<string> {
+    if (this.token) return this.token;
+    const value = (await readFile(this.options.tokenFile, "utf8")).trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(value)) {
+      throw new Error(`Unity bridge token file is malformed: ${this.options.tokenFile}`);
+    }
+    this.token = value;
+    return value;
+  }
 }
 
-function createPayload(method: string, params: unknown, id: string, timeoutMs: number, idempotencyKey?: string): UnityRpcRequest {
-  return {
+function createPayload(
+  method: string,
+  params: unknown,
+  id: string,
+  timeoutMs: number,
+  projectId: string,
+  editorInstanceId: string,
+  token: string,
+  idempotencyKey?: string
+): UnityRpcRequest {
+  const payload: UnityRpcRequest = {
     jsonrpc: "2.0",
     id,
     method,
@@ -337,8 +374,15 @@ function createPayload(method: string, params: unknown, id: string, timeoutMs: n
     requestId: id,
     idempotencyKey: idempotencyKey ?? id,
     idempotent: isReplaySafe(method, params),
-    deadlineUnixMs: Date.now() + timeoutMs
+    deadlineUnixMs: Date.now() + timeoutMs,
+    projectId,
+    editorInstanceId,
+    authProof: ""
   };
+  payload.authProof = createHmac("sha256", token)
+    .update(`${payload.id}\n${payload.method}\n${payload.deadlineUnixMs}\n${payload.idempotencyKey}\n${payload.projectId}\n${payload.editorInstanceId}`, "utf8")
+    .digest("hex");
+  return payload;
 }
 
 function unwrapResponse<T>(response: UnityRpcResponse<T>, requestId: string): T {
@@ -382,7 +426,7 @@ function readRequestId(params: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function withRequestId<T>(value: T, requestId: string): T {
+function withRequestMetadata<T>(value: T, requestId: string, projectId: string, editorInstanceId: string): T {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return value;
   }
@@ -390,7 +434,22 @@ function withRequestId<T>(value: T, requestId: string): T {
   if (typeof record.requestId !== "string") {
     record.requestId = requestId;
   }
+  if (typeof record.projectId !== "string") {
+    record.projectId = projectId;
+  }
+  if (typeof record.editorInstanceId !== "string") {
+    record.editorInstanceId = editorInstanceId;
+  }
   return value;
+}
+
+function annotateError(error: unknown, requestId: string, projectId: string, editorInstanceId: string): unknown {
+  if (!error || typeof error !== "object") return error;
+  const record = error as Record<string, unknown>;
+  if (typeof record.requestId !== "string") record.requestId = requestId;
+  if (typeof record.projectId !== "string") record.projectId = projectId;
+  if (typeof record.editorInstanceId !== "string") record.editorInstanceId = editorInstanceId;
+  return error;
 }
 
 function isReplaySafe(method: string, params: unknown): boolean {

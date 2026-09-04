@@ -92,7 +92,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static bool TryProcessFile(string pendingPath)
         {
             var queueKey = Path.GetFileNameWithoutExtension(pendingPath);
-            var owner = Guid.NewGuid().ToString("N");
+            var owner = Guid.NewGuid().ToString("N").Substring(0, 12);
             var claimPath = Path.Combine(ProcessingDirectory, queueKey + "." + owner + ".claim.json");
             try
             {
@@ -127,23 +127,31 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 {
                     request.IdempotencyKey = request.Id;
                 }
-                var claim = RequestExecutionStore.Begin(request, json, owner);
-                var cancellationPath = Path.Combine(CancellationDirectory, queueKey + ".json");
-                if (claim.Disposition == RequestClaimDisposition.Claimed && File.Exists(cancellationPath))
+                var authorization = BridgeSecurity.AuthorizeRequest(request, true);
+                if (!authorization.Allowed)
                 {
-                    response = RequestExecutionStore.Complete(request, owner, JsonRpcUtil.Error(request, -32009, "Queue request was cancelled before execution.", new JObject
-                    {
-                        ["code"] = "REQUEST_CANCELLED",
-                        ["requestId"] = request.Id,
-                        ["outcomeUnknown"] = false
-                    }));
-                    DeleteIfExists(cancellationPath);
+                    response = BridgeSecurity.AuthorizationError(request, authorization);
                 }
                 else
                 {
-                    response = claim.Disposition == RequestClaimDisposition.Claimed
-                        ? RequestExecutionStore.Complete(request, owner, Commands.Execute(request))
-                        : claim.ResponseJson;
+                    var claim = RequestExecutionStore.Begin(request, json, owner);
+                    var cancellationPath = Path.Combine(CancellationDirectory, queueKey + ".json");
+                    if (claim.Disposition == RequestClaimDisposition.Claimed && File.Exists(cancellationPath))
+                    {
+                        response = RequestExecutionStore.Complete(request, owner, JsonRpcUtil.Error(request, -32009, "Queue request was cancelled before execution.", new JObject
+                        {
+                            ["code"] = "REQUEST_CANCELLED",
+                            ["requestId"] = request.Id,
+                            ["outcomeUnknown"] = false
+                        }));
+                        DeleteIfExists(cancellationPath);
+                    }
+                    else
+                    {
+                        response = claim.Disposition == RequestClaimDisposition.Claimed
+                            ? RequestExecutionStore.Complete(request, owner, Commands.Execute(request))
+                            : claim.ResponseJson;
+                    }
                 }
             }
             catch (JsonRpcProtocolException exception)
@@ -189,6 +197,14 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     if (string.IsNullOrWhiteSpace(request.IdempotencyKey))
                     {
                         request.IdempotencyKey = request.Id;
+                    }
+                    var authorization = BridgeSecurity.AuthorizeRequest(request, true);
+                    if (!authorization.Allowed)
+                    {
+                        WriteAtomic(Path.Combine(ResultsDirectory, queueKey + ".json"), BridgeSecurity.AuthorizationError(request, authorization));
+                        DeleteIfExists(claimPath);
+                        DeleteIfExists(leasePath);
+                        continue;
                     }
                     if (RequestExecutionStore.IsReplaySafe(request))
                     {
@@ -266,7 +282,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static void WriteAtomic(string path, string contents)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path));
-            var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            var temporaryPath = path + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp";
             File.WriteAllText(temporaryPath, contents ?? string.Empty, new UTF8Encoding(false));
             if (File.Exists(path))
             {

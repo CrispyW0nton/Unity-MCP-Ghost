@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
-using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,18 +15,30 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private readonly CommandRegistry commands = new CommandRegistry();
         private readonly List<string> commandHistory = new List<string>();
+        private readonly object historySync = new object();
         private readonly SemaphoreSlim httpConcurrency = new SemaphoreSlim(16, 16);
+        private readonly BridgeRateLimiter rateLimiter = new BridgeRateLimiter(120, TimeSpan.FromSeconds(10));
         private HttpListener listener;
+        private LoopbackWebSocketServer webSocketServer;
         private CancellationTokenSource cancellation;
-        private int clientCount;
 
         public bool IsRunning { get; private set; }
         public string LastError { get; private set; }
         public string LastRequest { get; private set; }
         public int Port { get; private set; } = UnityMcpGhostConfig.DefaultPort;
-        public int ClientCount { get { return clientCount; } }
+        public int WebSocketPort { get; private set; }
+        public int ClientCount { get { return webSocketServer?.ClientCount ?? 0; } }
         public string QueueStatus { get { return DurableCommandQueue.StatusJson(); } }
-        public IReadOnlyList<string> CommandHistory { get { return commandHistory; } }
+        public IReadOnlyList<string> CommandHistory
+        {
+            get
+            {
+                lock (historySync)
+                {
+                    return commandHistory.ToArray();
+                }
+            }
+        }
 
         public bool Start(int port)
         {
@@ -38,14 +49,29 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             try
             {
+                if (port < 1024 || port > 65535)
+                {
+                    throw new InvalidOperationException("Bridge port must be between 1024 and 65535.");
+                }
+                BridgeSecurity.InitializeOnMainThread();
                 cancellation = new CancellationTokenSource();
                 listener = new HttpListener();
                 listener.Prefixes.Add("http://127.0.0.1:" + port + UnityMcpGhostConfig.WebSocketPath + "/");
                 listener.Start();
+                var settings = BridgeSecurity.Settings;
+                webSocketServer = new LoopbackWebSocketServer(
+                    settings.WebSocketPort,
+                    JsonRpcUtil.MaxRequestCharacters,
+                    BridgeSecurity.AuthenticateBearer,
+                    HandleWebSocketMessage,
+                    RecordTransportError);
+                webSocketServer.Start();
                 Port = port;
+                WebSocketPort = settings.WebSocketPort;
                 IsRunning = true;
                 LastError = string.Empty;
-                _ = AcceptLoop(cancellation.Token);
+                BridgeSecurity.WriteIdentity(Port, WebSocketPort, true);
+                _ = Task.Run(() => AcceptLoop(cancellation.Token), cancellation.Token);
                 return true;
             }
             catch (Exception exception)
@@ -54,8 +80,11 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 IsRunning = false;
                 listener?.Close();
                 listener = null;
+                webSocketServer?.Stop();
+                webSocketServer = null;
                 cancellation?.Cancel();
                 cancellation = null;
+                WriteIdentitySafely(port, BridgeSecurity.Settings.WebSocketPort, false);
                 return false;
             }
         }
@@ -66,7 +95,15 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             cancellation?.Cancel();
             listener?.Close();
             listener = null;
+            webSocketServer?.Stop();
+            webSocketServer = null;
             cancellation = null;
+            WriteIdentitySafely(Port, WebSocketPort, false);
+        }
+
+        public void Heartbeat()
+        {
+            WriteIdentitySafely(Port, WebSocketPort, IsRunning);
         }
 
         private async Task AcceptLoop(CancellationToken token)
@@ -76,15 +113,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 try
                 {
                     var context = await listener.GetContextAsync();
-                    if (!context.Request.IsWebSocketRequest)
+                    if (!await ValidateNetworkRequest(context, token))
+                    {
+                        continue;
+                    }
+                    if (!IsWebSocketUpgrade(context.Request))
                     {
                         _ = HandleHttpRequest(context, token);
                         continue;
                     }
-
-                    var webSocketContext = await context.AcceptWebSocketAsync(null);
-                    clientCount++;
-                    _ = ClientLoop(webSocketContext.WebSocket, token);
+                    await WriteStatusResponse(context, 426, "Use the authenticated WebSocket endpoint advertised in bridge-identity.json.", token);
                 }
                 catch (Exception exception)
                 {
@@ -106,53 +144,55 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             try
             {
-            if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
-            {
-                await WriteStatusResponse(context, 405, "Only POST is supported.", token);
-                return;
-            }
+                if (!string.Equals(context.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+                {
+                    await WriteStatusResponse(context, 405, "Only POST is supported.", token);
+                    return;
+                }
 
-            if (string.IsNullOrWhiteSpace(context.Request.ContentType) || !context.Request.ContentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase))
-            {
-                await WriteStatusResponse(context, 415, "Content-Type must be application/json.", token);
-                return;
-            }
+                var mediaType = (context.Request.ContentType ?? string.Empty).Split(';')[0].Trim();
+                if (!string.Equals(mediaType, "application/json", StringComparison.OrdinalIgnoreCase))
+                {
+                    await WriteStatusResponse(context, 415, "Content-Type must be application/json.", token);
+                    return;
+                }
 
-            if (context.Request.ContentLength64 > JsonRpcUtil.MaxRequestCharacters)
-            {
-                await WriteStatusResponse(context, 413, "Request body exceeds the configured limit.", token);
-                return;
-            }
+                if (context.Request.ContentLength64 > JsonRpcUtil.MaxRequestCharacters)
+                {
+                    await WriteStatusResponse(context, 413, "Request body exceeds the configured limit.", token);
+                    return;
+                }
 
-            string requestJson;
-            try
-            {
-                requestJson = await ReadBoundedRequest(context.Request.InputStream, context.Request.ContentEncoding);
-            }
-            catch (JsonRpcProtocolException exception)
-            {
-                await WriteHttpResponse(context, JsonRpcUtil.Error(exception), token);
-                return;
-            }
+                string requestJson;
+                try
+                {
+                    requestJson = await ReadBoundedRequest(context.Request.InputStream, context.Request.ContentEncoding);
+                }
+                catch (JsonRpcProtocolException exception)
+                {
+                    await WriteHttpResponse(context, JsonRpcUtil.Error(exception), token);
+                    return;
+                }
 
-            UnityMcpRequest request;
-            try
-            {
-                request = JsonRpcUtil.ParseRequest(requestJson);
-            }
-            catch (JsonRpcProtocolException exception)
-            {
-                await WriteHttpResponse(context, JsonRpcUtil.Error(exception), token);
-                return;
-            }
-            LastRequest = request.Method + " [" + request.Id + "]";
-            RecordCommand(request.Method);
-            var responseJson = await DispatchDurably(request, requestJson);
-            await WriteHttpResponse(context, responseJson, token);
+                UnityMcpRequest request;
+                try
+                {
+                    request = JsonRpcUtil.ParseRequest(requestJson);
+                }
+                catch (JsonRpcProtocolException exception)
+                {
+                    await WriteHttpResponse(context, JsonRpcUtil.Error(exception), token);
+                    return;
+                }
+                LastRequest = request.Method + " [" + request.Id + "]";
+                RecordCommand(request.Method);
+                var responseJson = await DispatchDurably(request, requestJson);
+                await WriteHttpResponse(context, responseJson, token);
             }
             catch (Exception exception)
             {
                 LastError = exception.Message;
+                UnityEngine.Debug.LogException(exception);
                 if (context.Response.OutputStream.CanWrite)
                 {
                     await WriteStatusResponse(context, 500, "Unity MCP bridge failed to process the request.", token);
@@ -175,79 +215,34 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             context.Response.Close();
         }
 
-        private async Task ClientLoop(WebSocket socket, CancellationToken token)
+        private async Task<string> HandleWebSocketMessage(string requestJson)
         {
-            var buffer = new byte[16 * 1024];
-            var sendLock = new SemaphoreSlim(1, 1);
-
+            if (!rateLimiter.TryAcquire(DateTime.UtcNow))
+            {
+                return JsonRpcUtil.Error(new JsonRpcProtocolException(-32011, "Unity MCP bridge request rate exceeded."));
+            }
+            UnityMcpRequest request;
             try
             {
-                while (!token.IsCancellationRequested && socket.State == WebSocketState.Open)
-                {
-                    string requestJson;
-                    using (var message = new BoundedWebSocketMessage(JsonRpcUtil.MaxRequestCharacters))
-                    {
-                        while (true)
-                        {
-                            var segment = new ArraySegment<byte>(buffer);
-                            var result = await socket.ReceiveAsync(segment, token);
-                            var status = message.Append(segment, result);
-                            if (status == WebSocketMessageAppendStatus.Close)
-                            {
-                                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", token);
-                                return;
-                            }
-                            if (status == WebSocketMessageAppendStatus.InvalidType)
-                            {
-                                await socket.CloseAsync(WebSocketCloseStatus.InvalidMessageType, "Only text JSON messages are supported.", token);
-                                return;
-                            }
-                            if (status == WebSocketMessageAppendStatus.TooLarge)
-                            {
-                                await socket.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message exceeds the configured limit.", token);
-                                return;
-                            }
-                            if (status == WebSocketMessageAppendStatus.InvalidUtf8)
-                            {
-                                await socket.CloseAsync(WebSocketCloseStatus.InvalidPayloadData, "Message is not valid UTF-8.", token);
-                                return;
-                            }
-                            if (status == WebSocketMessageAppendStatus.Complete)
-                            {
-                                requestJson = message.GetText();
-                                break;
-                            }
-                        }
-                    }
-                    UnityMcpRequest request;
-                    try
-                    {
-                        request = JsonRpcUtil.ParseRequest(requestJson);
-                    }
-                    catch (JsonRpcProtocolException exception)
-                    {
-                        await Send(socket, JsonRpcUtil.Error(exception), token, sendLock);
-                        continue;
-                    }
-                    LastRequest = request.Method + " [" + request.Id + "]";
-                    RecordCommand(request.Method);
-                    var responseJson = await DispatchDurably(request, requestJson);
-                    await Send(socket, responseJson, token, sendLock);
-                }
+                request = JsonRpcUtil.ParseRequest(requestJson);
             }
-            catch (Exception exception)
+            catch (JsonRpcProtocolException exception)
             {
-                LastError = exception.Message;
+                return JsonRpcUtil.Error(exception);
             }
-            finally
-            {
-                sendLock.Dispose();
-                clientCount = Math.Max(0, clientCount - 1);
-            }
+            LastRequest = request.Method + " [" + request.Id + "]";
+            RecordCommand(request.Method);
+            return await DispatchDurably(request, requestJson);
         }
 
         private async Task<string> DispatchDurably(UnityMcpRequest request, string rawRequest)
         {
+            var authorization = BridgeSecurity.AuthorizeRequest(request, false);
+            if (!authorization.Allowed)
+            {
+                return BridgeSecurity.AuthorizationError(request, authorization);
+            }
+
             var owner = Guid.NewGuid().ToString("N");
             RequestClaim claim;
             try
@@ -291,6 +286,40 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return await completion.Task;
         }
 
+        private async Task<bool> ValidateNetworkRequest(HttpListenerContext context, CancellationToken token)
+        {
+            if (context.Request.RemoteEndPoint == null || !IPAddress.IsLoopback(context.Request.RemoteEndPoint.Address))
+            {
+                await WriteStatusResponse(context, 403, "Unity MCP bridge accepts loopback clients only.", token);
+                return false;
+            }
+            if (!string.IsNullOrWhiteSpace(context.Request.Headers["Origin"]))
+            {
+                await WriteStatusResponse(context, 403, "Browser Origin requests are not accepted by the Unity MCP bridge.", token);
+                return false;
+            }
+            if (!BridgeSecurity.AuthenticateBearer(context.Request.Headers["Authorization"]))
+            {
+                context.Response.Headers["WWW-Authenticate"] = "Bearer realm=\"unity-mcp-ghost\"";
+                await WriteStatusResponse(context, 401, "Unity MCP bridge authentication failed.", token);
+                return false;
+            }
+            if (!rateLimiter.TryAcquire(DateTime.UtcNow))
+            {
+                await WriteStatusResponse(context, 429, "Unity MCP bridge request rate exceeded.", token);
+                return false;
+            }
+            return true;
+        }
+
+        private static bool IsWebSocketUpgrade(HttpListenerRequest request)
+        {
+            return request.IsWebSocketRequest
+                || (string.Equals(request.HttpMethod, "GET", StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(request.Headers["Upgrade"], "websocket", StringComparison.OrdinalIgnoreCase)
+                    && (request.Headers["Connection"] ?? string.Empty).IndexOf("Upgrade", StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
         private static async Task<string> ReadBoundedRequest(Stream stream, Encoding encoding)
         {
             using (var message = new MemoryStream())
@@ -323,20 +352,6 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             context.Response.Close();
         }
 
-        private static async Task Send(WebSocket socket, string json, CancellationToken token, SemaphoreSlim sendLock)
-        {
-            var bytes = Encoding.UTF8.GetBytes(json);
-            await sendLock.WaitAsync(token);
-            try
-            {
-                await socket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, token);
-            }
-            finally
-            {
-                sendLock.Release();
-            }
-        }
-
         private void RecordCommand(string method)
         {
             if (string.IsNullOrEmpty(method))
@@ -344,10 +359,31 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 return;
             }
 
-            commandHistory.Add(DateTime.UtcNow.ToString("HH:mm:ss") + " UTC  " + method);
-            if (commandHistory.Count > 50)
+            lock (historySync)
             {
-                commandHistory.RemoveAt(0);
+                commandHistory.Add(DateTime.UtcNow.ToString("HH:mm:ss") + " UTC  " + method);
+                if (commandHistory.Count > 50)
+                {
+                    commandHistory.RemoveAt(0);
+                }
+            }
+        }
+
+        private void RecordTransportError(Exception exception)
+        {
+            LastError = exception.Message;
+            UnityEngine.Debug.LogException(exception);
+        }
+
+        private void WriteIdentitySafely(int port, int webSocketPort, bool running)
+        {
+            try
+            {
+                BridgeSecurity.WriteIdentity(port, webSocketPort, running);
+            }
+            catch (Exception exception)
+            {
+                LastError = "Could not persist bridge identity: " + exception.Message;
             }
         }
     }

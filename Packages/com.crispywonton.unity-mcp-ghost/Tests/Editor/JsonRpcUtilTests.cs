@@ -26,6 +26,22 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
         }
 
         [Test]
+        public void ParseRequest_PreservesPinnedIdentityAndQueueProof()
+        {
+            var request = JsonRpcUtil.ParseRequest("{\"jsonrpc\":\"2.0\",\"id\":\"request-1\",\"requestId\":\"request-1\",\"method\":\"health\",\"projectId\":\"project-1\",\"editorInstanceId\":\"editor-1\",\"authProof\":\"proof-1\",\"params\":{}}");
+
+            Assert.That(request.ProjectId, Is.EqualTo("project-1"));
+            Assert.That(request.EditorInstanceId, Is.EqualTo("editor-1"));
+            Assert.That(request.AuthProof, Is.EqualTo("proof-1"));
+        }
+
+        [Test]
+        public void ParseRequest_RejectsMismatchedRequestId()
+        {
+            Assert.Throws<JsonRpcProtocolException>(() => JsonRpcUtil.ParseRequest("{\"jsonrpc\":\"2.0\",\"id\":\"one\",\"requestId\":\"two\",\"method\":\"health\",\"params\":{}}"));
+        }
+
+        [Test]
         public void ParseRequest_RejectsDuplicateKeysAtAnyDepth()
         {
             Assert.Throws<JsonRpcProtocolException>(() => JsonRpcUtil.ParseRequest("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\",\"params\":{\"limit\":1,\"limit\":2}}"));

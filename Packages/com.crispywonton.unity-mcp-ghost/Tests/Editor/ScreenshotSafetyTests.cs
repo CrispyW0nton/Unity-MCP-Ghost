@@ -56,7 +56,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
         [Test]
         public void RegistryReturnsStableErrorForDimensionMismatch()
         {
-            var directory = Path.Combine(Path.GetTempPath(), "UnityMcpGhost-ScreenshotTests-" + Guid.NewGuid().ToString("N"));
+            var directory = Path.Combine(ProjectPathPolicy.ProjectRoot, "Library", "UnityMcpGhost", "screenshot-tests", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(directory);
             var baselinePath = Path.Combine(directory, "baseline.png");
             var currentPath = Path.Combine(directory, "current.png");

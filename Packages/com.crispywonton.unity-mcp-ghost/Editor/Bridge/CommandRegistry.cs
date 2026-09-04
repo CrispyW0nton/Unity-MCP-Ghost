@@ -115,6 +115,14 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             {
                 return JsonRpcUtil.Success(request, ExecuteResult(request));
             }
+            catch (ProjectPathException exception)
+            {
+                return JsonRpcUtil.Error(request, -32012, exception.Message, new JObject
+                {
+                    ["code"] = exception.Code,
+                    ["outcomeUnknown"] = false
+                });
+            }
             catch (Exception exception)
             {
                 return JsonRpcUtil.Error(request, -32000, exception.Message);
@@ -143,7 +151,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static string HandlePing(UnityMcpRequest request)
         {
-            return "{\"ok\":true,\"package\":\"" + UnityMcpGhostConfig.PackageName + "\",\"version\":\"" + UnityMcpGhostConfig.Version + "\"}";
+            return "{\"ok\":true,\"package\":\"" + UnityMcpGhostConfig.PackageName + "\",\"version\":\"" + UnityMcpGhostConfig.Version + "\",\"projectId\":\"" + BridgeSecurity.ProjectId + "\",\"editorInstanceId\":\"" + BridgeSecurity.EditorInstanceId + "\"}";
         }
 
         private static string HandleHealth(UnityMcpRequest request)
@@ -154,7 +162,11 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 + "\"package\":\"" + UnityMcpGhostConfig.PackageName + "\","
                 + "\"version\":\"" + UnityMcpGhostConfig.Version + "\","
                 + "\"unityVersion\":\"" + JsonRpcUtil.Escape(Application.unityVersion) + "\","
-                + "\"projectPath\":\"" + JsonRpcUtil.Escape(Application.dataPath) + "\","
+                + "\"projectPath\":\"" + JsonRpcUtil.Escape(ProjectPathPolicy.ProjectRoot) + "\","
+                + "\"projectId\":\"" + BridgeSecurity.ProjectId + "\","
+                + "\"editorInstanceId\":\"" + BridgeSecurity.EditorInstanceId + "\","
+                + "\"protocolVersion\":1,"
+                + "\"authenticated\":true,"
                 + "\"activeScenePath\":\"" + JsonRpcUtil.Escape(activeScene.path) + "\","
                 + "\"isCompiling\":" + Bool(EditorApplication.isCompiling) + ","
                 + "\"isPlaying\":" + Bool(EditorApplication.isPlaying) + ","
@@ -2518,6 +2530,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             if (string.IsNullOrEmpty(baselinePath) || string.IsNullOrEmpty(currentPath))
             {
                 throw new InvalidOperationException("screenshot.diff requires baselinePath and currentPath.");
+            }
+
+            try
+            {
+                baselinePath = ProjectPathPolicy.RequireUnderProjectRoot(baselinePath);
+                currentPath = ProjectPathPolicy.RequireUnderProjectRoot(currentPath);
+            }
+            catch (ProjectPathException exception)
+            {
+                return ScreenshotFailure(exception.Code, exception.Message, null);
             }
 
             if (!File.Exists(baselinePath))
@@ -5471,13 +5493,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static string NormalizeAssetPath(string path)
         {
-            var normalized = (path ?? string.Empty).Replace("\\", "/").Trim();
-            if (!normalized.StartsWith("Assets", StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Asset paths must be under Assets/: " + path);
-            }
-
-            return normalized.TrimEnd('/');
+            return ProjectPathPolicy.NormalizeAssetPath(path);
         }
 
         private static string EnsureScriptPath(string path)
@@ -5527,8 +5543,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static string FullAssetPath(string assetPath)
         {
-            var relative = NormalizeAssetPath(assetPath).Substring("Assets".Length).TrimStart('/');
-            return Path.Combine(Application.dataPath, relative.Replace("/", Path.DirectorySeparatorChar.ToString()));
+            return ProjectPathPolicy.FullAssetPath(assetPath);
         }
 
         private static string WriteScript(string path, string contents, bool overwrite, string expectedSha256, bool dryRun, string action)

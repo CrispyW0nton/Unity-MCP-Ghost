@@ -98,6 +98,18 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             {
                 throw new JsonRpcProtocolException(-32600, "Invalid request: idempotent must be a boolean.", idJson);
             }
+            var requestIdToken = root["requestId"];
+            if (requestIdToken != null && (requestIdToken.Type != JTokenType.String || string.IsNullOrWhiteSpace(requestIdToken.Value<string>()) || requestIdToken.Value<string>().Length > 128))
+            {
+                throw new JsonRpcProtocolException(-32600, "Invalid request: requestId must be a non-empty string of at most 128 characters.", idJson);
+            }
+            if (requestIdToken != null && !string.Equals(requestIdToken.Value<string>(), id, StringComparison.Ordinal))
+            {
+                throw new JsonRpcProtocolException(-32600, "Invalid request: requestId must match the JSON-RPC id.", idJson);
+            }
+            var projectIdToken = ReadBoundedRootString(root, "projectId", 128, idJson);
+            var editorInstanceIdToken = ReadBoundedRootString(root, "editorInstanceId", 128, idJson);
+            var authProofToken = ReadBoundedRootString(root, "authProof", 128, idJson);
 
             return new UnityMcpRequest
             {
@@ -107,8 +119,21 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 RawJson = paramsToken == null || paramsToken.Type == JTokenType.Null ? "{}" : paramsToken.ToString(Formatting.None),
                 DeadlineUnixMs = deadlineToken != null ? deadlineToken.Value<long>() : 0,
                 IdempotencyKey = idempotencyToken != null ? idempotencyToken.Value<string>() : id,
-                ClientDeclaredIdempotent = idempotentToken != null && idempotentToken.Value<bool>()
+                ClientDeclaredIdempotent = idempotentToken != null && idempotentToken.Value<bool>(),
+                ProjectId = projectIdToken != null ? projectIdToken.Value<string>() : string.Empty,
+                EditorInstanceId = editorInstanceIdToken != null ? editorInstanceIdToken.Value<string>() : string.Empty,
+                AuthProof = authProofToken != null ? authProofToken.Value<string>() : string.Empty
             };
+        }
+
+        private static JToken ReadBoundedRootString(JObject root, string name, int maxLength, string idJson)
+        {
+            var token = root[name];
+            if (token != null && (token.Type != JTokenType.String || string.IsNullOrWhiteSpace(token.Value<string>()) || token.Value<string>().Length > maxLength))
+            {
+                throw new JsonRpcProtocolException(-32600, "Invalid request: " + name + " must be a non-empty string of at most " + maxLength + " characters.", idJson);
+            }
+            return token;
         }
 
         public static string Success(UnityMcpRequest request, string resultJson)
@@ -315,6 +340,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         public long DeadlineUnixMs;
         public string IdempotencyKey = string.Empty;
         public bool ClientDeclaredIdempotent;
+        public string ProjectId = string.Empty;
+        public string EditorInstanceId = string.Empty;
+        public string AuthProof = string.Empty;
     }
 
     internal sealed class JsonRpcProtocolException : Exception

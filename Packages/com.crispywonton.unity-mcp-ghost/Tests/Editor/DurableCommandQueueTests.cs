@@ -67,9 +67,13 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
                 ["idempotencyKey"] = id,
                 ["idempotent"] = true,
                 ["deadlineUnixMs"] = DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeMilliseconds(),
+                ["projectId"] = BridgeSecurity.ProjectId,
+                ["editorInstanceId"] = BridgeSecurity.EditorInstanceId,
                 ["method"] = method,
                 ["params"] = new JObject()
             };
+            var parsed = JsonRpcUtil.ParseRequest(request.ToString(Newtonsoft.Json.Formatting.None));
+            request["authProof"] = BridgeSecurity.CreateQueueProof(parsed);
             File.WriteAllText(Path.Combine(DurableCommandQueue.PendingDirectory, id + ".json"), request.ToString(Newtonsoft.Json.Formatting.None));
         }
     }
