@@ -114,28 +114,13 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Recent Commands", EditorStyles.boldLabel);
-            if (Server.CommandHistory.Count == 0)
-            {
-                EditorGUILayout.HelpBox("None", MessageType.None);
-            }
-            else
-            {
-                foreach (var command in Server.CommandHistory)
-                {
-                    EditorGUILayout.LabelField(command);
-                }
-            }
+            var commandHistory = Server.CommandHistory.Count == 0
+                ? "None"
+                : string.Join("\n", Server.CommandHistory);
+            EditorGUILayout.HelpBox(commandHistory, MessageType.None);
 
-            if (!string.IsNullOrEmpty(Server.LastError))
-            {
-                EditorGUILayout.LabelField("Last Error", EditorStyles.boldLabel);
-                EditorGUILayout.HelpBox(Server.LastError, MessageType.Error);
-            }
-        }
-
-        private void OnDisable()
-        {
-            Repaint();
+            EditorGUILayout.LabelField("Last Error", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(string.IsNullOrEmpty(Server.LastError) ? "None" : Server.LastError, string.IsNullOrEmpty(Server.LastError) ? MessageType.None : MessageType.Error);
         }
 
         private void SaveSettings()

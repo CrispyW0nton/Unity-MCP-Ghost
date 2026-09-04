@@ -504,15 +504,15 @@ export class ScenarioJobManager {
         const observed = await this.waitForConsole({ ...assertion, boundary: assertion.boundary ?? result.consoleBoundary }, signal, deadline);
         result.consoleAssertions.push(observed);
       }
+      for (const screenshot of definition.screenshotAssertions ?? []) {
+        result.screenshots.push(await this.captureScreenshot(record, definition.id, screenshot, signal, deadline));
+      }
       for (const assertion of definition.objectAssertions ?? []) {
         const observed = await this.request("runtime.assert", assertion, signal, this.remaining(deadline));
         result.objectAssertions.push(observed);
         if (observed.ok === false || observed.matched === false) {
           throw new ScenarioFailure(errorCode(observed, "RUNTIME_ASSERTION_FAILED"), errorMessage(observed), observed);
         }
-      }
-      for (const screenshot of definition.screenshotAssertions ?? []) {
-        result.screenshots.push(await this.captureScreenshot(record, definition.id, screenshot, signal, deadline));
       }
 
       if (expectedResult !== "pass") {

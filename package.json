@@ -16,6 +16,7 @@
     "smoke:runtime": "tsx server/src/runtimeSmoke.ts --transport stdio",
     "smoke:scenario": "tsx server/src/scenarioSmoke.ts --transport stdio",
     "test": "node --import tsx --test \"server/test/**/*.test.ts\"",
+    "test:course": "tsx server/src/courseSmoke.ts --transport stdio --unity-project-path test-project --request-timeout-ms 60000",
     "test:unity:editmode": "tsx server/scripts/runUnityTests.ts EditMode",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

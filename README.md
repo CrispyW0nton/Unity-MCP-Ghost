@@ -78,6 +78,14 @@ npm run smoke:scenario -- --unity-project-path C:/Path/To/Unity-MCP-Ghost/test-p
 
 `scenario_matrix_run` starts a project- and editor-pinned job. Use `operation_get`, `operation_list`, `operation_cancel`, and `operation_result` with its UUID. `evidence_bundle_create` materializes deterministic JSON, Markdown, source-diff, compiler, Console, and screenshot artifacts; it never uploads them.
 
+Run the complete clean-room GAM 215-equivalent Module 1-2 matrix against an open repository test project:
+
+```bash
+npm run test:course
+```
+
+The gate executes 23 Module 1 cases, 43 Module 2 cases, and a separate cancellation/restoration job per module. See [docs/gam-215-fixture.md](docs/gam-215-fixture.md) for the exact inventory and evidence contract. The honest qualification remains **GAM 215-equivalent fixture complete; real course-project certification pending** until separate non-destructive runs pass against user-supplied Variablekiller and Conditionalkiller projects.
+
 ## Cursor MCP Config
 
 ```json

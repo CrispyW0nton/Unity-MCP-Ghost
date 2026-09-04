@@ -3,8 +3,8 @@ using UnityEngine;
 
 public sealed class Gam215InputDriver : MonoBehaviour, IUnityMcpInputDriver
 {
-    public int PageIndex { get; private set; }
-    public int PointerClicks { get; private set; }
+    public int PageIndex;
+    public int PointerClicks;
     public string DriverName => "gam215-fixture";
 
     private void Start()
