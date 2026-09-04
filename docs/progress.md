@@ -1,5 +1,37 @@
 # Unity MCP Ghost Progress
 
+## Course-Ready Reliability milestone
+
+Status: active; GAM 215-equivalent fixture coverage and real course-project certification are not yet complete.
+
+Milestone source documents:
+
+- `docs/development-prompt-course-ready-reliability.md`
+- `docs/unity-mcp-deep-audit-2026-09-04.md`
+
+Commits and verified gates:
+
+- `87d31b9` — `feat(physics): add collider and rigidbody setup tools`
+  - Preserved and integrated the pre-existing `collider_setup` and `rigidbody_setup` user work.
+  - Passed `npm run typecheck`, `npm run build`, `npm test`, and `git diff --check`.
+  - Live KOTOR bridge validation was unavailable because no Unity bridge was listening on port 6400.
+- `d2f1f25` — `fix(core): promote Unity failures into truthful MCP results`
+  - Added stable response correlation/error fields and promoted bridge soft failures, failed operations, timeouts, cancellations, and failed test counts to MCP `isError:true` while preserving structured data.
+  - Passed 5 Node tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+- `fd5df75` — `fix(core): replace regex JSON-RPC parsing with typed JSON`
+  - Replaced regex/manual request parsing with the pinned Unity Newtonsoft package and strict JSON-RPC validation.
+  - Added a repository-owned Unity 2022.3 test project and reproducible `npm run test:unity:editmode` runner.
+  - Passed 10 Unity EditMode tests, 5 Node tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+- `d03e640` — `fix(core): scope compile and test outcomes to exact generations`
+  - Added persisted compile/import generations, generation-scoped diagnostics, mutation hashes/generation receipts, exact compile polling across reload, truthful script validation, and non-green Unity Test Runner classification with failed-test details.
+  - Passed 19 Unity EditMode tests, 7 Node tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+  - Live headless Unity smoke created a valid script as generation 2, observed a clean completion after domain reload, deleted it as generation 3, observed clean cleanup completion, and verified the temporary file was absent.
+
+Next required slice:
+
+- Complete Workstream 1 by replacing the misleading diagnostic-only repair loop with a real bounded apply/compile/test/verify/rollback loop.
+- Continue with transactional mutation/rollback and durable transport semantics from Workstream 2.
+
 ## Phase 1: Foundation
 
 Status: validated against the live KOTOR Unity project on 2026-05-15; remaining work is automation depth and broader Unity-version coverage.
