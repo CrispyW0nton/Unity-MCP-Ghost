@@ -1,7 +1,8 @@
 # Unity MCP Ghost: deep audit and open-source research
 
-Date: 2026-09-04  
-Repository: [CrispyW0nton/Unity-MCP-Ghost](https://github.com/CrispyW0nton/Unity-MCP-Ghost)  
+Date: 2026-09-04
+
+Repository: [CrispyW0nton/Unity-MCP-Ghost](https://github.com/CrispyW0nton/Unity-MCP-Ghost)
 Audited snapshot: `codex/phase2-parity-tools` at `cb79e299fd822ee2bd739e45fa4ddc268fc48317`, including the user's uncommitted `collider_setup` and `rigidbody_setup` work
 
 ## Executive verdict

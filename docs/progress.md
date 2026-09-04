@@ -26,6 +26,8 @@ Commits and verified gates:
   - Added persisted compile/import generations, generation-scoped diagnostics, mutation hashes/generation receipts, exact compile polling across reload, truthful script validation, and non-green Unity Test Runner classification with failed-test details.
   - Passed 19 Unity EditMode tests, 7 Node tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
   - Live headless Unity smoke created a valid script as generation 2, observed a clean completion after domain reload, deleted it as generation 3, observed clean cleanup completion, and verified the temporary file was absent.
+- `625f2af` — `docs(audit): record course-ready reliability scope and progress`
+  - Added the deep audit, executable milestone prompt, and this commit/gate ledger to the repository.
 
 Next required slice:
 
