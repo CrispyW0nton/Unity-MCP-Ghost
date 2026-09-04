@@ -17,7 +17,12 @@ async function main(): Promise<void> {
     tokenFile: config.unityTokenFile
   });
 
-  const server = createMcpServer({ unity });
+  const server = createMcpServer({
+    unity,
+    projectPath: config.unityProjectPath,
+    projectId: config.unityProjectId,
+    editorInstanceId: config.unityEditorInstanceId
+  });
 
   if (config.transport === "stdio") {
     const transport = new StdioServerTransport();

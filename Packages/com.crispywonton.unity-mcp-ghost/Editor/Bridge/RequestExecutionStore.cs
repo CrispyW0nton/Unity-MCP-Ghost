@@ -205,6 +205,10 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 case "compile.status_get":
                 case "play_mode.get":
                 case "input.status":
+                case "editor.snapshot":
+                case "runtime.inspect":
+                case "runtime.assert":
+                case "scenario.source_get":
                 case "scene.get_hierarchy":
                 case "scene.list_open":
                 case "scene.get_setup":

@@ -117,5 +117,37 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
                 Undo.RevertAllDownToGroup(undoGroup);
             }
         }
+
+        [Test]
+        public void RuntimeAssertionReadsSerializedComponentStateWithoutArbitraryReflection()
+        {
+            var gameObject = new GameObject("Runtime Assertion Target");
+            var collider = gameObject.AddComponent<BoxCollider>();
+            collider.isTrigger = true;
+            try
+            {
+                var result = JObject.Parse(ScenarioBridgeController.InspectRuntime(
+                    "{\"name\":\"Runtime Assertion Target\",\"component\":\"BoxCollider\",\"propertyPath\":\"m_IsTrigger\",\"equals\":true}",
+                    true));
+
+                Assert.That(result["ok"]?.Value<bool>(), Is.True);
+                Assert.That(result["matched"]?.Value<bool>(), Is.True);
+                Assert.That(result["observed"]?.Value<bool>(), Is.True);
+            }
+            finally
+            {
+                Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
+        public void ScenarioSourcePreflightRejectsMissingExpectedHashBeforeMutation()
+        {
+            var result = JObject.Parse(ScenarioBridgeController.ApplySources(
+                "{\"mutations\":[{\"path\":\"Assets/GAM215Fixture/Gam215InputDriver.cs\",\"content\":\"changed\",\"expectedSha256\":\"\"}]}"));
+
+            Assert.That(result["ok"]?.Value<bool>(), Is.False);
+            Assert.That(result["error"]?["code"]?.Value<string>(), Is.EqualTo("SCRIPT_HASH_MISMATCH"));
+        }
     }
 }

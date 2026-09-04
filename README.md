@@ -70,6 +70,14 @@ npm run smoke:runtime -- --unity-project-path C:/Path/To/Unity-MCP-Ghost/test-pr
 
 `input_simulate` reports its selected backend and evidence. Ghost first uses an active Unity Input System device, then a project-scoped `IUnityMcpInputDriver`; it does not claim legacy Input Manager delivery without observable proof. The repository fixture supplies a deterministic course-test driver. Requests fail with `UNSUPPORTED_INPUT_BACKEND` when neither path accepts and verifies them.
 
+Run the durable scenario smoke to exercise green, compiler-failure, assertion-failure, timeout, and cancellation paths. Each case proves byte-identical source restoration and writes a local evidence bundle under the selected project's ignored `Library/UnityMcpGhost/evidence` directory:
+
+```bash
+npm run smoke:scenario -- --unity-project-path C:/Path/To/Unity-MCP-Ghost/test-project --request-timeout-ms 60000
+```
+
+`scenario_matrix_run` starts a project- and editor-pinned job. Use `operation_get`, `operation_list`, `operation_cancel`, and `operation_result` with its UUID. `evidence_bundle_create` materializes deterministic JSON, Markdown, source-diff, compiler, Console, and screenshot artifacts; it never uploads them.
+
 ## Cursor MCP Config
 
 ```json

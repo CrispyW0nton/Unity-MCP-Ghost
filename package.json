@@ -14,6 +14,7 @@
     "smoke": "tsx server/src/devSmoke.ts --transport stdio",
     "smoke:security": "tsx server/src/securitySmoke.ts --transport stdio",
     "smoke:runtime": "tsx server/src/runtimeSmoke.ts --transport stdio",
+    "smoke:scenario": "tsx server/src/scenarioSmoke.ts --transport stdio",
     "test": "node --import tsx --test \"server/test/**/*.test.ts\"",
     "test:unity:editmode": "tsx server/scripts/runUnityTests.ts EditMode",
     "typecheck": "tsc -p tsconfig.json --noEmit"

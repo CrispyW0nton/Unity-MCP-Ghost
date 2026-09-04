@@ -2,11 +2,15 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { access } from "node:fs/promises";
 import { z } from "zod";
+import { ScenarioJobManager, type ScenarioMatrixDefinition } from "../scenario/ScenarioJobManager.js";
 import type { UnityClient } from "../unity/UnityClient.js";
 import { asObject, failureResponse, type GhostToolMeta, successResponse, type ToolDiagnostic } from "./toolResponse.js";
 
 export interface ToolContext {
   unity: UnityClient;
+  projectPath?: string;
+  projectId?: string;
+  editorInstanceId?: string;
 }
 
 type ToolSchema = Record<string, z.ZodType>;
@@ -61,6 +65,69 @@ const ConsoleFilterSchema = {
   limit: z.number().int().positive().max(1000).default(200),
   failOnUnexpectedErrors: z.boolean().default(true)
 };
+const ScenarioSourceMutationSchema = z.object({
+  path: z.string().min(1),
+  content: z.string().max(1024 * 1024),
+  expectedSha256: z.string().regex(/^[0-9a-f]{64}$/i)
+});
+const ScenarioInputSchema = z.object({
+  device: z.enum(["keyboard", "pointer"]),
+  action: z.enum(["tap", "press", "release", "click"]),
+  key: z.string().min(1).optional(),
+  button: z.enum(["left"]).optional(),
+  x: z.number().optional(),
+  y: z.number().optional(),
+  timeoutMs: z.number().int().positive().max(30000).optional()
+});
+const ScenarioConsoleAssertionSchema = z.object({
+  boundary: z.string().min(1).optional(),
+  generation: z.number().int().positive().optional(),
+  severity: z.enum(["log", "warning", "error", "all"]).optional(),
+  exact: z.string().optional(),
+  contains: z.string().optional(),
+  regex: z.string().optional(),
+  file: z.string().optional(),
+  line: z.number().int().positive().optional(),
+  count: z.number().int().nonnegative().optional(),
+  minimumCount: z.number().int().nonnegative().optional(),
+  maximumCount: z.number().int().nonnegative().optional(),
+  limit: z.number().int().positive().max(1000).optional(),
+  failOnUnexpectedErrors: z.boolean().optional(),
+  timeoutMs: z.number().int().positive().max(300000).optional()
+});
+const ScenarioObjectAssertionSchema = z.object({
+  hierarchyPath: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  exists: z.boolean().optional(),
+  activeSelf: z.boolean().optional(),
+  component: z.string().min(1).optional(),
+  propertyPath: z.string().min(1).optional(),
+  equals: z.unknown().optional(),
+  contains: z.string().optional()
+});
+const ScenarioScreenshotAssertionSchema = z.object({
+  label: z.string().min(1).max(100),
+  mode: z.enum(["auto", "mainCamera", "game", "sceneView", "scene"]).optional(),
+  width: z.number().int().positive().max(4096).optional(),
+  height: z.number().int().positive().max(4096).optional(),
+  superSize: z.number().int().positive().max(8).optional(),
+  baselinePath: z.string().min(1).optional(),
+  dimensionMode: z.enum(["reject", "resample-current"]).optional(),
+  threshold: z.number().nonnegative().max(1).optional(),
+  maxSamples: z.number().int().positive().max(200000).optional()
+});
+const ScenarioCaseSchema = z.object({
+  id: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  expectedResult: z.enum(["pass", "compile-failure", "assertion-failure", "timeout", "cancelled"]).default("pass"),
+  expectedFailureCode: z.string().min(1).optional(),
+  timeoutMs: z.number().int().positive().max(900000).optional(),
+  sourceMutations: z.array(ScenarioSourceMutationSchema).max(20).optional(),
+  inputs: z.array(ScenarioInputSchema).max(100).optional(),
+  consoleAssertions: z.array(ScenarioConsoleAssertionSchema).max(100).optional(),
+  objectAssertions: z.array(ScenarioObjectAssertionSchema).max(100).optional(),
+  screenshotAssertions: z.array(ScenarioScreenshotAssertionSchema).max(20).optional()
+});
 
 function annotationsFor(meta: GhostToolMeta): ToolAnnotations {
   return {
@@ -1184,6 +1251,12 @@ export function createMcpServer(context: ToolContext): McpServer {
   const server = new McpServer({
     name: "unity-mcp-ghost",
     version: "0.1.0"
+  });
+  const scenarios = new ScenarioJobManager({
+    unity: context.unity,
+    projectPath: context.projectPath,
+    projectId: context.projectId,
+    editorInstanceId: context.editorInstanceId
   });
 
   registerTool(
@@ -2558,38 +2631,148 @@ export function createMcpServer(context: ToolContext): McpServer {
     (args) => args.params
   );
 
-  registerUnityRequestTool(
+  registerTool(
     server,
-    context,
     "operation_get",
-    "Read the latest status for a long-running Ghost operation such as package manager work or tests.",
-    {
-      operationId: z.string().min(1)
-    },
+    "Read the latest status for a durable Ghost operation, including scenario matrices.",
+    { operationId: z.string().min(1) },
     { risk: "read", mutates: false, supportsDryRun: false, phase: 2 },
-    "operation.get"
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const data = isScenarioOperationId(args.operationId)
+          ? await scenarios.get(args.operationId)
+          : asObject(await context.unity.request("operation.get", args));
+        return successResponse("operation_get completed.", data, startedAt);
+      } catch (error) {
+        return failureResponse("operation_get failed", error, startedAt);
+      }
+    }
   );
 
-  registerUnityRequestTool(
+  registerTool(
     server,
-    context,
     "operation_list",
-    "List durable Ghost operations retained across Unity domain reloads.",
-    EmptySchema,
+    "List durable Unity and scenario operations retained by the pinned project.",
+    { limit: z.number().int().positive().max(200).default(50) },
     { risk: "read", mutates: false, supportsDryRun: false, phase: 2 },
-    "operation.list"
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const unity = asObject(await context.unity.request("operation.list"));
+        const scenario = scenarios.available ? await scenarios.list(args.limit) : { operations: [] };
+        const operations = [...arrayValue(unity.operations), ...arrayValue(scenario.operations)]
+          .sort((left, right) => stringValue(asObject(right).updatedUtc).localeCompare(stringValue(asObject(left).updatedUtc)))
+          .slice(0, args.limit);
+        return successResponse("operation_list completed.", { ok: true, operations, count: operations.length }, startedAt);
+      } catch (error) {
+        return failureResponse("operation_list failed", error, startedAt);
+      }
+    }
   );
 
-  registerUnityRequestTool(
+  registerTool(
     server,
-    context,
     "operation_cancel",
-    "Request cancellation of a durable Ghost operation and report whether the underlying Unity subsystem can prove the outcome.",
+    "Request cancellation of a durable Ghost operation and preserve restoration evidence.",
+    { operationId: z.string().min(1) },
+    { risk: "safe-write", mutates: true, supportsDryRun: false, phase: 3, idempotent: true },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const data = isScenarioOperationId(args.operationId)
+          ? await scenarios.cancel(args.operationId)
+          : asObject(await context.unity.request("operation.cancel", args));
+        return successResponse("operation_cancel completed.", data, startedAt);
+      } catch (error) {
+        return failureResponse("operation_cancel failed", error, startedAt);
+      }
+    }
+  );
+
+  registerTool(
+    server,
+    "operation_result",
+    "Return the compact terminal result and durable evidence handles for an operation.",
+    { operationId: z.string().min(1) },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 5 },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        if (isScenarioOperationId(args.operationId)) {
+          return successResponse("operation_result completed.", await scenarios.result(args.operationId), startedAt);
+        }
+        const operation = asObject(await context.unity.request("operation.get", args));
+        return successResponse("operation_result completed.", {
+          ok: operation.status === "success",
+          operationId: args.operationId,
+          status: operation.status,
+          ready: ["success", "failed", "timeout", "cancelled", "outcomeUnknown"].includes(stringValue(operation.status)),
+          result: operation.state ?? null,
+          error: asObject(operation.state).error ?? null
+        }, startedAt);
+      } catch (error) {
+        return failureResponse("operation_result failed", error, startedAt);
+      }
+    }
+  );
+
+  registerTool(
+    server,
+    "scenario_matrix_run",
+    "Start a durable, cancellable matrix that mutates C#, waits for exact compile generations, runs normal Play mode inputs/assertions, restores state, and emits evidence.",
     {
-      operationId: z.string().min(1)
+      name: z.string().min(1).max(200),
+      projectId: z.string().min(1).optional(),
+      editorInstanceId: z.string().min(1).optional(),
+      scenePath: z.string().min(1),
+      compileTimeoutMs: z.number().int().positive().max(300000).default(60000),
+      zeroCompilerErrors: z.boolean().default(true),
+      failFast: z.boolean().default(true),
+      cleanupRequired: z.boolean().default(true),
+      cases: z.array(ScenarioCaseSchema).min(1).max(200)
     },
-    { risk: "safe-write", mutates: true, supportsDryRun: false, phase: 3 },
-    "operation.cancel"
+    {
+      risk: "code-write",
+      mutates: true,
+      supportsDryRun: false,
+      phase: 5,
+      idempotent: false,
+      relatedResources: ["unity://evidence/{operationId}/{file}"],
+      examples: [{
+        name: "page navigation",
+        scenePath: "Assets/GAM215Fixture/RuntimeControlFixture.unity",
+        cases: [{
+          id: "page-up",
+          inputs: [{ device: "keyboard", action: "tap", key: "PageUp" }],
+          consoleAssertions: [{ severity: "log", exact: "GAM215_PAGE:1", count: 1 }]
+        }]
+      }]
+    },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        return successResponse("Scenario matrix started.", await scenarios.start(args as ScenarioMatrixDefinition), startedAt);
+      } catch (error) {
+        return failureResponse("scenario_matrix_run failed", error, startedAt);
+      }
+    }
+  );
+
+  registerTool(
+    server,
+    "evidence_bundle_create",
+    "Finalize the deterministic on-disk evidence directory for a terminal scenario operation without uploading it.",
+    { operationId: z.string().uuid() },
+    { risk: "safe-write", mutates: true, supportsDryRun: false, phase: 5, idempotent: true, relatedResources: ["unity://evidence/{operationId}/{file}"] },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        return successResponse("Evidence bundle materialized.", await scenarios.createEvidence(args.operationId), startedAt);
+      } catch (error) {
+        return failureResponse("evidence_bundle_create failed", error, startedAt);
+      }
+    }
   );
 
   registerTool(
@@ -3528,7 +3711,46 @@ export function createMcpServer(context: ToolContext): McpServer {
   );
 
   registerCoreResources(server, context);
+  server.registerResource(
+    "scenario-evidence",
+    new ResourceTemplate("unity://evidence/{operationId}/{file}", { list: undefined }),
+    {
+      title: "Scenario evidence",
+      description: "Read a deterministic scenario manifest, result, compiler log, Console log, or Markdown summary.",
+      mimeType: "application/json"
+    },
+    async (uri, variables) => {
+      const evidence = await scenarios.readEvidence(variableString(variables.operationId), variableString(variables.file));
+      return { contents: [{ uri: uri.toString(), mimeType: evidence.mimeType, text: evidence.text ?? "" }] };
+    }
+  );
+  server.registerResource(
+    "scenario-screenshot-evidence",
+    new ResourceTemplate("unity://evidence/{operationId}/screenshots/{file}", { list: undefined }),
+    { title: "Scenario screenshot evidence", description: "Read a PNG captured by a scenario case.", mimeType: "image/png" },
+    async (uri, variables) => {
+      const evidence = await scenarios.readArtifact(variableString(variables.operationId), "screenshots", variableString(variables.file));
+      return { contents: [{ uri: uri.toString(), mimeType: evidence.mimeType, blob: evidence.blob?.toString("base64") ?? "" }] };
+    }
+  );
+  server.registerResource(
+    "scenario-source-diff-evidence",
+    new ResourceTemplate("unity://evidence/{operationId}/diffs/{file}", { list: undefined }),
+    { title: "Scenario source diff evidence", description: "Read a redacted unified source diff captured by a scenario case.", mimeType: "text/x-diff" },
+    async (uri, variables) => {
+      const evidence = await scenarios.readArtifact(variableString(variables.operationId), "diffs", variableString(variables.file));
+      return { contents: [{ uri: uri.toString(), mimeType: evidence.mimeType, text: evidence.text ?? "" }] };
+    }
+  );
   registerCorePrompts(server);
 
   return server;
+}
+
+function isScenarioOperationId(operationId: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(operationId);
+}
+
+function variableString(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
 }

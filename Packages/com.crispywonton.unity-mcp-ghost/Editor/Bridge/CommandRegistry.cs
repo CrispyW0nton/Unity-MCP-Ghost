@@ -43,6 +43,14 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("play_mode.step", request => PlayModeController.Step());
             Register("input.simulate", request => InputSimulationController.Simulate(request.RawJson));
             Register("input.status", request => InputSimulationController.Status(request.RawJson));
+            Register("editor.snapshot", request => ScenarioBridgeController.CaptureEditorState());
+            Register("editor.restore_snapshot", request => ScenarioBridgeController.RestoreEditorState(request.RawJson));
+            Register("scenario.source_apply", request => ScenarioBridgeController.ApplySources(request.RawJson));
+            Register("scenario.source_restore", request => ScenarioBridgeController.RestoreSources(request.RawJson));
+            Register("scenario.source_complete", request => ScenarioBridgeController.CompleteSources(request.RawJson));
+            Register("scenario.source_get", request => ScenarioBridgeController.GetSourceTransaction(request.RawJson));
+            Register("runtime.inspect", request => ScenarioBridgeController.InspectRuntime(request.RawJson, false));
+            Register("runtime.assert", request => ScenarioBridgeController.InspectRuntime(request.RawJson, true));
             Register("scene.get_hierarchy", HandleSceneHierarchy);
             Register("scene.create", HandleSceneCreate);
             Register("scene.open", HandleSceneOpen);
