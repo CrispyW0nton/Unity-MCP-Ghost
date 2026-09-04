@@ -1354,6 +1354,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     {
       baselinePath: z.string().min(1),
       currentPath: z.string().min(1),
+      dimensionMode: z.enum(["reject", "resample-current"]).default("reject"),
       threshold: z.number().nonnegative().max(1).default(0.02),
       maxSamples: z.number().int().positive().max(200000).default(20000)
     },

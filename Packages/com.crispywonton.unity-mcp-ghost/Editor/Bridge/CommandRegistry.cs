@@ -19,6 +19,11 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 {
     internal sealed class CommandRegistry
     {
+        internal const int MaxScreenshotDimension = 8192;
+        internal const long MaxScreenshotEffectivePixels = 16777216;
+        internal const long MaxScreenshotEstimatedBytes = 201326592;
+        internal const long MaxScreenshotInputBytes = 67108864;
+
         private readonly Dictionary<string, Func<UnityMcpRequest, string>> handlers = new Dictionary<string, Func<UnityMcpRequest, string>>();
 
         public CommandRegistry()
@@ -2399,15 +2404,28 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var superSize = JsonRpcUtil.ReadInt(request.RawJson, "superSize", 1);
             var label = SanitizeFileName(JsonRpcUtil.ReadString(request.RawJson, "label", "ghost"));
             var mode = JsonRpcUtil.ReadString(request.RawJson, "mode", "auto").ToLowerInvariant();
-            var width = Math.Max(1, JsonRpcUtil.ReadInt(request.RawJson, "width", 1280) * Math.Max(1, superSize));
-            var height = Math.Max(1, JsonRpcUtil.ReadInt(request.RawJson, "height", 720) * Math.Max(1, superSize));
+            ScreenshotAllocationPlan allocation;
+            try
+            {
+                allocation = CreateScreenshotAllocationPlan(
+                    JsonRpcUtil.ReadInt(request.RawJson, "width", 1280),
+                    JsonRpcUtil.ReadInt(request.RawJson, "height", 720),
+                    superSize);
+            }
+            catch (ScreenshotValidationException exception)
+            {
+                return ScreenshotFailure(exception.Code, exception.Message, null);
+            }
+
+            var width = allocation.EffectiveWidth;
+            var height = allocation.EffectiveHeight;
             var directory = Path.Combine(Application.dataPath, "..", "Library", "UnityMcpGhost", "screenshots");
             var fileName = label + "-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + ".png";
             var path = Path.GetFullPath(Path.Combine(directory, fileName));
 
             if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
             {
-                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"screenshot.capture\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"mode\":\"" + JsonRpcUtil.Escape(mode) + "\",\"width\":" + width + ",\"height\":" + height + ",\"superSize\":" + superSize + "}}";
+                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"screenshot.capture\",\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"mode\":\"" + JsonRpcUtil.Escape(mode) + "\",\"requestedWidth\":" + allocation.RequestedWidth + ",\"requestedHeight\":" + allocation.RequestedHeight + ",\"effectiveWidth\":" + width + ",\"effectiveHeight\":" + height + ",\"effectivePixels\":" + allocation.EffectivePixels + ",\"estimatedBytes\":" + allocation.EstimatedBytes + ",\"superSize\":" + superSize + "}}";
             }
 
             Directory.CreateDirectory(directory);
@@ -2419,10 +2437,17 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             var previousTarget = camera.targetTexture;
             var previousActive = RenderTexture.active;
-            var renderTexture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
-            var texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            RenderTexture renderTexture = null;
+            Texture2D texture = null;
             try
             {
+                renderTexture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+                texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                if (!renderTexture.Create())
+                {
+                    return ScreenshotFailure("SCREENSHOT_ALLOCATION_FAILED", "Unity could not allocate the requested render target.", allocation);
+                }
+
                 camera.targetTexture = renderTexture;
                 RenderTexture.active = renderTexture;
                 camera.Render();
@@ -2434,8 +2459,20 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             {
                 camera.targetTexture = previousTarget;
                 RenderTexture.active = previousActive;
-                UnityEngine.Object.DestroyImmediate(texture);
-                UnityEngine.Object.DestroyImmediate(renderTexture);
+                if (texture != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(texture);
+                }
+
+                if (renderTexture != null)
+                {
+                    if (renderTexture.IsCreated())
+                    {
+                        renderTexture.Release();
+                    }
+
+                    UnityEngine.Object.DestroyImmediate(renderTexture);
+                }
             }
 
             var info = new FileInfo(path);
@@ -2453,12 +2490,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     + "\"activeSceneName\":\"" + JsonRpcUtil.Escape(activeScene.name) + "\","
                     + "\"width\":" + width + ","
                     + "\"height\":" + height + ","
+                    + "\"requestedWidth\":" + allocation.RequestedWidth + ","
+                    + "\"requestedHeight\":" + allocation.RequestedHeight + ","
+                    + "\"effectivePixels\":" + allocation.EffectivePixels + ","
+                    + "\"estimatedBytes\":" + allocation.EstimatedBytes + ","
                     + "\"bytes\":" + info.Length + ","
                     + "\"superSize\":" + superSize
                     + "}",
                 Encoding.UTF8);
 
-            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"metadataPath\":\"" + JsonRpcUtil.Escape(metadataPath) + "\",\"mode\":\"" + JsonRpcUtil.Escape(mode) + "\",\"camera\":\"" + JsonRpcUtil.Escape(camera.name) + "\",\"width\":" + width + ",\"height\":" + height + ",\"bytes\":" + info.Length + ",\"superSize\":" + superSize + ",\"note\":\"Screenshot rendered synchronously from the selected Unity camera.\"}";
+            return "{\"ok\":true,\"path\":\"" + JsonRpcUtil.Escape(path) + "\",\"metadataPath\":\"" + JsonRpcUtil.Escape(metadataPath) + "\",\"mode\":\"" + JsonRpcUtil.Escape(mode) + "\",\"camera\":\"" + JsonRpcUtil.Escape(camera.name) + "\",\"requestedWidth\":" + allocation.RequestedWidth + ",\"requestedHeight\":" + allocation.RequestedHeight + ",\"width\":" + width + ",\"height\":" + height + ",\"effectivePixels\":" + allocation.EffectivePixels + ",\"estimatedBytes\":" + allocation.EstimatedBytes + ",\"bytes\":" + info.Length + ",\"superSize\":" + superSize + ",\"comparisonMethod\":\"capture-render-target-rgba32\",\"note\":\"Screenshot rendered synchronously from the selected Unity camera.\"}";
         }
 
         private static string HandleScreenshotDiff(UnityMcpRequest request)
@@ -2467,6 +2508,12 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var currentPath = JsonRpcUtil.ReadString(request.RawJson, "currentPath", string.Empty);
             var threshold = Math.Max(0f, JsonRpcUtil.ReadFloat(request.RawJson, "threshold", 0.02f));
             var maxSamples = Math.Max(100, Math.Min(JsonRpcUtil.ReadInt(request.RawJson, "maxSamples", 20000), 200000));
+            var dimensionMode = JsonRpcUtil.ReadString(request.RawJson, "dimensionMode", "reject").ToLowerInvariant();
+
+            if (dimensionMode != "reject" && dimensionMode != "resample-current")
+            {
+                return ScreenshotFailure("INVALID_SCREENSHOT_DIMENSION_MODE", "dimensionMode must be reject or resample-current.", null);
+            }
 
             if (string.IsNullOrEmpty(baselinePath) || string.IsNullOrEmpty(currentPath))
             {
@@ -2483,11 +2530,26 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 throw new InvalidOperationException("Current screenshot does not exist: " + currentPath);
             }
 
-            var baseline = LoadScreenshotTexture(baselinePath);
-            var current = LoadScreenshotTexture(currentPath);
+            Texture2D baseline = null;
+            Texture2D current = null;
             try
             {
-                var result = CompareScreenshots(baseline, current, maxSamples);
+                baseline = LoadScreenshotTexture(baselinePath);
+                current = LoadScreenshotTexture(currentPath);
+                if ((baseline.width != current.width || baseline.height != current.height) && dimensionMode == "reject")
+                {
+                    return ScreenshotFailure(
+                        "SCREENSHOT_DIMENSION_MISMATCH",
+                        "Screenshot dimensions differ. Set dimensionMode=resample-current to compare explicitly.",
+                        new
+                        {
+                            baseline = new { width = baseline.width, height = baseline.height },
+                            current = new { width = current.width, height = current.height },
+                            comparisonMethod = "rejected-dimension-mismatch"
+                        });
+                }
+
+                var result = CompareScreenshots(baseline, current, maxSamples, dimensionMode == "resample-current");
                 return "{"
                     + "\"ok\":true,"
                     + "\"source\":\"screenshot-pixel-diff\","
@@ -2495,6 +2557,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     + "\"currentPath\":\"" + JsonRpcUtil.Escape(currentPath) + "\","
                     + "\"baseline\":{\"width\":" + baseline.width + ",\"height\":" + baseline.height + "},"
                     + "\"current\":{\"width\":" + current.width + ",\"height\":" + current.height + "},"
+                    + "\"comparisonWidth\":" + result.ComparisonWidth + ","
+                    + "\"comparisonHeight\":" + result.ComparisonHeight + ","
+                    + "\"comparisonMethod\":\"" + JsonRpcUtil.Escape(result.ComparisonMethod) + "\","
                     + "\"sampledPixels\":" + result.SampledPixels + ","
                     + "\"differentPixels\":" + result.DifferentPixels + ","
                     + "\"differentRatio\":" + result.DifferentRatio.ToString("0.######", CultureInfo.InvariantCulture) + ","
@@ -2504,10 +2569,21 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     + "\"note\":\"Pixel diff samples PNG colors; camera timing, async screenshot writes, compression, and dynamic UI may require tolerance.\""
                     + "}";
             }
+            catch (ScreenshotValidationException exception)
+            {
+                return ScreenshotFailure(exception.Code, exception.Message, null);
+            }
             finally
             {
-                UnityEngine.Object.DestroyImmediate(baseline);
-                UnityEngine.Object.DestroyImmediate(current);
+                if (baseline != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(baseline);
+                }
+
+                if (current != null)
+                {
+                    UnityEngine.Object.DestroyImmediate(current);
+                }
             }
         }
 
@@ -4192,8 +4268,82 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return suggestions.Count > 0 ? suggestions[0].Filter : string.Empty;
         }
 
+        internal static ScreenshotAllocationPlan CreateScreenshotAllocationPlan(int requestedWidth, int requestedHeight, int superSize)
+        {
+            if (requestedWidth <= 0 || requestedHeight <= 0 || superSize <= 0)
+            {
+                throw new ScreenshotValidationException("INVALID_SCREENSHOT_DIMENSIONS", "width, height, and superSize must be positive integers.");
+            }
+
+            if (superSize > 8)
+            {
+                throw new ScreenshotValidationException("SCREENSHOT_LIMIT_EXCEEDED", "superSize exceeds the supported maximum of 8.");
+            }
+
+            var effectiveWidth = (long)requestedWidth * superSize;
+            var effectiveHeight = (long)requestedHeight * superSize;
+            if (effectiveWidth > MaxScreenshotDimension || effectiveHeight > MaxScreenshotDimension)
+            {
+                throw new ScreenshotValidationException("SCREENSHOT_LIMIT_EXCEEDED", "Effective screenshot dimensions exceed " + MaxScreenshotDimension + " pixels per axis.");
+            }
+
+            var effectivePixels = effectiveWidth * effectiveHeight;
+            var estimatedBytes = effectivePixels * 12L;
+            if (effectivePixels > MaxScreenshotEffectivePixels || estimatedBytes > MaxScreenshotEstimatedBytes)
+            {
+                throw new ScreenshotValidationException(
+                    "SCREENSHOT_LIMIT_EXCEEDED",
+                    "Screenshot allocation exceeds the effective-pixel or estimated-memory limit.");
+            }
+
+            return new ScreenshotAllocationPlan
+            {
+                RequestedWidth = requestedWidth,
+                RequestedHeight = requestedHeight,
+                SuperSize = superSize,
+                EffectiveWidth = (int)effectiveWidth,
+                EffectiveHeight = (int)effectiveHeight,
+                EffectivePixels = effectivePixels,
+                EstimatedBytes = estimatedBytes
+            };
+        }
+
+        private static string ScreenshotFailure(string code, string message, object details)
+        {
+            var error = new JObject
+            {
+                ["code"] = code,
+                ["message"] = message
+            };
+            if (details != null)
+            {
+                error["data"] = JToken.FromObject(details);
+            }
+
+            return new JObject
+            {
+                ["ok"] = false,
+                ["error"] = error
+            }.ToString(Formatting.None);
+        }
+
         private static Texture2D LoadScreenshotTexture(string path)
         {
+            var info = new FileInfo(path);
+            if (info.Length > MaxScreenshotInputBytes)
+            {
+                throw new ScreenshotValidationException("SCREENSHOT_INPUT_TOO_LARGE", "Screenshot input exceeds the 64 MiB encoded-file limit: " + path);
+            }
+
+            int declaredWidth;
+            int declaredHeight;
+            ReadPngDimensions(path, out declaredWidth, out declaredHeight);
+            if (declaredWidth <= 0 || declaredHeight <= 0)
+            {
+                throw new ScreenshotValidationException("INVALID_SCREENSHOT_IMAGE", "Screenshot is not a supported PNG image: " + path);
+            }
+
+            CreateScreenshotAllocationPlan(declaredWidth, declaredHeight, 1);
             var bytes = File.ReadAllBytes(path);
             var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
             if (!texture.LoadImage(bytes, false))
@@ -4202,20 +4352,37 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 throw new InvalidOperationException("Could not decode PNG screenshot: " + path);
             }
 
+            if (texture.width != declaredWidth || texture.height != declaredHeight)
+            {
+                UnityEngine.Object.DestroyImmediate(texture);
+                throw new ScreenshotValidationException("INVALID_SCREENSHOT_IMAGE", "Decoded screenshot dimensions do not match its PNG header: " + path);
+            }
+
             return texture;
         }
 
-        private static ScreenshotDiffStats CompareScreenshots(Texture2D baseline, Texture2D current, int maxSamples)
+        internal static ScreenshotDiffStats CompareScreenshots(Texture2D baseline, Texture2D current, int maxSamples, bool resampleCurrent)
         {
-            var width = Math.Min(baseline.width, current.width);
-            var height = Math.Min(baseline.height, current.height);
-            if (width <= 0 || height <= 0)
+            if (baseline == null || current == null)
             {
-                throw new InvalidOperationException("Screenshots have no overlapping pixel area.");
+                throw new ArgumentNullException(baseline == null ? "baseline" : "current");
             }
 
-            var totalPixels = width * height;
-            var step = Math.Max(1, (int)Math.Sqrt(Math.Max(1, totalPixels / Math.Max(1, maxSamples))));
+            var dimensionsMatch = baseline.width == current.width && baseline.height == current.height;
+            if (!dimensionsMatch && !resampleCurrent)
+            {
+                throw new ScreenshotValidationException("SCREENSHOT_DIMENSION_MISMATCH", "Screenshot dimensions differ and resampling was not explicitly enabled.");
+            }
+
+            var width = baseline.width;
+            var height = baseline.height;
+            if (width <= 0 || height <= 0)
+            {
+                throw new ScreenshotValidationException("INVALID_SCREENSHOT_DIMENSIONS", "Screenshots must have positive dimensions.");
+            }
+
+            var totalPixels = (long)width * height;
+            var step = Math.Max(1, (int)Math.Ceiling(Math.Sqrt(Math.Max(1.0, (double)totalPixels / Math.Max(1, maxSamples)))));
             var sampled = 0;
             var different = 0;
             double totalDifference = 0;
@@ -4224,7 +4391,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 for (var x = 0; x < width; x += step)
                 {
                     var left = baseline.GetPixel(x, y);
-                    var right = current.GetPixel(x, y);
+                    var right = dimensionsMatch
+                        ? current.GetPixel(x, y)
+                        : current.GetPixelBilinear((x + 0.5f) / width, (y + 0.5f) / height);
                     var difference = (Math.Abs(left.r - right.r) + Math.Abs(left.g - right.g) + Math.Abs(left.b - right.b) + Math.Abs(left.a - right.a)) / 4.0;
                     totalDifference += difference;
                     if (difference > 0.01)
@@ -4250,7 +4419,10 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 SampledPixels = sampled,
                 DifferentPixels = different,
                 DifferentRatio = sampled == 0 ? 0f : (float)different / sampled,
-                MeanAbsoluteDifference = sampled == 0 ? 0f : (float)(totalDifference / sampled)
+                MeanAbsoluteDifference = sampled == 0 ? 0f : (float)(totalDifference / sampled),
+                ComparisonWidth = width,
+                ComparisonHeight = height,
+                ComparisonMethod = dimensionsMatch ? "sampled-rgba-exact-dimensions" : "sampled-rgba-bilinear-current-to-baseline"
             };
         }
 
@@ -5760,6 +5932,31 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         public int DifferentPixels;
         public float DifferentRatio;
         public float MeanAbsoluteDifference;
+        public int ComparisonWidth;
+        public int ComparisonHeight;
+        public string ComparisonMethod;
+    }
+
+    internal sealed class ScreenshotAllocationPlan
+    {
+        public int RequestedWidth;
+        public int RequestedHeight;
+        public int SuperSize;
+        public int EffectiveWidth;
+        public int EffectiveHeight;
+        public long EffectivePixels;
+        public long EstimatedBytes;
+    }
+
+    internal sealed class ScreenshotValidationException : Exception
+    {
+        public ScreenshotValidationException(string code, string message)
+            : base(message)
+        {
+            Code = code;
+        }
+
+        public string Code { get; }
     }
 
     internal sealed class MethodNode
