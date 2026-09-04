@@ -3184,20 +3184,24 @@ export function createMcpServer(context: ToolContext): McpServer {
     server,
     context,
     "batch_execute",
-    "Execute multiple Unity bridge commands in a single request.",
+    "Preflight and execute multiple Unity bridge commands as one fail-fast transaction, with explicit maximum-risk acceptance and reverse rollback receipts.",
     {
       operations: z
         .array(
           z.object({
             method: z.string().min(1),
-            params: z.record(z.string(), z.unknown()).default({})
+            params: z.record(z.string(), z.unknown()).default({}),
+            required: z.boolean().default(true)
           })
         )
         .min(1)
         .max(100),
+      failFast: z.boolean().default(true),
+      acceptedRisk: z.enum(["read-only", "safe-write", "asset-write", "code-write", "destructive", "external", "arbitrary-code"]).optional(),
+      acceptNonRollbackable: z.boolean().default(false),
       dryRun: DryRunSchema
     },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
+    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 3 },
     "batch.execute"
   );
 
