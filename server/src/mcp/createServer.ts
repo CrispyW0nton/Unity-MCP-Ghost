@@ -3,7 +3,7 @@ import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/
 import { access } from "node:fs/promises";
 import { z } from "zod";
 import type { UnityClient } from "../unity/UnityClient.js";
-import { asObject, failureResponse, type GhostToolMeta, successResponse } from "./toolResponse.js";
+import { asObject, failureResponse, type GhostToolMeta, successResponse, type ToolDiagnostic } from "./toolResponse.js";
 
 export interface ToolContext {
   unity: UnityClient;
@@ -36,6 +36,8 @@ const TransformSchema = {
 };
 
 const ComponentValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+const ColliderTypeSchema = z.enum(["BoxCollider", "SphereCollider", "CapsuleCollider"]);
+const CapsuleDirectionSchema = z.enum(["x", "y", "z"]);
 const ScriptEditSchema = z.object({
   startLine: z.number().int().nonnegative(),
   startColumn: z.number().int().nonnegative(),
@@ -498,6 +500,178 @@ async function buildVisualValidationReport(context: ToolContext, options: Visual
   report.recommendations = visualValidationRecommendations(report);
 
   return report;
+}
+
+type ComponentMutation = {
+  propertyPath: string;
+  value?: string | number | boolean;
+  x?: number;
+  y?: number;
+  z?: number;
+  label: string;
+};
+
+type ComponentSetupResult = {
+  component: Record<string, unknown> | null;
+  created: boolean;
+  operations: Record<string, unknown>[];
+};
+
+function componentSummaries(payload: Record<string, unknown>): Record<string, unknown>[] {
+  const component = asObject(payload.component);
+  if (typeof component.componentInstanceId === "number") {
+    return [component];
+  }
+
+  return arrayValue(payload.components).map(asObject);
+}
+
+function firstComponentOfType(payload: Record<string, unknown>, typeName: string): Record<string, unknown> | null {
+  const lowered = typeName.toLowerCase();
+  return (
+    componentSummaries(payload).find((component) => {
+      const name = stringValue(component.name).toLowerCase();
+      const type = stringValue(component.type).toLowerCase();
+      return name === lowered || type === lowered || type.endsWith(`.${lowered}`);
+    }) ?? null
+  );
+}
+
+function serializedPropertyPaths(payload: Record<string, unknown>): Set<string> {
+  return new Set(arrayValue(payload.properties).map((property) => stringValue(asObject(property).path)).filter(Boolean));
+}
+
+async function ensureUnityComponent(
+  context: ToolContext,
+  instanceId: number,
+  typeName: string,
+  dryRun: boolean
+): Promise<ComponentSetupResult> {
+  const operations: Record<string, unknown>[] = [];
+  const existing = asObject(
+    await context.unity.request("component.get", {
+      instanceId,
+      type: typeName,
+      maxProperties: 200
+    })
+  );
+  let component = firstComponentOfType(existing, typeName);
+  if (component) {
+    operations.push({
+      method: "component.get",
+      ok: existing.ok,
+      source: "existing-component",
+      component
+    });
+    return {
+      component,
+      created: false,
+      operations
+    };
+  }
+
+  const addParams = {
+    instanceId,
+    type: typeName,
+    dryRun
+  };
+  if (dryRun) {
+    operations.push({
+      method: "component.add",
+      dryRun: true,
+      params: addParams
+    });
+    return {
+      component: null,
+      created: true,
+      operations
+    };
+  }
+
+  const add = asObject(await context.unity.request("component.add", addParams));
+  component = asObject(add.component);
+  operations.push({
+    method: "component.add",
+    ok: add.ok,
+    source: "created-component",
+    component,
+    undoGroupId: add.undoGroupId ?? null
+  });
+  return {
+    component,
+    created: true,
+    operations
+  };
+}
+
+async function applyUnityComponentMutations(
+  context: ToolContext,
+  component: Record<string, unknown>,
+  mutations: ComponentMutation[],
+  dryRun: boolean
+): Promise<{ operations: Record<string, unknown>[]; skipped: ComponentMutation[]; diagnostics: ToolDiagnostic[] }> {
+  const operations: Record<string, unknown>[] = [];
+  const skipped: ComponentMutation[] = [];
+  const diagnostics: ToolDiagnostic[] = [];
+  const componentInstanceId = numberValue(component.componentInstanceId);
+
+  if (dryRun) {
+    return {
+      operations: mutations.map((mutation) => ({
+        method: "component.modify",
+        dryRun: true,
+        componentInstanceId: componentInstanceId || null,
+        ...mutation
+      })),
+      skipped,
+      diagnostics
+    };
+  }
+
+  const details = asObject(
+    await context.unity.request("component.get", {
+      componentInstanceId,
+      maxProperties: 200
+    })
+  );
+  const availablePaths = serializedPropertyPaths(details);
+
+  for (const mutation of mutations) {
+    if (!availablePaths.has(mutation.propertyPath)) {
+      skipped.push(mutation);
+      diagnostics.push({
+        severity: "warning",
+        message: `Skipped ${mutation.propertyPath}; Unity did not expose it as a serialized property on this component.`,
+        data: mutation
+      });
+      continue;
+    }
+
+    const result = asObject(
+      await context.unity.request("component.modify", {
+        componentInstanceId,
+        propertyPath: mutation.propertyPath,
+        ...(mutation.value !== undefined ? { value: mutation.value } : {}),
+        ...(mutation.x !== undefined ? { x: mutation.x } : {}),
+        ...(mutation.y !== undefined ? { y: mutation.y } : {}),
+        ...(mutation.z !== undefined ? { z: mutation.z } : {}),
+        dryRun: false
+      })
+    );
+    operations.push({
+      method: "component.modify",
+      ok: result.ok,
+      propertyPath: mutation.propertyPath,
+      label: mutation.label,
+      undoGroupId: result.undoGroupId ?? null
+    });
+  }
+
+  return { operations, skipped, diagnostics };
+}
+
+function capsuleDirectionIndex(direction: "x" | "y" | "z"): number {
+  return direction === "x" ? 0 : direction === "z" ? 2 : 1;
 }
 
 async function compilerFirstDiagnostics(
@@ -1391,6 +1565,157 @@ export function createMcpServer(context: ToolContext): McpServer {
     { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
     (args) => `component.${args.action}`,
     (args) => args.params
+  );
+
+  registerTool(
+    server,
+    "collider_setup",
+    "Phase 4 physics tool: add or configure a Collider for walkable surfaces, blockers, triggers, doors, and imported level geometry.",
+    {
+      instanceId: z.number().int(),
+      colliderType: ColliderTypeSchema.default("BoxCollider"),
+      isTrigger: z.boolean().default(false),
+      centerX: z.number().default(0),
+      centerY: z.number().default(0),
+      centerZ: z.number().default(0),
+      sizeX: z.number().positive().default(1),
+      sizeY: z.number().positive().default(1),
+      sizeZ: z.number().positive().default(1),
+      radius: z.number().positive().default(0.5),
+      height: z.number().positive().default(2),
+      direction: CapsuleDirectionSchema.default("y"),
+      dryRun: DryRunSchema
+    },
+    {
+      risk: "safe-write",
+      mutates: true,
+      supportsDryRun: true,
+      phase: 4,
+      relatedResources: ["unity://gameobject/{instanceId}", "unity://component/{instanceId}/{type}"],
+      examples: [
+        {
+          instanceId: 12345,
+          colliderType: "BoxCollider",
+          sizeX: 2,
+          sizeY: 0.25,
+          sizeZ: 2,
+          isTrigger: false,
+          dryRun: true
+        }
+      ]
+    },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const setup = await ensureUnityComponent(context, args.instanceId, args.colliderType, args.dryRun);
+        const mutations: ComponentMutation[] = [
+          { propertyPath: "m_IsTrigger", value: args.isTrigger, label: "trigger mode" },
+          { propertyPath: "m_Center", x: args.centerX, y: args.centerY, z: args.centerZ, label: "collider center" }
+        ];
+
+        if (args.colliderType === "BoxCollider") {
+          mutations.push({ propertyPath: "m_Size", x: args.sizeX, y: args.sizeY, z: args.sizeZ, label: "box size" });
+        } else if (args.colliderType === "SphereCollider") {
+          mutations.push({ propertyPath: "m_Radius", value: args.radius, label: "sphere radius" });
+        } else if (args.colliderType === "CapsuleCollider") {
+          mutations.push({ propertyPath: "m_Radius", value: args.radius, label: "capsule radius" });
+          mutations.push({ propertyPath: "m_Height", value: args.height, label: "capsule height" });
+          mutations.push({ propertyPath: "m_Direction", value: capsuleDirectionIndex(args.direction), label: "capsule direction" });
+        }
+
+        const mutationResult = setup.component
+          ? await applyUnityComponentMutations(context, setup.component, mutations, args.dryRun)
+          : { operations: mutations.map((mutation) => ({ method: "component.modify", dryRun: true, ...mutation })), skipped: [], diagnostics: [] };
+
+        return successResponse(
+          "collider_setup completed.",
+          {
+            ok: true,
+            domain: "physics",
+            tool: "collider_setup",
+            dryRun: args.dryRun,
+            instanceId: args.instanceId,
+            colliderType: args.colliderType,
+            component: setup.component,
+            createdComponent: setup.created,
+            operations: [...setup.operations, ...mutationResult.operations],
+            skippedProperties: mutationResult.skipped,
+            recommendedNextTools: ["rigidbody_setup", "visual_validation_report", "tests_run"]
+          },
+          startedAt,
+          { diagnostics: mutationResult.diagnostics }
+        );
+      } catch (error) {
+        return failureResponse("collider_setup failed", error, startedAt);
+      }
+    }
+  );
+
+  registerTool(
+    server,
+    "rigidbody_setup",
+    "Phase 4 physics tool: add or configure a Rigidbody for movable props, physics-driven actors, and collision validation.",
+    {
+      instanceId: z.number().int(),
+      mass: z.number().positive().default(1),
+      drag: z.number().nonnegative().default(0),
+      angularDrag: z.number().nonnegative().default(0.05),
+      useGravity: z.boolean().default(true),
+      isKinematic: z.boolean().default(false),
+      dryRun: DryRunSchema
+    },
+    {
+      risk: "safe-write",
+      mutates: true,
+      supportsDryRun: true,
+      phase: 4,
+      relatedResources: ["unity://gameobject/{instanceId}", "unity://component/{instanceId}/{type}"],
+      examples: [
+        {
+          instanceId: 12345,
+          mass: 10,
+          useGravity: false,
+          isKinematic: true,
+          dryRun: true
+        }
+      ]
+    },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const setup = await ensureUnityComponent(context, args.instanceId, "Rigidbody", args.dryRun);
+        const mutations: ComponentMutation[] = [
+          { propertyPath: "m_Mass", value: args.mass, label: "mass" },
+          { propertyPath: "m_Drag", value: args.drag, label: "linear drag" },
+          { propertyPath: "m_AngularDrag", value: args.angularDrag, label: "angular drag" },
+          { propertyPath: "m_UseGravity", value: args.useGravity, label: "gravity" },
+          { propertyPath: "m_IsKinematic", value: args.isKinematic, label: "kinematic mode" }
+        ];
+        const mutationResult = setup.component
+          ? await applyUnityComponentMutations(context, setup.component, mutations, args.dryRun)
+          : { operations: mutations.map((mutation) => ({ method: "component.modify", dryRun: true, ...mutation })), skipped: [], diagnostics: [] };
+
+        return successResponse(
+          "rigidbody_setup completed.",
+          {
+            ok: true,
+            domain: "physics",
+            tool: "rigidbody_setup",
+            dryRun: args.dryRun,
+            instanceId: args.instanceId,
+            component: setup.component,
+            createdComponent: setup.created,
+            operations: [...setup.operations, ...mutationResult.operations],
+            skippedProperties: mutationResult.skipped,
+            recommendedNextTools: ["collider_setup", "visual_validation_report", "tests_run"]
+          },
+          startedAt,
+          { diagnostics: mutationResult.diagnostics }
+        );
+      } catch (error) {
+        return failureResponse("rigidbody_setup failed", error, startedAt);
+      }
+    }
   );
 
   registerUnityRequestTool(

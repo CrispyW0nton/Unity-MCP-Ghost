@@ -7,6 +7,7 @@ interface SmokeStep {
   name: string;
   ok: boolean;
   summary?: unknown;
+  assertions?: unknown;
   error?: string;
 }
 
@@ -49,9 +50,12 @@ async function main(): Promise<void> {
 
   try {
     await client.connect(transport);
-    await record(steps, "compile wait", () => callTool(client, "compile_wait", { timeoutMs: config.requestTimeoutMs }));
-    await record(steps, "repair loop semantic test scope", () =>
-      callTool(client, "repair_loop_run", {
+    await record(steps, "compile wait", () => callTool(client, "compile_wait", { timeoutMs: config.requestTimeoutMs }), assertCompileWait);
+    await record(
+      steps,
+      "repair loop semantic test scope",
+      () =>
+        callTool(client, "repair_loop_run", {
         objective: "Verify repair loop includes semantic test-scope planning for the target gameplay script.",
         scriptPath: flags.scriptPath,
         useSemanticTestScope: true,
@@ -62,7 +66,17 @@ async function main(): Promise<void> {
         screenshotHeight: 360,
         screenshotWaitMs: 5000,
         compileTimeoutMs: config.requestTimeoutMs
-      })
+        }),
+      assertRepairLoop
+    );
+    await record(steps, "visual validation report", () =>
+      callTool(client, "visual_validation_report", {
+        currentFilter: "repair-loop",
+        baselineFilter: "kotor-main-menu-baseline",
+        cleanupKeepNewest: 3,
+        includeCleanup: true
+      }),
+      assertVisualValidationReport
     );
     await record(steps, "repair apply dry-run against target script", () =>
       callTool(client, "repair_apply_edits", {
@@ -70,7 +84,8 @@ async function main(): Promise<void> {
         scriptPath: flags.scriptPath,
         edits: [{ startLine: 0, startColumn: 0, endLine: 0, endColumn: 0, text: "" }],
         dryRun: true
-      })
+      }),
+      assertRepairApplyDryRun
     );
 
     if (flags.allowMutation) {
@@ -181,15 +196,100 @@ async function runMutationRollbackSmoke(client: Client, steps: SmokeStep[], time
   }
 }
 
-async function record(steps: SmokeStep[], name: string, run: () => Promise<Record<string, unknown>>): Promise<boolean> {
+async function record(
+  steps: SmokeStep[],
+  name: string,
+  run: () => Promise<Record<string, unknown>>,
+  assert?: (result: Record<string, unknown>) => AssertionResult
+): Promise<boolean> {
   try {
     const result = await run();
-    steps.push({ name, ok: result.ok !== false, summary: summarize(result) });
-    return result.ok !== false;
+    const assertion = assert?.(result);
+    const ok = result.ok !== false && assertion?.ok !== false;
+    steps.push({ name, ok, summary: summarize(result), assertions: assertion });
+    return ok;
   } catch (error) {
     steps.push({ name, ok: false, error: message(error) });
     return false;
   }
+}
+
+interface AssertionResult {
+  ok: boolean;
+  checks: Record<string, boolean>;
+  details?: Record<string, unknown>;
+}
+
+function assertCompileWait(result: Record<string, unknown>): AssertionResult {
+  const data = asRecord(result.data);
+  return assertion({
+    toolOk: result.ok !== false,
+    compileSettled: data.status === "success" || data.ok === true,
+    notCompiling: asRecord(data.state).isCompiling !== true
+  }, {
+    status: data.status,
+    elapsedMs: data.elapsedMs
+  });
+}
+
+function assertRepairLoop(result: Record<string, unknown>): AssertionResult {
+  const data = asRecord(result.data);
+  const plannedTestScope = asRecord(data.plannedTestScope);
+  const screenshotValidation = asRecord(data.screenshotValidation);
+  const capture = asRecord(screenshotValidation.capture);
+  const selectedBaseline = asRecord(screenshotValidation.selectedBaseline);
+  const diff = asRecord(screenshotValidation.diff);
+  return assertion({
+    toolOk: result.ok !== false,
+    diagnosticPassMode: data.mode === "diagnostic-pass",
+    semanticTestScopeSelected: plannedTestScope.source === "semantic-test-scope",
+    screenshotCaptured: typeof capture.path === "string" && capture.path.length > 0,
+    baselineSelected: typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0,
+    visualDiffWithinThreshold: diff.withinThreshold === true
+  }, {
+    plannedTestScope,
+    screenshotPath: capture.path,
+    baselinePath: selectedBaseline.path,
+    differentRatio: diff.differentRatio
+  });
+}
+
+function assertVisualValidationReport(result: Record<string, unknown>): AssertionResult {
+  const data = asRecord(result.data);
+  const currentCapture = asRecord(data.currentCapture);
+  const selectedBaseline = asRecord(data.selectedBaseline);
+  const diff = asRecord(data.diff);
+  return assertion({
+    toolOk: result.ok !== false,
+    currentCaptureFound: typeof currentCapture.path === "string" && currentCapture.path.length > 0,
+    baselineSelected: typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0,
+    visualDiffWithinThreshold: diff.withinThreshold === true,
+    recommendationsPresent: Array.isArray(data.recommendations)
+  }, {
+    current: currentCapture.fileName,
+    baseline: selectedBaseline.fileName,
+    differentRatio: diff.differentRatio
+  });
+}
+
+function assertRepairApplyDryRun(result: Record<string, unknown>): AssertionResult {
+  const data = asRecord(result.data);
+  return assertion({
+    toolOk: result.ok !== false,
+    dryRunMode: data.mode === "dry-run",
+    hasEditPreview: Number(data.editCount ?? 0) >= 1
+  }, {
+    mode: data.mode,
+    editCount: data.editCount
+  });
+}
+
+function assertion(checks: Record<string, boolean>, details?: Record<string, unknown>): AssertionResult {
+  return {
+    ok: Object.values(checks).every(Boolean),
+    checks,
+    details
+  };
 }
 
 async function callTool(client: Client, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
