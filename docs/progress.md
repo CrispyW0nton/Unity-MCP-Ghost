@@ -40,11 +40,19 @@ Commits and verified gates:
 - `f561f1b` — `fix(reliability): make batches preflighted and reversible`
   - Added full preflight before mutation, exact maximum-risk acceptance, fail-fast required-item behavior, reverse-order file/Undo compensation, and truthful incomplete-rollback reporting.
   - Passed 9 Node tests, 29 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+- `80b9b4e` — `docs(progress): record core reliability verification`
+  - Recorded the transactional script and batch verification evidence in the milestone ledger.
+- `01044b0` — `fix(reliability): persist and bound bridge operations`
+  - Added persistent request claims/results, deduplication, deadlines, cancellation markers, leases, stale recovery, retention cleanup, bounded dispatcher/queue work, fragmented WebSocket assembly, request/message/concurrency limits, durable operation records, and explicit unknown-outcome semantics.
+  - Passed 13 Node tests, 48 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+  - A live Unity `2022.3.62f1` durable-queue smoke passed all 8 checks. HTTP/WebSocket were not exercised because the test project's bridge auto-start setting was disabled.
+- `6577659` — `fix(reliability): bound screenshot comparisons and memory`
+  - Rejected dimension mismatches by default, added explicit bilinear resampling, capped encoded images/effective pixels/estimated memory, guarded every texture/render-target allocation with cleanup, and reported dimensions and comparison methods.
+  - Passed 13 Node tests, 55 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
 
 Next required slice:
 
-- Complete durable, deduplicated, cancellable operation transport with bounded queues, leases, backpressure, TTL cleanup, fragmented WebSocket handling, and explicit outcome-unknown semantics.
-- Then implement project-pinned authenticated bridge routing and the Workstream 3 security boundary.
+- Implement project-pinned authenticated bridge routing and the Workstream 3 security boundary.
 
 ## Phase 1: Foundation
 
