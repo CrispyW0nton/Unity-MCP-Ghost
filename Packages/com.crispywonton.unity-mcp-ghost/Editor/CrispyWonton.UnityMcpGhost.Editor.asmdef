@@ -1,7 +1,9 @@
 {
   "name": "CrispyWonton.UnityMcpGhost.Editor",
   "rootNamespace": "CrispyWonton.UnityMcpGhost.Editor",
-  "references": [],
+  "references": [
+    "CrispyWonton.UnityMcpGhost.Runtime"
+  ],
   "includePlatforms": [
     "Editor"
   ],

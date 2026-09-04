@@ -199,8 +199,12 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 case "editor.get_state":
                 case "console.get_logs":
                 case "console.diagnostics_get":
+                case "console.query":
+                case "console.assert":
                 case "compile.diagnostics_get":
                 case "compile.status_get":
+                case "play_mode.get":
+                case "input.status":
                 case "scene.get_hierarchy":
                 case "scene.list_open":
                 case "scene.get_setup":

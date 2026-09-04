@@ -11,6 +11,8 @@ dist/
 [Bb]uilds/
 [Ll]ogs/
 [Uu]ser[Ss]ettings/
+test-project/ProjectSettings/PackageManagerSettings.asset
+test-project/ProjectSettings/SceneTemplateSettings.json
 *.csproj
 *.sln
 *.user

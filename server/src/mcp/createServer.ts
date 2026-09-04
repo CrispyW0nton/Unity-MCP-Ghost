@@ -46,6 +46,21 @@ const ScriptEditSchema = z.object({
   text: z.string()
 });
 const DiagnosticInputSchema = z.object({}).passthrough();
+const ConsoleFilterSchema = {
+  boundary: z.string().min(1).optional(),
+  generation: z.number().int().positive().optional(),
+  severity: z.enum(["log", "warning", "error", "all"]).default("all"),
+  exact: z.string().optional(),
+  contains: z.string().optional(),
+  regex: z.string().optional(),
+  file: z.string().optional(),
+  line: z.number().int().positive().optional(),
+  count: z.number().int().nonnegative().optional(),
+  minimumCount: z.number().int().nonnegative().default(1),
+  maximumCount: z.number().int().nonnegative().optional(),
+  limit: z.number().int().positive().max(1000).default(200),
+  failOnUnexpectedErrors: z.boolean().default(true)
+};
 
 function annotationsFor(meta: GhostToolMeta): ToolAnnotations {
   return {
@@ -256,6 +271,58 @@ async function waitForUnityCompile(
     elapsedMs: Date.now() - startedAt,
     requestedCompileGeneration,
     state: lastState
+  };
+}
+
+async function waitForPlayState(
+  context: ToolContext,
+  requestedState: "playing" | "paused" | "stopped",
+  transitionGeneration: number,
+  timeoutMs: number
+): Promise<Record<string, unknown>> {
+  const startedAt = Date.now();
+  let last: Record<string, unknown> = {};
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      last = asObject(await context.unity.request("play_mode.get", {}, { timeoutMs: Math.min(5000, timeoutMs) }));
+      if (last.state === requestedState && Number(last.transitionGeneration) >= transitionGeneration) {
+        return { ...last, settled: true, elapsedMs: Date.now() - startedAt };
+      }
+    } catch {
+      // Domain reload or transport reconnect: keep polling the pinned editor until deadline.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return {
+    ok: false,
+    status: "timeout",
+    state: last,
+    error: { code: "PLAY_MODE_TRANSITION_TIMEOUT", message: `Timed out waiting for Play mode state '${requestedState}'.` },
+    elapsedMs: Date.now() - startedAt
+  };
+}
+
+async function waitForInputReceipt(context: ToolContext, operationId: string, timeoutMs: number): Promise<Record<string, unknown>> {
+  const startedAt = Date.now();
+  let last: Record<string, unknown> = {};
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      last = asObject(await context.unity.request("input.status", { operationId }));
+      if (last.status !== "running") {
+        return { ...last, elapsedMs: Date.now() - startedAt };
+      }
+    } catch {
+      // A reload-aware input backend may briefly disconnect the bridge.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return {
+    ok: false,
+    operationId,
+    status: "timeout",
+    state: last,
+    error: { code: "INPUT_SIMULATION_TIMEOUT", message: "Timed out waiting for verified input delivery." },
+    elapsedMs: Date.now() - startedAt
   };
 }
 
@@ -1234,6 +1301,247 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerUnityRequestTool(
     server,
     context,
+    "console_clear",
+    "Clear Ghost's persistent Console buffer, attempt to clear Unity's visible Console, and return a fresh boundary.",
+    EmptySchema,
+    { risk: "safe-write", mutates: true, supportsDryRun: false, phase: 4, idempotent: false, examples: [{}] },
+    "console.clear"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "console_mark",
+    "Create a persisted Console boundary token for later wait/assert operations.",
+    { label: z.string().max(200).default("") },
+    { risk: "safe-write", mutates: true, supportsDryRun: false, phase: 4, idempotent: false, examples: [{ label: "before-course-case" }] },
+    "console.mark"
+  );
+
+  registerTool(
+    server,
+    "console_wait",
+    "Wait for post-boundary Unity Console entries that satisfy message, location, severity, and count filters.",
+    {
+      ...ConsoleFilterSchema,
+      timeoutMs: z.number().int().positive().max(300000).default(30000),
+      pollIntervalMs: z.number().int().min(25).max(5000).default(100)
+    },
+    {
+      risk: "read",
+      mutates: false,
+      supportsDryRun: false,
+      phase: 4,
+      examples: [{ boundary: "boundary-token", severity: "log", contains: "Hello", minimumCount: 1, timeoutMs: 5000 }]
+    },
+    async (args) => {
+      const startedAt = Date.now();
+      const { timeoutMs, pollIntervalMs, ...filter } = args;
+      let last: Record<string, unknown> = {};
+      try {
+        while (Date.now() - startedAt < timeoutMs) {
+          last = asObject(await context.unity.request("console.query", filter));
+          if (last.ok === false || last.matched === true) {
+            return successResponse("Console wait completed.", last, startedAt);
+          }
+          if (Array.isArray(last.unexpectedErrors) && last.unexpectedErrors.length > 0) {
+            return successResponse(
+              "Console wait stopped because an unexpected error was observed.",
+              {
+                ...last,
+                ok: false,
+                error: { code: "UNEXPECTED_CONSOLE_ERROR", message: "An unexpected Unity Console error appeared after the boundary." }
+              },
+              startedAt
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        }
+        return successResponse(
+          "Console wait timed out.",
+          {
+            ...last,
+            ok: false,
+            status: "timeout",
+            error: { code: "CONSOLE_WAIT_TIMEOUT", message: "Timed out waiting for the requested Console entries." }
+          },
+          startedAt
+        );
+      } catch (error) {
+        return failureResponse("console_wait failed", error, startedAt);
+      }
+    }
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "console_assert",
+    "Assert post-boundary Console entries and fail on mismatched counts or unexpected errors.",
+    ConsoleFilterSchema,
+    {
+      risk: "read",
+      mutates: false,
+      supportsDryRun: false,
+      phase: 4,
+      examples: [{ boundary: "boundary-token", severity: "error", count: 0, failOnUnexpectedErrors: true }]
+    },
+    "console.assert"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "play_mode_get",
+    "Read the exact normal Play mode transition state, scene, identity, generation, frame, and time.",
+    EmptySchema,
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 4, examples: [{}] },
+    "play_mode.get"
+  );
+
+  registerTool(
+    server,
+    "play_mode_set",
+    "Enter, pause, resume, or stop normal Unity Play mode and optionally wait until the requested state is observed.",
+    {
+      state: z.enum(["playing", "paused", "stopped"]),
+      waitForSettled: z.boolean().default(true),
+      timeoutMs: z.number().int().positive().max(300000).default(30000),
+      saveModifiedScenes: z.boolean().default(false)
+    },
+    {
+      risk: "safe-write",
+      mutates: true,
+      supportsDryRun: false,
+      phase: 4,
+      idempotent: true,
+      examples: [{ state: "playing", waitForSettled: true, timeoutMs: 30000, saveModifiedScenes: false }]
+    },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const initiated = asObject(
+          await context.unity.request("play_mode.set", {
+            state: args.state,
+            saveModifiedScenes: args.saveModifiedScenes
+          })
+        );
+        if (initiated.ok === false || !args.waitForSettled) {
+          return successResponse("Play mode transition request completed.", initiated, startedAt);
+        }
+        const settled = await waitForPlayState(context, args.state, numberValue(initiated.transitionGeneration), args.timeoutMs);
+        return successResponse(
+          "Play mode transition settled.",
+          { ...initiated, ok: settled.ok !== false, settledState: settled, error: settled.error ?? null },
+          startedAt
+        );
+      } catch (error) {
+        return failureResponse("play_mode_set failed", error, startedAt);
+      }
+    }
+  );
+
+  registerTool(
+    server,
+    "play_mode_step",
+    "Advance exactly one frame while normal Play mode is paused and verify the frame/time change.",
+    { timeoutMs: z.number().int().positive().max(30000).default(5000) },
+    {
+      risk: "safe-write",
+      mutates: true,
+      supportsDryRun: false,
+      phase: 4,
+      idempotent: false,
+      examples: [{ timeoutMs: 5000 }]
+    },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const initiated = asObject(await context.unity.request("play_mode.step"));
+        if (initiated.ok === false) {
+          return successResponse("Play mode step was rejected.", initiated, startedAt);
+        }
+        const expectedFrame = numberValue(initiated.expectedFrame);
+        let observed: Record<string, unknown> = {};
+        while (Date.now() - startedAt < args.timeoutMs) {
+          observed = asObject(await context.unity.request("play_mode.get"));
+          const frame = numberValue(observed.frameCount);
+          if (frame >= expectedFrame) {
+            const exact = frame === expectedFrame && observed.state === "paused" && numberValue(observed.timeSinceStartup) > numberValue(initiated.beforeTime);
+            return successResponse(
+              "Play mode frame step observed.",
+              {
+                ...initiated,
+                ok: exact,
+                observed,
+                error: exact ? null : { code: "PLAY_MODE_STEP_NOT_EXACT", message: "Unity advanced by more than one frame or did not remain paused." }
+              },
+              startedAt
+            );
+          }
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        return successResponse(
+          "Play mode frame step timed out.",
+          {
+            ...initiated,
+            ok: false,
+            observed,
+            error: { code: "PLAY_MODE_STEP_TIMEOUT", message: "Unity did not expose the expected frame/time change before timeout." }
+          },
+          startedAt
+        );
+      } catch (error) {
+        return failureResponse("play_mode_step failed", error, startedAt);
+      }
+    }
+  );
+
+  registerTool(
+    server,
+    "input_simulate",
+    "Inject verified keyboard or UI pointer input through the active Input System or a project-scoped deterministic test driver.",
+    {
+      device: z.enum(["keyboard", "pointer"]).default("keyboard"),
+      action: z.enum(["tap", "press", "release", "click"]).default("tap"),
+      key: z.string().min(1).optional(),
+      button: z.enum(["left"]).default("left"),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      timeoutMs: z.number().int().positive().max(30000).default(5000)
+    },
+    {
+      risk: "safe-write",
+      mutates: true,
+      supportsDryRun: false,
+      phase: 4,
+      idempotent: false,
+      examples: [
+        { device: "keyboard", action: "tap", key: "PageUp" },
+        { device: "keyboard", action: "tap", key: "PageDown" },
+        { device: "pointer", action: "click", button: "left", x: 320, y: 180 }
+      ]
+    },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const { timeoutMs, ...request } = args;
+        const initiated = asObject(await context.unity.request("input.simulate", request));
+        if (initiated.ok === false || initiated.status !== "running") {
+          return successResponse("Input simulation completed.", initiated, startedAt);
+        }
+        const operationId = stringValue(initiated.operationId);
+        const completed = operationId ? await waitForInputReceipt(context, operationId, timeoutMs) : initiated;
+        return successResponse("Input simulation delivery was observed.", completed, startedAt);
+      } catch (error) {
+        return failureResponse("input_simulate failed", error, startedAt);
+      }
+    }
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "compile_diagnostics_get",
     "Read structured C# compiler diagnostics captured from Unity's compilation pipeline.",
     {
@@ -1323,6 +1631,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     "scene_save",
     "Save the active Unity scene.",
     {
+      path: z.string().min(1).optional(),
       dryRun: DryRunSchema
     },
     { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 1 },

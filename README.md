@@ -62,6 +62,14 @@ Run the repeatable security boundary smoke, including missing/wrong credentials,
 npm run smoke:security -- --unity-project-path C:/Path/To/UnityProject
 ```
 
+Run the normal Play-mode smoke against the repository test project to prove Console boundaries, PageUp/PageDown and pointer delivery, exact single-frame stepping, reload-resilient project identity, and typed rejection when no backend can verify an input:
+
+```bash
+npm run smoke:runtime -- --unity-project-path C:/Path/To/Unity-MCP-Ghost/test-project
+```
+
+`input_simulate` reports its selected backend and evidence. Ghost first uses an active Unity Input System device, then a project-scoped `IUnityMcpInputDriver`; it does not claim legacy Input Manager delivery without observable proof. The repository fixture supplies a deterministic course-test driver. Requests fail with `UNSUPPORTED_INPUT_BACKEND` when neither path accepts and verifies them.
+
 ## Cursor MCP Config
 
 ```json
@@ -85,4 +93,4 @@ npm run smoke:security -- --unity-project-path C:/Path/To/UnityProject
 
 Phase 1 is validated against the live KOTOR Unity project via both direct HTTP JSON-RPC and the durable queue fallback. Phase 2 parity tooling now includes component, prefab, asset, script, package manager, test-runner, ranged-edit, and resource-template support.
 
-Phase 3 moat work now includes structured console diagnostics, compiler-pipeline diagnostics, `script_validate`, reload-aware `compile_wait`, `patch_propose`, `repair_apply_edits`, repeatable repair smoke tests, GUID-based asset/prefab back-reference tracing, UnityEvent binding discovery, Animator graph analysis, asset hygiene scans, C# call-path/class impact analysis, Unity-specific lint rules, `project_index_summary`/`unity://semantic/index`, `test_scope_suggest`, semantic test-scope planning inside `repair_loop_run`, synchronous screenshot capture, `screenshot_diff`, screenshot baseline resources, automatic baseline selection in `repair_loop_run`, baseline hygiene cleanup, and the `visual_validation_report` tool/resources for visual repair-loop triage. Next target: automated repair-smoke assertions and Phase 4 game-system tool kickoff.
+Phase 3 moat work includes generation-scoped compiler diagnostics, truthful test and repair outcomes, transactional script mutations, durable operations, authenticated project-pinned transport, structured Console boundaries, normal Play-mode control, exact frame stepping, verified input simulation, semantic inspection, and visual validation. The clean-room runtime fixture proves PageUp/PageDown and pointer delivery without course assets. The active milestone is adding durable scenario matrices, deterministic evidence bundles, and the complete GAM 215-equivalent matrix.

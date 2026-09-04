@@ -33,7 +33,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("editor.get_state", HandleEditorState);
             Register("console.get_logs", HandleConsoleLogs);
             Register("console.diagnostics_get", HandleConsoleDiagnostics);
+            Register("console.clear", request => ConsoleLogBuffer.Clear());
+            Register("console.mark", request => ConsoleLogBuffer.MarkBoundary(JsonRpcUtil.ReadString(request.RawJson, "label", string.Empty)));
+            Register("console.query", request => ConsoleLogBuffer.Query(request.RawJson, false));
+            Register("console.assert", request => ConsoleLogBuffer.Query(request.RawJson, true));
             Register("compile.diagnostics_get", HandleCompileDiagnostics);
+            Register("play_mode.get", request => PlayModeController.Get());
+            Register("play_mode.set", request => PlayModeController.Set(request.RawJson));
+            Register("play_mode.step", request => PlayModeController.Step());
+            Register("input.simulate", request => InputSimulationController.Simulate(request.RawJson));
+            Register("input.status", request => InputSimulationController.Status(request.RawJson));
             Register("scene.get_hierarchy", HandleSceneHierarchy);
             Register("scene.create", HandleSceneCreate);
             Register("scene.open", HandleSceneOpen);
@@ -287,14 +296,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static string HandleSceneSave(UnityMcpRequest request)
         {
+            var requestedPath = JsonRpcUtil.ReadString(request.RawJson, "path", string.Empty);
+            var normalizedPath = string.IsNullOrWhiteSpace(requestedPath) ? string.Empty : NormalizeAssetPath(requestedPath);
             if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
             {
                 var active = SceneManager.GetActiveScene();
-                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"scene.save\",\"scenePath\":\"" + JsonRpcUtil.Escape(active.path) + "\"}}";
+                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"scene.save\",\"scenePath\":\"" + JsonRpcUtil.Escape(string.IsNullOrEmpty(normalizedPath) ? active.path : normalizedPath) + "\"}}";
             }
 
             var scene = SceneManager.GetActiveScene();
-            var saved = EditorSceneManager.SaveScene(scene);
+            var saved = string.IsNullOrEmpty(normalizedPath) ? EditorSceneManager.SaveScene(scene) : EditorSceneManager.SaveScene(scene, normalizedPath);
             return "{\"ok\":" + Bool(saved) + ",\"scenePath\":\"" + JsonRpcUtil.Escape(scene.path) + "\"}";
         }
 

@@ -243,4 +243,97 @@ describe("MCP result adaptation", () => {
       await server.close();
     }
   });
+
+  it("waits for the requested normal Play mode generation to settle", async () => {
+    let reads = 0;
+    const fakeUnity = {
+      request: async (method: string) => {
+        if (method === "play_mode.set") {
+          return { ok: true, requestedState: "playing", state: "enteringPlay", transitionGeneration: 9 };
+        }
+        if (method === "play_mode.get") {
+          reads++;
+          return { ok: true, state: reads < 2 ? "enteringPlay" : "playing", transitionGeneration: 9, frameCount: 1 };
+        }
+        throw new Error(`Unexpected method: ${method}`);
+      }
+    } as unknown as UnityClient;
+    const server = createMcpServer({ unity: fakeUnity });
+    const client = new Client({ name: "unity-mcp-ghost-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+      const result = await client.callTool({
+        name: "play_mode_set",
+        arguments: { state: "playing", waitForSettled: true, timeoutMs: 2000, saveModifiedScenes: false }
+      });
+
+      assert.equal(result.isError, undefined);
+      assert.ok(reads >= 2);
+      const data = (result.structuredContent as { data: { settledState: { state: string; settled: boolean } } }).data;
+      assert.equal(data.settledState.state, "playing");
+      assert.equal(data.settledState.settled, true);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("waits from an exact Console boundary until the filter matches", async () => {
+    let reads = 0;
+    const fakeUnity = {
+      request: async (method: string, params: unknown) => {
+        assert.equal(method, "console.query");
+        assert.equal((params as { boundary: string }).boundary, "mark-1");
+        reads++;
+        return { ok: true, matched: reads > 1, count: reads > 1 ? 1 : 0, entries: [], unexpectedErrors: [] };
+      }
+    } as unknown as UnityClient;
+    const server = createMcpServer({ unity: fakeUnity });
+    const client = new Client({ name: "unity-mcp-ghost-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+      const result = await client.callTool({
+        name: "console_wait",
+        arguments: { boundary: "mark-1", exact: "Hello", count: 1, timeoutMs: 1000, pollIntervalMs: 25 }
+      });
+
+      assert.equal(result.isError, undefined);
+      assert.equal((result.structuredContent as { data: { matched: boolean } }).data.matched, true);
+      assert.ok(reads >= 2);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("reports unsupported input backends as typed MCP errors", async () => {
+    const fakeUnity = {
+      request: async () => ({
+        ok: false,
+        status: "failed",
+        error: { code: "UNSUPPORTED_INPUT_BACKEND", message: "No verified input backend accepted PageUp." }
+      })
+    } as unknown as UnityClient;
+    const server = createMcpServer({ unity: fakeUnity });
+    const client = new Client({ name: "unity-mcp-ghost-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+      const result = await client.callTool({
+        name: "input_simulate",
+        arguments: { device: "keyboard", action: "tap", key: "PageUp" }
+      });
+
+      assert.equal(result.isError, true);
+      assert.equal((result.structuredContent as { error: { code: string } }).error.code, "UNSUPPORTED_INPUT_BACKEND");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });

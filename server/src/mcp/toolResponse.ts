@@ -206,7 +206,7 @@ function detectBridgeFailure(value: unknown): GhostToolError | null {
     const source = stateStatus ? state : record;
     const parsed = parseError(source.error);
     return {
-      code: terminalFailure.code,
+      code: parsed?.code && parsed.code !== "UNITY_BRIDGE_FAILED" ? parsed.code : terminalFailure.code,
       message: parsed?.message ?? `Unity operation ended with status ${terminalFailure.status}.`,
       ...(parsed?.data === undefined ? {} : { data: parsed.data })
     };
