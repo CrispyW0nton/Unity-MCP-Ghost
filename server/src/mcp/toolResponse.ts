@@ -94,12 +94,15 @@ export function failureResponse(
   } = {}
 ): CallToolResult {
   const message = error instanceof Error ? error.message : String(error);
+  const errorData = readErrorData(error);
+  const outcomeUnknown = readBoolean(error, "outcomeUnknown") === true;
   const structuredContent: GhostToolResponse<unknown> = {
     ok: false,
-    data: options.data ?? null,
+    data: options.data ?? errorData ?? null,
     error: {
       code: options.code ?? readErrorCode(error) ?? "UNITY_REQUEST_FAILED",
-      message
+      message,
+      ...(errorData === undefined ? {} : { data: errorData })
     },
     diagnostics: [
       ...diagnostics,
@@ -108,13 +111,13 @@ export function failureResponse(
         message
       }
     ],
-    requestId: options.requestId ?? randomUUID(),
+    requestId: options.requestId ?? readErrorRequestId(error) ?? randomUUID(),
     operationId: options.operationId ?? null,
     projectId: options.projectId ?? null,
     confidence: 0,
     undoGroupId: null,
     durationMs: Date.now() - startedAt,
-    warnings: options.warnings ?? []
+    warnings: options.warnings ?? (outcomeUnknown ? ["The request may have mutated Unity after the caller stopped waiting; retry only with the same request ID."] : [])
   };
 
   return {
@@ -229,6 +232,9 @@ function failureStatus(status: string | null): { status: string; code: string } 
     case "canceled":
     case "aborted":
       return { status, code: "UNITY_OPERATION_CANCELLED" };
+    case "outcomeunknown":
+    case "outcome_unknown":
+      return { status, code: "UNITY_OPERATION_OUTCOME_UNKNOWN" };
     default:
       return null;
   }
@@ -263,6 +269,29 @@ function readErrorCode(error: unknown): string | null {
 
   const code = (error as { code?: unknown }).code;
   return typeof code === "string" && code.length > 0 ? code : null;
+}
+
+function readErrorData(error: unknown): unknown {
+  if (!error || typeof error !== "object") {
+    return undefined;
+  }
+  return (error as { data?: unknown }).data;
+}
+
+function readErrorRequestId(error: unknown): string | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+  const requestId = (error as { requestId?: unknown }).requestId;
+  return typeof requestId === "string" && requestId.length > 0 ? requestId : null;
+}
+
+function readBoolean(value: unknown, key: string): boolean | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const result = (value as Record<string, unknown>)[key];
+  return typeof result === "boolean" ? result : null;
 }
 
 function readString(record: Record<string, unknown>, key: string): string | null {

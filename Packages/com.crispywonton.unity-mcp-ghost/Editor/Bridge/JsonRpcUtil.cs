@@ -79,12 +79,35 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 throw new JsonRpcProtocolException(-32602, "Invalid params: Ghost operations require an object.", idJson);
             }
 
+            var deadlineToken = root["deadlineUnixMs"];
+            if (deadlineToken != null && deadlineToken.Type != JTokenType.Integer)
+            {
+                throw new JsonRpcProtocolException(-32600, "Invalid request: deadlineUnixMs must be an integer.", idJson);
+            }
+            if (deadlineToken != null && (deadlineToken.Value<long>() < 0 || deadlineToken.Value<long>() > 253402300799999L))
+            {
+                throw new JsonRpcProtocolException(-32600, "Invalid request: deadlineUnixMs is outside the supported UTC range.", idJson);
+            }
+            var idempotencyToken = root["idempotencyKey"];
+            if (idempotencyToken != null && (idempotencyToken.Type != JTokenType.String || string.IsNullOrWhiteSpace(idempotencyToken.Value<string>()) || idempotencyToken.Value<string>().Length > 128))
+            {
+                throw new JsonRpcProtocolException(-32600, "Invalid request: idempotencyKey must be a non-empty string of at most 128 characters.", idJson);
+            }
+            var idempotentToken = root["idempotent"];
+            if (idempotentToken != null && idempotentToken.Type != JTokenType.Boolean)
+            {
+                throw new JsonRpcProtocolException(-32600, "Invalid request: idempotent must be a boolean.", idJson);
+            }
+
             return new UnityMcpRequest
             {
                 Id = id,
                 IdJson = idJson,
                 Method = methodToken.Value<string>(),
-                RawJson = paramsToken == null || paramsToken.Type == JTokenType.Null ? "{}" : paramsToken.ToString(Formatting.None)
+                RawJson = paramsToken == null || paramsToken.Type == JTokenType.Null ? "{}" : paramsToken.ToString(Formatting.None),
+                DeadlineUnixMs = deadlineToken != null ? deadlineToken.Value<long>() : 0,
+                IdempotencyKey = idempotencyToken != null ? idempotencyToken.Value<string>() : id,
+                ClientDeclaredIdempotent = idempotentToken != null && idempotentToken.Value<bool>()
             };
         }
 
@@ -101,12 +124,17 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         public static string Error(UnityMcpRequest request, int code, string message)
         {
-            return ErrorWithId(request != null ? request.IdJson : "null", code, message);
+            return ErrorWithId(request != null ? request.IdJson : "null", code, message, null);
+        }
+
+        public static string Error(UnityMcpRequest request, int code, string message, JObject data)
+        {
+            return ErrorWithId(request != null ? request.IdJson : "null", code, message, data);
         }
 
         public static string Error(JsonRpcProtocolException exception)
         {
-            return ErrorWithId(exception != null ? exception.IdJson : "null", exception != null ? exception.ErrorCode : -32600, exception != null ? exception.Message : "Invalid request.");
+            return ErrorWithId(exception != null ? exception.IdJson : "null", exception != null ? exception.ErrorCode : -32600, exception != null ? exception.Message : "Invalid request.", null);
         }
 
         public static string Escape(string value)
@@ -257,17 +285,22 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return JToken.Parse(resultJson, StrictLoadSettings);
         }
 
-        private static string ErrorWithId(string idJson, int code, string message)
+        private static string ErrorWithId(string idJson, int code, string message, JObject data)
         {
+            var error = new JObject
+            {
+                ["code"] = code,
+                ["message"] = message ?? string.Empty
+            };
+            if (data != null)
+            {
+                error["data"] = data;
+            }
             var response = new JObject
             {
                 ["jsonrpc"] = "2.0",
                 ["id"] = ParseId(idJson),
-                ["error"] = new JObject
-                {
-                    ["code"] = code,
-                    ["message"] = message ?? string.Empty
-                }
+                ["error"] = error
             };
             return response.ToString(Formatting.None);
         }
@@ -279,6 +312,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         public string IdJson = "null";
         public string Method = string.Empty;
         public string RawJson = "{}";
+        public long DeadlineUnixMs;
+        public string IdempotencyKey = string.Empty;
+        public bool ClientDeclaredIdempotent;
     }
 
     internal sealed class JsonRpcProtocolException : Exception

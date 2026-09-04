@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { failureResponse, successResponse } from "../src/mcp/toolResponse.js";
+import { UnityRequestTimeoutError } from "../src/unity/UnityClient.js";
 
 function structured(result: ReturnType<typeof successResponse>): Record<string, unknown> {
   return result.structuredContent as Record<string, unknown>;
@@ -92,5 +93,17 @@ describe("tool response envelope", () => {
       code: "UNITY_CONNECTION_CLOSED",
       message: "socket closed"
     });
+  });
+
+  it("preserves the request id and warns when a timed-out mutation has an unknown outcome", () => {
+    const result = failureResponse(
+      "request failed",
+      new UnityRequestTimeoutError("timed out", "mutation-1", true),
+      Date.now()
+    );
+
+    assert.equal(structured(result).requestId, "mutation-1");
+    assert.equal((structured(result).error as { code: string }).code, "UNITY_REQUEST_TIMEOUT_OUTCOME_UNKNOWN");
+    assert.equal((structured(result).warnings as string[]).length, 1);
   });
 });

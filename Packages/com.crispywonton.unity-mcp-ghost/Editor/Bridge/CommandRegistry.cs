@@ -81,6 +81,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("package.remove", HandlePackageRemove);
             Register("operation.get", HandleOperationGet);
             Register("operation.list", HandleOperationList);
+            Register("operation.cancel", HandleOperationCancel);
             Register("compile.wait", HandleCompileWait);
             Register("compile.status_get", HandleCompileStatusGet);
             Register("tests.run", HandleTestsRun);
@@ -1682,7 +1683,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var includeIndirect = JsonRpcUtil.ReadBool(request.RawJson, "includeIndirect", true);
             var includeOffline = JsonRpcUtil.ReadBool(request.RawJson, "includeOffline", true);
             var requestHandle = Client.List(includeIndirect, includeOffline);
-            var id = OperationStore.Register("package", "package.list", () => PackageListState(requestHandle));
+            var id = Guid.NewGuid().ToString("N");
+            OperationStore.Register(id, "package", "package.list", () => PackageListState(requestHandle), null, true);
             return OperationStarted(id, "package.list");
         }
 
@@ -1690,7 +1692,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         {
             var query = JsonRpcUtil.ReadString(request.RawJson, "query", string.Empty);
             var requestHandle = string.IsNullOrEmpty(query) ? Client.SearchAll() : Client.Search(query);
-            var id = OperationStore.Register("package", "package.search " + query, () => PackageSearchState(requestHandle));
+            var id = Guid.NewGuid().ToString("N");
+            OperationStore.Register(id, "package", "package.search " + query, () => PackageSearchState(requestHandle), null, true);
             return OperationStarted(id, "package.search");
         }
 
@@ -1740,6 +1743,11 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return OperationStore.List();
         }
 
+        private static string HandleOperationCancel(UnityMcpRequest request)
+        {
+            return OperationStore.Cancel(JsonRpcUtil.ReadString(request.RawJson, "operationId", string.Empty));
+        }
+
         private static string HandleCompileWait(UnityMcpRequest request)
         {
             var timeoutMs = Math.Max(1000, JsonRpcUtil.ReadInt(request.RawJson, "timeoutMs", 30000));
@@ -1750,7 +1758,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-            var id = OperationStore.Register("compile", "compile.wait " + generation, () => CompileWaitState(generation, deadline));
+            var id = Guid.NewGuid().ToString("N");
+            OperationStore.Register(id, "compile", "compile.wait " + generation, () => CompileWaitState(generation, deadline), null, true);
             return OperationStarted(id, "compile.wait");
         }
 
@@ -1791,7 +1800,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 filter.testNames = new[] { filterText };
             }
 
-            OperationStore.Register(operationId, "tests", "tests.run " + mode, () => callbacks.StateJson);
+            OperationStore.Register(operationId, "tests", "tests.run " + mode, () => callbacks.StateJson, () => CancelTestRun(api), true);
             api.Execute(new ExecutionSettings(filter));
             return OperationStarted(operationId, "tests.run");
         }
@@ -5445,6 +5454,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             throw new InvalidOperationException("Text edit position is outside the script content: line " + line + ", column " + column);
         }
 
+        private static void CancelTestRun(TestRunnerApi api)
+        {
+            var method = api.GetType().GetMethod("CancelTestRun", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null);
+            if (method == null)
+            {
+                throw new InvalidOperationException("This Unity Test Runner version does not expose a cancellable test-run API.");
+            }
+            method.Invoke(api, null);
+        }
+
         private static string OperationStarted(string operationId, string action)
         {
             return "{\"ok\":true,\"operationId\":\"" + JsonRpcUtil.Escape(operationId) + "\",\"status\":\"running\",\"action\":\"" + JsonRpcUtil.Escape(action) + "\"}";
@@ -5609,6 +5628,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         {
             total = testsToRun.TestCaseCount;
             StateJson = "{\"status\":\"running\",\"operationId\":\"" + JsonRpcUtil.Escape(OperationId) + "\",\"total\":" + total + "}";
+            OperationStore.Update(OperationId, StateJson);
         }
 
         public void RunFinished(ITestResultAdaptor result)
@@ -5638,6 +5658,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             StateJson = response.ToString(Formatting.None);
+            OperationStore.Update(OperationId, StateJson);
         }
 
         public void TestStarted(ITestAdaptor test)

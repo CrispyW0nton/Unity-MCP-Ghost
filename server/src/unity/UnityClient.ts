@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import WebSocket from "ws";
 
 export interface UnityRpcResponse<T = unknown> {
   jsonrpc: "2.0";
-  id: string;
+  id: string | number | null;
   result?: T;
   error?: {
     code: number;
@@ -19,6 +19,10 @@ interface UnityRpcRequest {
   id: string;
   method: string;
   params: unknown;
+  requestId: string;
+  idempotencyKey: string;
+  idempotent: boolean;
+  deadlineUnixMs: number;
 }
 
 export interface UnityClientOptions {
@@ -28,8 +32,16 @@ export interface UnityClientOptions {
   requestTimeoutMs: number;
 }
 
+export interface UnityRequestOptions {
+  requestId?: string;
+  idempotencyKey?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
 export class UnityClient {
   private socket: WebSocket | undefined;
+  private connecting: Promise<WebSocket> | undefined;
   private readonly pending = new Map<
     string,
     {
@@ -54,30 +66,22 @@ export class UnityClient {
   }
 
   public async isConnected(): Promise<boolean> {
+    const payload = createPayload("health", {}, randomUUID(), this.options.requestTimeoutMs);
     try {
-      await this.requestViaHttp("health", {
-        jsonrpc: "2.0",
-        id: randomUUID(),
-        method: "health",
-        params: {}
-      });
+      await this.requestViaHttp("health", payload, this.options.requestTimeoutMs);
       return true;
     } catch {
       return false;
     }
   }
 
-  public async request<T = unknown>(method: string, params: unknown = {}): Promise<T> {
-    const id = randomUUID();
-    const payload: UnityRpcRequest = {
-      jsonrpc: "2.0",
-      id,
-      method,
-      params
-    };
+  public async request<T = unknown>(method: string, params: unknown = {}, options: UnityRequestOptions = {}): Promise<T> {
+    const id = options.requestId ?? readRequestId(params) ?? randomUUID();
+    const timeoutMs = options.timeoutMs ?? this.options.requestTimeoutMs;
+    const payload = createPayload(method, params, id, timeoutMs, options.idempotencyKey);
 
     try {
-      return await this.requestViaHttp<T>(method, payload);
+      return withRequestId(await this.requestViaHttp<T>(method, payload, timeoutMs, options.signal), id);
     } catch (error) {
       if (error instanceof UnityCommandError || error instanceof UnityRequestTimeoutError) {
         throw error;
@@ -85,82 +89,122 @@ export class UnityClient {
 
       try {
         const socket = await this.connect();
-        return await this.requestViaSocket<T>(socket, payload, method);
+        return withRequestId(await this.requestViaSocket<T>(socket, payload, method, timeoutMs, options.signal), id);
       } catch (socketError) {
         if (socketError instanceof UnityCommandError || socketError instanceof UnityRequestTimeoutError) {
           throw socketError;
         }
-
         if (!this.options.queueDir) {
           throw socketError;
         }
-
-        return this.requestViaQueue<T>(payload, method);
+        return withRequestId(await this.requestViaQueue<T>(payload, method, timeoutMs, options.signal), id);
       }
     }
   }
 
-  private async requestViaHttp<T>(method: string, payload: UnityRpcRequest): Promise<T> {
+  private async requestViaHttp<T>(method: string, payload: UnityRpcRequest, timeoutMs: number, signal?: AbortSignal): Promise<T> {
     const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), this.options.requestTimeoutMs);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+    }, timeoutMs);
+    const abort = () => abortController.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) {
+      abort();
+    }
 
     try {
       const response = await fetch(this.httpEndpoint, {
         method: "POST",
-        headers: {
-          "content-type": "application/json"
-        },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
         signal: abortController.signal
       });
-
       if (!response.ok) {
         throw new Error(`Unity HTTP bridge responded ${response.status}: ${method}`);
       }
-
-      const rpcResponse = (await response.json()) as UnityRpcResponse<T>;
-      if (rpcResponse.error) {
-        throw new UnityCommandError(rpcResponse.error.message);
-      }
-
-      return rpcResponse.result as T;
+      return unwrapResponse<T>((await response.json()) as UnityRpcResponse<T>, payload.id);
     } catch (error) {
       if ((error as Error).name === "AbortError") {
-        throw new UnityRequestTimeoutError(`Unity HTTP request timed out: ${method}`);
+        throw new UnityRequestTimeoutError(
+          timedOut ? `Unity HTTP request timed out: ${method}` : `Unity HTTP request was cancelled: ${method}`,
+          payload.id,
+          !payload.idempotent,
+          timedOut
+            ? payload.idempotent
+              ? "UNITY_REQUEST_TIMEOUT"
+              : "UNITY_REQUEST_TIMEOUT_OUTCOME_UNKNOWN"
+            : payload.idempotent
+              ? "UNITY_REQUEST_CANCELLED"
+              : "UNITY_REQUEST_CANCELLED_OUTCOME_UNKNOWN"
+        );
       }
-
       throw error;
     } finally {
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
     }
   }
 
-  private requestViaSocket<T>(socket: WebSocket, payload: UnityRpcRequest, method: string): Promise<T> {
+  private requestViaSocket<T>(socket: WebSocket, payload: UnityRpcRequest, method: string, timeoutMs: number, signal?: AbortSignal): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      const cancel = () => {
+        clearTimeout(timeout);
+        this.pending.delete(payload.id);
+        reject(
+          new UnityRequestTimeoutError(
+            `Unity WebSocket request was cancelled: ${method}`,
+            payload.id,
+            !payload.idempotent,
+            payload.idempotent ? "UNITY_REQUEST_CANCELLED" : "UNITY_REQUEST_CANCELLED_OUTCOME_UNKNOWN"
+          )
+        );
+      };
       const timeout = setTimeout(() => {
         this.pending.delete(payload.id);
-        reject(new UnityRequestTimeoutError(`Unity request timed out: ${method}`));
-      }, this.options.requestTimeoutMs);
+        signal?.removeEventListener("abort", cancel);
+        reject(
+          new UnityRequestTimeoutError(
+            `Unity WebSocket request timed out: ${method}`,
+            payload.id,
+            !payload.idempotent,
+            payload.idempotent ? "UNITY_REQUEST_TIMEOUT" : "UNITY_REQUEST_TIMEOUT_OUTCOME_UNKNOWN"
+          )
+        );
+      }, timeoutMs);
+      signal?.addEventListener("abort", cancel, { once: true });
 
       this.pending.set(payload.id, {
-        resolve: (value) => resolve(value as T),
-        reject,
+        resolve: (value) => {
+          signal?.removeEventListener("abort", cancel);
+          resolve(value as T);
+        },
+        reject: (error) => {
+          signal?.removeEventListener("abort", cancel);
+          reject(error);
+        },
         timeout
       });
 
+      if (signal?.aborted) {
+        cancel();
+        return;
+      }
       socket.send(JSON.stringify(payload), (error) => {
         if (!error) {
           return;
         }
-
         clearTimeout(timeout);
         this.pending.delete(payload.id);
+        signal?.removeEventListener("abort", cancel);
         reject(error);
       });
     });
   }
 
-  private async requestViaQueue<T>(payload: UnityRpcRequest, method: string): Promise<T> {
+  private async requestViaQueue<T>(payload: UnityRpcRequest, method: string, timeoutMs: number, signal?: AbortSignal): Promise<T> {
     const queueDir = this.options.queueDir;
     if (!queueDir) {
       throw new Error("Unity durable queue is not configured.");
@@ -168,70 +212,89 @@ export class UnityClient {
 
     const pendingDir = join(queueDir, "pending");
     const resultsDir = join(queueDir, "results");
-    await mkdir(pendingDir, { recursive: true });
-    await mkdir(resultsDir, { recursive: true });
-
+    const cancellationDir = join(queueDir, "cancellations");
+    await Promise.all([mkdir(pendingDir, { recursive: true }), mkdir(resultsDir, { recursive: true }), mkdir(cancellationDir, { recursive: true })]);
     const pendingPath = join(pendingDir, `${payload.id}.json`);
-    const tempPath = `${pendingPath}.tmp`;
+    const tempPath = `${pendingPath}.${randomUUID()}.tmp`;
     const resultPath = join(resultsDir, `${payload.id}.json`);
 
     await writeFile(tempPath, JSON.stringify(payload), "utf8");
     await rename(tempPath, pendingPath);
 
     const startedAt = Date.now();
-    while (Date.now() - startedAt < this.options.requestTimeoutMs) {
+    while (Date.now() - startedAt < timeoutMs && !signal?.aborted) {
       const response = await this.tryReadQueuedResponse<T>(resultPath);
       if (response.found) {
         await rm(resultPath, { force: true });
-        if (response.error) {
-          throw new Error(response.error.message);
-        }
-
-        return response.result as T;
+        return unwrapResponse(response.response, payload.id);
       }
-
       await delay(100);
     }
 
-    throw new Error(`Unity durable queue request timed out: ${method}`);
+    const pendingRemoved = await removeIfPresent(pendingPath);
+    if (!pendingRemoved) {
+      await writeFile(
+        join(cancellationDir, `${payload.id}.json`),
+        JSON.stringify({ requestId: payload.id, idempotencyKey: payload.idempotencyKey, requestedAt: new Date().toISOString() }),
+        "utf8"
+      );
+    }
+    const lateResponse = await this.tryReadQueuedResponse<T>(resultPath);
+    if (lateResponse.found) {
+      await rm(resultPath, { force: true });
+      return unwrapResponse(lateResponse.response, payload.id);
+    }
+    throw new UnityRequestTimeoutError(
+      signal?.aborted ? `Unity durable queue request was cancelled: ${method}` : `Unity durable queue request timed out: ${method}`,
+      payload.id,
+      !pendingRemoved && !payload.idempotent,
+      signal?.aborted
+        ? !pendingRemoved && !payload.idempotent
+          ? "UNITY_REQUEST_CANCELLED_OUTCOME_UNKNOWN"
+          : "UNITY_REQUEST_CANCELLED"
+        : !pendingRemoved && !payload.idempotent
+          ? "UNITY_REQUEST_TIMEOUT_OUTCOME_UNKNOWN"
+          : "UNITY_REQUEST_TIMEOUT"
+    );
   }
 
-  private async tryReadQueuedResponse<T>(path: string): Promise<{ found: false } | { found: true; result?: T; error?: UnityRpcResponse["error"] }> {
-    let raw: string;
+  private async tryReadQueuedResponse<T>(path: string): Promise<{ found: false } | { found: true; response: UnityRpcResponse<T> }> {
     try {
-      raw = await readFile(path, "utf8");
+      return { found: true, response: JSON.parse(await readFile(path, "utf8")) as UnityRpcResponse<T> };
     } catch {
       return { found: false };
     }
-
-    const response = JSON.parse(raw) as UnityRpcResponse<T>;
-    return {
-      found: true,
-      result: response.result,
-      error: response.error
-    };
   }
 
   private async connect(): Promise<WebSocket> {
     if (this.socket?.readyState === WebSocket.OPEN) {
       return this.socket;
     }
+    if (this.connecting) {
+      return this.connecting;
+    }
 
     this.socket?.terminate();
-
     const socket = new WebSocket(this.endpoint);
     this.socket = socket;
-
     socket.on("message", (data) => this.handleMessage(data.toString()));
-    socket.on("close", () => this.rejectPending(new Error("Unity bridge connection closed.")));
+    socket.on("close", () => {
+      if (this.socket === socket) {
+        this.socket = undefined;
+      }
+      this.rejectPending(new Error("Unity bridge connection closed."));
+    });
     socket.on("error", (error) => this.rejectPending(error));
 
-    await new Promise<void>((resolve, reject) => {
-      socket.once("open", resolve);
+    this.connecting = new Promise<WebSocket>((resolve, reject) => {
+      socket.once("open", () => resolve(socket));
       socket.once("error", reject);
     });
-
-    return socket;
+    try {
+      return await this.connecting;
+    } finally {
+      this.connecting = undefined;
+    }
   }
 
   private handleMessage(raw: string): void {
@@ -241,21 +304,19 @@ export class UnityClient {
     } catch {
       return;
     }
-
-    const pending = this.pending.get(response.id);
+    const id = String(response.id);
+    const pending = this.pending.get(id);
     if (!pending) {
       return;
     }
 
     clearTimeout(pending.timeout);
-    this.pending.delete(response.id);
-
-    if (response.error) {
-      pending.reject(new UnityCommandError(response.error.message));
-      return;
+    this.pending.delete(id);
+    try {
+      pending.resolve(unwrapResponse(response, id));
+    } catch (error) {
+      pending.reject(error as Error);
     }
-
-    pending.resolve(response.result);
   }
 
   private rejectPending(error: Error): void {
@@ -267,20 +328,113 @@ export class UnityClient {
   }
 }
 
+function createPayload(method: string, params: unknown, id: string, timeoutMs: number, idempotencyKey?: string): UnityRpcRequest {
+  return {
+    jsonrpc: "2.0",
+    id,
+    method,
+    params,
+    requestId: id,
+    idempotencyKey: idempotencyKey ?? id,
+    idempotent: isReplaySafe(method, params),
+    deadlineUnixMs: Date.now() + timeoutMs
+  };
+}
+
+function unwrapResponse<T>(response: UnityRpcResponse<T>, requestId: string): T {
+  if (response.error) {
+    throw new UnityCommandError(response.error.message, response.error.code, response.error.data, requestId);
+  }
+  return response.result as T;
+}
+
 function delay(durationMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, durationMs));
 }
 
-class UnityCommandError extends Error {
-  public constructor(message: string) {
+export class UnityCommandError extends Error {
+  public readonly code: string;
+
+  public constructor(message: string, public readonly rpcCode?: number, public readonly data?: unknown, public readonly requestId?: string) {
     super(message);
     this.name = "UnityCommandError";
+    this.code = readErrorDataCode(data) ?? "UNITY_COMMAND_ERROR";
   }
 }
 
-class UnityRequestTimeoutError extends Error {
-  public constructor(message: string) {
+export class UnityRequestTimeoutError extends Error {
+  public constructor(
+    message: string,
+    public readonly requestId: string,
+    public readonly outcomeUnknown: boolean,
+    public readonly code = "UNITY_REQUEST_TIMEOUT_OUTCOME_UNKNOWN"
+  ) {
     super(message);
     this.name = "UnityRequestTimeoutError";
+  }
+}
+
+function readRequestId(params: unknown): string | undefined {
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return undefined;
+  }
+  const value = (params as { requestId?: unknown }).requestId;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function withRequestId<T>(value: T, requestId: string): T {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.requestId !== "string") {
+    record.requestId = requestId;
+  }
+  return value;
+}
+
+function isReplaySafe(method: string, params: unknown): boolean {
+  if (params && typeof params === "object" && !Array.isArray(params) && (params as { dryRun?: unknown }).dryRun === true) {
+    return true;
+  }
+  return (
+    new Set([
+      "ping",
+      "health",
+      "editor.get_state",
+      "console.get_logs",
+      "console.diagnostics_get",
+      "compile.diagnostics_get",
+      "compile.status_get",
+      "scene.get_hierarchy",
+      "scene.list_open",
+      "scene.get_setup",
+      "gameobject.find",
+      "gameobject.get",
+      "component.get",
+      "asset.find",
+      "script.read",
+      "operation.get",
+      "operation.list",
+      "screenshot.baselines_list"
+    ]).has(method) || method.startsWith("semantic.")
+  );
+}
+
+function readErrorDataCode(data: unknown): string | undefined {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return undefined;
+  }
+  const code = (data as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+async function removeIfPresent(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    await rm(path);
+    return true;
+  } catch {
+    return false;
   }
 }

@@ -2264,10 +2264,22 @@ export function createMcpServer(context: ToolContext): McpServer {
     server,
     context,
     "operation_list",
-    "List Ghost operations currently tracked in the Unity editor session.",
+    "List durable Ghost operations retained across Unity domain reloads.",
     EmptySchema,
     { risk: "read", mutates: false, supportsDryRun: false, phase: 2 },
     "operation.list"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "operation_cancel",
+    "Request cancellation of a durable Ghost operation and report whether the underlying Unity subsystem can prove the outcome.",
+    {
+      operationId: z.string().min(1)
+    },
+    { risk: "safe-write", mutates: true, supportsDryRun: false, phase: 3 },
+    "operation.cancel"
   );
 
   registerTool(
