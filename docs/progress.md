@@ -49,10 +49,16 @@ Commits and verified gates:
 - `6577659` — `fix(reliability): bound screenshot comparisons and memory`
   - Rejected dimension mismatches by default, added explicit bilinear resampling, capped encoded images/effective pixels/estimated memory, guarded every texture/render-target allocation with cleanup, and reported dimensions and comparison methods.
   - Passed 13 Node tests, 55 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+- `fed5a3e` — `feat(security): authenticate and pin every Unity editor connection`
+  - Added per-project owner-only bearer tokens, HMAC-authenticated durable queue messages, stable project/editor identity, persisted deterministic HTTP/WebSocket ports, loopback-only listeners, Origin rejection, exact project pinning, request/rate/concurrency limits, and default-deny capability classes.
+  - Added canonical project/Assets path containment with junction/symlink rejection, truthful destructive/open-world tool annotations, `SECURITY.md`, and a repeatable authenticated security smoke suite.
+  - Passed 16 Node tests, 73 Unity EditMode tests, `npm run typecheck`, `npm run build`, and `git diff --check`.
+  - Live Unity `2022.3.62f1` security validation passed HTTP missing/wrong-token and browser-Origin rejection, exact project/editor mismatch errors, destructive and package/network default-deny, pinned HTTP health, WebSocket missing-token/Origin rejection, fragmented WebSocket health, and oversized WebSocket close code `1009`.
+  - Live authenticated durable-queue fallback passed all 8 read-only/dry-run smoke checks. The bridge token ACL was verified as non-inherited and restricted to the current Windows user.
 
 Next required slice:
 
-- Implement project-pinned authenticated bridge routing and the Workstream 3 security boundary.
+- Implement normal Play mode, Console boundary, and verified input operations for Workstream 4.
 
 ## Phase 1: Foundation
 
