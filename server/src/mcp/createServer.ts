@@ -4,6 +4,7 @@ import { access } from "node:fs/promises";
 import { z } from "zod";
 import { ScenarioJobManager, type ScenarioMatrixDefinition } from "../scenario/ScenarioJobManager.js";
 import type { UnityClient } from "../unity/UnityClient.js";
+import { PackageVersion } from "../version.js";
 import { listOperationCatalog, operationEnabled, recordOperation, searchOperationCatalog, type OperationProfile, type ToolSchema } from "./operationCatalog.js";
 import { asObject, failureResponse, GhostToolResponseSchema, type GhostToolMeta, successResponse, type ToolDiagnostic } from "./toolResponse.js";
 
@@ -1233,7 +1234,7 @@ function registerUnityRequestTool<TSchema extends ToolSchema>(
 export function createMcpServer(context: ToolContext): McpServer {
   const server = new McpServer({
     name: "unity-mcp-ghost",
-    version: "0.1.0"
+    version: PackageVersion
   });
   serverProfiles.set(server, context.toolProfiles ?? ["all"]);
   const scenarios = new ScenarioJobManager({

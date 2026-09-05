@@ -1,6 +1,6 @@
 {
   "name": "unity-mcp-ghost",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.1",
   "private": true,
   "description": "Cursor-first MCP server and Unity editor bridge for deterministic Unity automation.",
   "type": "module",
@@ -14,6 +14,7 @@
     "format:check": "prettier --check \"server/**/*.ts\" \"*.json\" \"Packages/*/package.json\" \"*.{js,mjs}\"",
     "generate:catalog": "tsx server/scripts/generateOperationCatalog.ts",
     "check:catalog": "tsx server/scripts/generateOperationCatalog.ts --check",
+    "config:client": "tsx server/scripts/generateClientConfig.ts",
     "lint": "eslint server",
     "phase3:repair-smoke": "tsx server/src/phase3RepairSmoke.ts --transport stdio",
     "smoke": "tsx server/src/devSmoke.ts --transport stdio",
@@ -25,12 +26,22 @@
     "test:protocol": "npm run check:catalog && node --import tsx --test server/test/protocol.test.ts",
     "test:unity:editmode": "tsx server/scripts/runUnityTests.ts EditMode",
     "test:unity:playmode": "tsx server/scripts/runUnityTests.ts PlayMode",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "release:check": "npm run build && npm run check:catalog && tsx server/scripts/checkRelease.ts",
+    "release:pack": "npm pack --dry-run"
   },
   "engines": {
     "node": ">=20"
   },
   "license": "MIT",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "docs/generated/operation-catalog.json"
+  ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ws": "^8.21.3",

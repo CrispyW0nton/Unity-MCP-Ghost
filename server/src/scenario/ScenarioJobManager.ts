@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { UnityClient } from "../unity/UnityClient.js";
+import { PackageVersion } from "../version.js";
 
 export type ScenarioExpectedResult = "pass" | "compile-failure" | "assertion-failure" | "timeout" | "cancelled";
 
@@ -850,7 +851,7 @@ export class ScenarioJobManager {
       operationId: record.operationId,
       name: record.name,
       status: record.status,
-      packageVersion: "0.1.0",
+      packageVersion: PackageVersion,
       commit,
       unityVersion: stringValue(record.health?.unityVersion),
       projectId: record.projectId,

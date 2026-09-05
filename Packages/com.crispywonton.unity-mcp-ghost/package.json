@@ -1,15 +1,18 @@
 {
   "name": "com.crispywonton.unity-mcp-ghost",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.1",
   "displayName": "Unity MCP Ghost",
-  "description": "Editor bridge package for Unity MCP Ghost.",
-  "unity": "2021.3",
+  "description": "Authenticated, project-pinned Unity Editor bridge for deterministic MCP automation, validation, and evidence.",
+  "unity": "2022.3",
+  "documentationUrl": "https://github.com/CrispyW0nton/Unity-MCP-Ghost#readme",
+  "changelogUrl": "https://github.com/CrispyW0nton/Unity-MCP-Ghost/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/CrispyW0nton/Unity-MCP-Ghost/blob/main/LICENSE",
   "author": {
     "name": "CrispyW0nton"
   },
   "keywords": [
     "mcp",
-    "cursor",
+    "ai",
     "editor",
     "automation"
   ],

@@ -6,11 +6,38 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { WebSocketServer } from "ws";
 import { createMcpServer } from "../src/mcp/createServer.js";
 import { UnityClient } from "../src/unity/UnityClient.js";
 
 describe("MCP catalog and protocol conformance", () => {
+  it("negotiates both the current SDK client and the oldest supported MCP generation", async () => {
+    const server = createMcpServer({ unity: fakeUnity(), toolProfiles: ["core"] });
+    const [legacyTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const pending = new Map<number, (message: JSONRPCMessage) => void>();
+    legacyTransport.onmessage = (message) => {
+      const id = "id" in message && typeof message.id === "number" ? message.id : -1;
+      pending.get(id)?.(message);
+      pending.delete(id);
+    };
+    try {
+      await Promise.all([legacyTransport.start(), server.connect(serverTransport)]);
+      const initialized = await rawRequest(legacyTransport, pending, 1, "initialize", {
+        protocolVersion: "2024-10-07",
+        capabilities: {},
+        clientInfo: { name: "legacy-protocol-fixture", version: "1.0.0" }
+      });
+      assert.equal((initialized as { result: { protocolVersion: string } }).result.protocolVersion, "2024-10-07");
+      await legacyTransport.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      const listed = await rawRequest(legacyTransport, pending, 2, "tools/list", {});
+      assert.equal(((listed as { result: { tools: unknown[] } }).result.tools as unknown[]).length, 7);
+    } finally {
+      await legacyTransport.close();
+      await server.close();
+    }
+  });
+
   it("publishes a deterministic compact core profile with MCP-compatible schemas and valid examples", async () => {
     const first = await listTools(["core"]);
     const second = await listTools(["core"]);
@@ -217,4 +244,16 @@ async function reserveThenClosePort(): Promise<number> {
   if (!address || typeof address === "string") throw new Error("HTTP test server did not bind.");
   await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   return address.port;
+}
+
+async function rawRequest(
+  transport: InMemoryTransport,
+  pending: Map<number, (message: JSONRPCMessage) => void>,
+  id: number,
+  method: string,
+  params: Record<string, unknown>
+): Promise<JSONRPCMessage> {
+  const response = new Promise<JSONRPCMessage>((resolve) => pending.set(id, resolve));
+  await transport.send({ jsonrpc: "2.0", id, method, params } as JSONRPCMessage);
+  return response;
 }
