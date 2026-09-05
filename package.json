@@ -25,6 +25,8 @@
     "test:course": "tsx server/src/courseSmoke.ts --transport stdio --unity-project-path test-project --request-timeout-ms 60000",
     "test:course:live": "tsx server/scripts/runLiveCourse.ts",
     "test:protocol": "npm run check:catalog && node --import tsx --test server/test/protocol.test.ts",
+    "test:unity:concurrent": "tsx server/src/concurrentEditorsSmoke.ts",
+    "test:unity:concurrent:cancel": "tsx server/src/concurrentEditorsSmoke.ts --self-cancel-after-ready",
     "test:unity:editmode": "tsx server/scripts/runUnityTests.ts EditMode",
     "test:unity:playmode": "tsx server/scripts/runUnityTests.ts PlayMode",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -32,7 +34,7 @@
     "release:pack": "npm pack --dry-run"
   },
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
   },
   "license": "MIT",
   "files": [

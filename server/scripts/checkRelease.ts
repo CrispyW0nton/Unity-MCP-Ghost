@@ -2,6 +2,7 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { certifiedUnityVersion } from "../src/testing/unityEditor.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const packageRoot = resolve(root, "Packages/com.crispywonton.unity-mcp-ghost");
@@ -23,6 +24,7 @@ const rootPackage = JSON.parse(await readFile(resolve(root, "package.json"), "ut
 const upmPackage = JSON.parse(await readFile(resolve(packageRoot, "package.json"), "utf8")) as {
   version: string;
   unity: string;
+  unityRelease?: string;
   dependencies?: Record<string, string>;
 };
 const configSource = await readFile(resolve(packageRoot, "Editor/Bridge/UnityMcpGhostConfig.cs"), "utf8");
@@ -38,8 +40,11 @@ assertEqual(rootPackage.bin?.["unity-mcp-ghost"], "dist/index.js", "npm binary p
 assertEqual(upmPackage.version, rootPackage.version, "UPM/npm versions");
 assertEqual(readQuotedConstant(configSource, "Version"), rootPackage.version, "Unity bridge/npm versions");
 assertEqual(readQuotedConstant(serverVersionSource, "PackageVersion"), rootPackage.version, "TypeScript/npm versions");
-assertEqual(upmPackage.unity, "2022.3", "advertised Unity line");
-if (!projectVersion.includes("2022.3.62f1")) throw new Error("The repository test project must pin Unity 2022.3.62f1.");
+const certifiedVersion = /^(\d+\.\d+)\.(\d+[abfp]\d+)$/.exec(certifiedUnityVersion);
+if (!certifiedVersion) throw new Error(`Certified Unity version is malformed: ${certifiedUnityVersion}.`);
+assertEqual(upmPackage.unity, certifiedVersion[1], "advertised Unity line");
+assertEqual(upmPackage.unityRelease, certifiedVersion[2], "advertised Unity release");
+if (!projectVersion.includes(certifiedUnityVersion)) throw new Error(`The repository test project must pin Unity ${certifiedUnityVersion}.`);
 assertEqual(
   testManifest.dependencies?.["com.crispywonton.unity-mcp-ghost"],
   "file:../../Packages/com.crispywonton.unity-mcp-ghost",
@@ -58,7 +63,7 @@ const forbidden = packageFiles.filter((path) => /(^|[\\/])(Library|Logs|Temp|Use
 if (forbidden.length > 0) throw new Error(`UPM package contains generated Unity state: ${forbidden.join(", ")}`);
 
 process.stdout.write(
-  `Release layout is valid for ${rootPackage.version}: Unity 2022.3.62f1 fixture, ${catalog.operations.length} catalog operations, pinned Newtonsoft 3.2.1.\n`
+  `Release layout is valid for ${rootPackage.version}: Unity ${certifiedUnityVersion} fixture, ${catalog.operations.length} catalog operations, pinned Newtonsoft 3.2.1.\n`
 );
 
 function readQuotedConstant(source: string, name: string): string {

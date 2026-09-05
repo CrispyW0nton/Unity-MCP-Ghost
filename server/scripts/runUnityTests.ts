@@ -1,32 +1,28 @@
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
-import { platform } from "node:os";
+import { randomUUID } from "node:crypto";
+import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import { assertCertifiedUnityEditor, unityEditorPath, validateUnityTestResults } from "../src/testing/unityEditor.js";
 
 const requestedPlatform = process.argv[2] ?? "EditMode";
 if (requestedPlatform !== "EditMode" && requestedPlatform !== "PlayMode") {
   throw new Error(`Unsupported Unity test platform: ${requestedPlatform}`);
 }
 
-const editorPath =
-  process.env.UNITY_EDITOR_PATH ??
-  (platform() === "win32"
-    ? "C:\\Program Files\\Unity\\Hub\\Editor\\2022.3.62f1\\Editor\\Unity.exe"
-    : platform() === "darwin"
-      ? "/Applications/Unity/Hub/Editor/2022.3.62f1/Unity.app/Contents/MacOS/Unity"
-      : "/opt/unity/Editor/Unity");
+const editorPath = unityEditorPath();
 const projectPath = resolve("test-project");
 const logDirectory = resolve(projectPath, "Logs");
 const normalizedPlatform = requestedPlatform.toLowerCase();
-const resultPath = resolve(logDirectory, `${normalizedPlatform}-results.xml`);
+const resultPath = resolve(logDirectory, `${normalizedPlatform}-${randomUUID()}-results.xml`);
 const logPath = resolve(logDirectory, `unity-${normalizedPlatform}.log`);
 
 await mkdir(logDirectory, { recursive: true });
+await assertCertifiedUnityEditor(editorPath);
 
 const child = spawn(
   editorPath,
   ["-batchmode", "-nographics", "-projectPath", projectPath, "-runTests", "-testPlatform", requestedPlatform, "-testResults", resultPath, "-logFile", logPath],
-  { stdio: "inherit" }
+  { stdio: "inherit", windowsHide: true }
 );
 
 const exitCode = await new Promise<number>((resolveExit, reject) => {
@@ -38,4 +34,7 @@ if (exitCode !== 0) {
   throw new Error(`Unity ${requestedPlatform} tests failed with exit code ${exitCode}. See ${logPath}`);
 }
 
-console.log(`Unity ${requestedPlatform} tests passed. Results: ${resultPath}`);
+if ((await stat(resultPath)).size > 32 * 1024 * 1024) throw new Error("Unity test result exceeds the 32 MiB certification limit.");
+const counts = validateUnityTestResults(await readFile(resultPath, "utf8"));
+await copyFile(resultPath, resolve(logDirectory, `${normalizedPlatform}-results.xml`));
+console.log(`Unity ${requestedPlatform} tests passed (${counts.passed}/${counts.total}). Fresh results: ${resultPath}`);

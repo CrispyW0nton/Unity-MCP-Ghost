@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -208,7 +210,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             });
         }
 
-        public static void WriteIdentity(int port, int webSocketPort, bool running)
+        public static void WriteIdentity(int port, int webSocketPort, bool running, BridgeStartupFailure startupFailure = null)
         {
             var value = new JObject
             {
@@ -221,6 +223,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 ["host"] = UnityMcpGhostConfig.DefaultHost,
                 ["path"] = UnityMcpGhostConfig.WebSocketPath,
                 ["running"] = running,
+                ["startupFailure"] = !running && startupFailure != null ? startupFailure.ToJson() : JValue.CreateNull(),
                 ["heartbeatUtc"] = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
                 ["packageVersion"] = UnityMcpGhostConfig.Version,
                 ["unityVersion"] = Application.unityVersion,
@@ -551,6 +554,55 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 File.Delete(path);
                 File.Move(temporaryPath, path);
             }
+        }
+    }
+
+    internal sealed class BridgeStartupFailure
+    {
+        public string Code { get; private set; }
+        private string stage;
+        private string transport;
+        private int? port;
+        private string exceptionType;
+        private int? nativeErrorCode;
+        private string socketErrorCode;
+
+        public static BridgeStartupFailure FromException(Exception exception, string stage, string transport, int? port)
+        {
+            var socketException = exception as SocketException;
+            var httpException = exception as HttpListenerException;
+            // ERROR_ALREADY_EXISTS means an HTTP URL registration conflict. Other native
+            // errors (including access denied) are not proof that this endpoint is occupied.
+            var addressInUse = socketException != null && socketException.SocketErrorCode == SocketError.AddressAlreadyInUse
+                || transport == "http" && httpException != null && httpException.NativeErrorCode == 183;
+            var bindConflict = stage == "bind" && (transport == "http" || transport == "websocket")
+                && port >= 1024 && port <= 65535 && addressInUse;
+            return new BridgeStartupFailure
+            {
+                Code = bindConflict ? "BRIDGE_ENDPOINT_CONFLICT" : "BRIDGE_STARTUP_FAILED",
+                stage = stage,
+                transport = transport,
+                port = port,
+                exceptionType = exception.GetType().FullName,
+                nativeErrorCode = socketException != null ? (int?)socketException.NativeErrorCode : httpException?.NativeErrorCode,
+                socketErrorCode = socketException?.SocketErrorCode.ToString()
+            };
+        }
+
+        public JObject ToJson()
+        {
+            // Exception messages can contain user configuration or secrets; publish only
+            // the typed error and native code needed to classify the startup attempt.
+            return new JObject
+            {
+                ["code"] = Code,
+                ["stage"] = stage,
+                ["transport"] = transport,
+                ["port"] = port,
+                ["exceptionType"] = exceptionType,
+                ["nativeErrorCode"] = nativeErrorCode,
+                ["socketErrorCode"] = socketErrorCode
+            };
         }
     }
 

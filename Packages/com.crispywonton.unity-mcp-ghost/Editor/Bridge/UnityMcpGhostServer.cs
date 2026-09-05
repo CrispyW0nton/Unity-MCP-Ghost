@@ -25,6 +25,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         public bool IsRunning { get; private set; }
         public string LastError { get; private set; }
+        public BridgeStartupFailure StartupFailure { get; private set; }
         public string LastRequest { get; private set; }
         public int Port { get; private set; } = UnityMcpGhostConfig.DefaultPort;
         public int WebSocketPort { get; private set; }
@@ -48,8 +49,15 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 return true;
             }
 
+            var startupStage = "initialize";
+            string startupTransport = null;
+            int? startupPort = null;
+            StartupFailure = null;
+            Port = port;
             try
             {
+                var settings = BridgeSecurity.Settings;
+                WebSocketPort = settings.WebSocketPort;
                 if (port < 1024 || port > 65535)
                 {
                     throw new InvalidOperationException("Bridge port must be between 1024 and 65535.");
@@ -58,17 +66,24 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 cancellation = new CancellationTokenSource();
                 listener = new HttpListener();
                 listener.Prefixes.Add("http://127.0.0.1:" + port + UnityMcpGhostConfig.WebSocketPath + "/");
+                startupStage = "bind";
+                startupTransport = "http";
+                startupPort = Port;
                 listener.Start();
-                var settings = BridgeSecurity.Settings;
+                startupStage = "configure";
+                startupTransport = "websocket";
+                startupPort = WebSocketPort;
                 webSocketServer = new LoopbackWebSocketServer(
                     settings.WebSocketPort,
                     JsonRpcUtil.MaxRequestCharacters,
                     BridgeSecurity.AuthenticateBearer,
                     HandleWebSocketMessage,
                     RecordTransportError);
+                startupStage = "bind";
                 webSocketServer.Start();
-                Port = port;
-                WebSocketPort = settings.WebSocketPort;
+                startupStage = "publish";
+                startupTransport = null;
+                startupPort = null;
                 IsRunning = true;
                 LastError = string.Empty;
                 BridgeSecurity.WriteIdentity(Port, WebSocketPort, true);
@@ -77,7 +92,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
             catch (Exception exception)
             {
-                LastError = exception.Message;
+                StartupFailure = BridgeStartupFailure.FromException(exception, startupStage, startupTransport, startupPort);
+                LastError = StartupFailure.Code + ": " + startupStage + " failed (" + exception.GetType().Name + ").";
                 IsRunning = false;
                 listener?.Close();
                 listener = null;
@@ -85,7 +101,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 webSocketServer = null;
                 cancellation?.Cancel();
                 cancellation = null;
-                WriteIdentitySafely(port, 0, false);
+                WriteIdentitySafely(Port, WebSocketPort, false);
                 return false;
             }
         }
@@ -389,7 +405,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         {
             try
             {
-                BridgeSecurity.WriteIdentity(port, webSocketPort, running);
+                BridgeSecurity.WriteIdentity(port, webSocketPort, running, StartupFailure);
             }
             catch (Exception exception)
             {

@@ -4,6 +4,7 @@
   "displayName": "Unity MCP Ghost",
   "description": "Authenticated, project-pinned Unity Editor bridge for deterministic MCP automation, validation, and evidence.",
   "unity": "2022.3",
+  "unityRelease": "62f1",
   "documentationUrl": "https://github.com/CrispyW0nton/Unity-MCP-Ghost#readme",
   "changelogUrl": "https://github.com/CrispyW0nton/Unity-MCP-Ghost/blob/main/CHANGELOG.md",
   "licensesUrl": "https://github.com/CrispyW0nton/Unity-MCP-Ghost/blob/main/LICENSE",

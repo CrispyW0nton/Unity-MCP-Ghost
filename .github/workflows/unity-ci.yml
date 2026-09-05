@@ -46,6 +46,9 @@ jobs:
   live-course:
     name: Unity 2022.3.62f1 / live MCP course loop / Windows
     runs-on: [self-hosted, windows, unity-2022.3]
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v6
         with:
@@ -56,6 +59,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      - name: Prove two concurrent authenticated Editor connections
+        run: npm run test:unity:concurrent
+      - name: Prove concurrent Editor cleanup after cancellation
+        run: npm run test:unity:concurrent:cancel
       - name: Run authenticated live GAM 215-equivalent course loop
         run: npm run test:course:live
       - name: Upload live course evidence and Unity logs
@@ -64,6 +71,9 @@ jobs:
         with:
           name: unity-2022.3.62f1-live-course
           path: |
+            test-project/Logs/concurrent-editors-result.json
+            test-project/Logs/concurrent-editors-cancellation-result.json
+            test-project/Logs/concurrent-editors
             test-project/Library/UnityMcpGhost/evidence
             test-project/Logs/unity-live-course.log
           if-no-files-found: warn

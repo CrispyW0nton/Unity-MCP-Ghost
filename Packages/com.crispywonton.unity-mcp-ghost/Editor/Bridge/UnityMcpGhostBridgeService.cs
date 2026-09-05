@@ -47,7 +47,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 return;
             }
             nextHeartbeat = EditorApplication.timeSinceStartup + 5d;
-            if (UnityMcpGhostServer.Shared.IsRunning)
+            if (UnityMcpGhostServer.Shared.IsRunning || UnityMcpGhostServer.Shared.StartupFailure != null)
             {
                 UnityMcpGhostServer.Shared.Heartbeat();
             }
