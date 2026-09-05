@@ -85,10 +85,14 @@ Commits and verified gates:
   - Added a package-installed PlayMode assembly and current/oldest-supported MCP generation negotiation coverage.
   - Local Windows gates passed 87/87 Unity EditMode tests, 1/1 Unity PlayMode test, 7 focused protocol tests, release layout validation, package dry-run inspection, and a token-free generated client configuration.
   - GitHub-hosted matrix results are configured but not yet observed because this local task does not push; they are not counted as certified.
+- `5b0e8a0` — `docs(release): correct install, security, support, and course readiness`
+  - Added MIT licenses, root/UPM changelogs, a reproducible release checklist, secure install/profile guidance, migration and rollback steps, corrected root `dist/index.js` paths, and an explicit supported-version boundary.
+  - Preserved the qualification `GAM 215-equivalent fixture complete; real course-project certification pending` and documented the unavailable copyrighted-project gate without weakening local gates.
+  - Passed `npm run release:check` and `git diff --check` before commit.
 
 Next required slice:
 
-- Implement generated contracts, progressive discovery, output schemas, protocol/dependency/CI coverage, and release hardening for Workstream 7.
+- Run the complete fresh-install gate sequence, rerun live bridge/reload/course evidence, audit the final commit series, and record the handoff evidence and any genuinely unavailable external gates.
 
 ## Phase 1: Foundation
 
