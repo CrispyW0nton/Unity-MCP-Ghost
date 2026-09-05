@@ -80,6 +80,11 @@ Commits and verified gates:
   - Split the C# command registry registration table by domain and generated a direct bridge-operation parity list consumed by both Node protocol tests and Unity EditMode tests.
   - Added reproducible format, lint, catalog drift, protocol, and PlayMode scripts. Protocol coverage includes deterministic discovery, invalid cursors, resource URI parity, soft failures, and fragmented WebSocket responses.
   - Passed `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm run build`, 31 Node tests, 6 focused protocol tests, 87 Unity EditMode tests, `npm audit --audit-level=high` with zero vulnerabilities, and `git diff --check`.
+- `d05c727` — `chore(ci): test supported node and unity matrices`
+  - Versioned the candidate as `0.2.0-rc.1`, narrowed the UPM support claim to Unity 2022.3, added deterministic client/release validation scripts, and added Node 20/22/24 cross-platform plus Unity 2022.3.62f1 EditMode/PlayMode workflows.
+  - Added a package-installed PlayMode assembly and current/oldest-supported MCP generation negotiation coverage.
+  - Local Windows gates passed 87/87 Unity EditMode tests, 1/1 Unity PlayMode test, 7 focused protocol tests, release layout validation, package dry-run inspection, and a token-free generated client configuration.
+  - GitHub-hosted matrix results are configured but not yet observed because this local task does not push; they are not counted as certified.
 
 Next required slice:
 
