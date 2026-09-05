@@ -441,9 +441,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static void SaveLocked()
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(StatePath));
-            var temporary = StatePath + ".tmp";
-            File.WriteAllText(temporary, JsonConvert.SerializeObject(new PersistedState
+            AtomicStateFile.WriteAllText(StatePath, JsonConvert.SerializeObject(new PersistedState
             {
                 NextSequence = nextSequence,
                 Generation = generation,
@@ -451,11 +449,6 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 Entries = Entries,
                 Marks = Marks
             }));
-            if (File.Exists(StatePath))
-            {
-                File.Delete(StatePath);
-            }
-            File.Move(temporary, StatePath);
         }
 
         [Serializable]

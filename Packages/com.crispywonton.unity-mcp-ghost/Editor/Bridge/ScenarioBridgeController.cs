@@ -614,23 +614,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static void SaveTransaction(string transactionId, JObject value)
         {
-            Directory.CreateDirectory(TransactionRoot);
-            var path = TransactionPath(transactionId);
-            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            File.WriteAllText(temporary, value.ToString(Formatting.Indented), new UTF8Encoding(false));
-            if (File.Exists(path))
-            {
-                try
-                {
-                    File.Replace(temporary, path, null);
-                    return;
-                }
-                catch (IOException)
-                {
-                    File.Delete(path);
-                }
-            }
-            File.Move(temporary, path);
+            AtomicStateFile.WriteAllText(TransactionPath(transactionId), value.ToString(Formatting.Indented));
         }
 
         private static void DeleteTransaction(string transactionId)

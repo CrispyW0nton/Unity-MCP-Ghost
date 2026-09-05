@@ -21,6 +21,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
         [TearDown]
         public void TearDown()
         {
+            AtomicStateFile.ReplaceOverrideForTests = null;
             OperationStore.ClearForTests();
             if (Directory.Exists(directory))
             {
@@ -74,6 +75,28 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
 
             Assert.That(result["status"].Value<string>(), Is.EqualTo("outcomeUnknown"));
             Assert.That(result["state"]["error"]["code"].Value<string>(), Is.EqualTo("OPERATION_OUTCOME_UNKNOWN"));
+        }
+
+        [Test]
+        public void FailedStateReplacementPreservesLastDurableOperation()
+        {
+            OperationStore.Register("save-failure", "tests", "fixture", () => "{\"status\":\"running\"}");
+            var path = Directory.GetFiles(directory, "*.operation.json")[0];
+            var before = File.ReadAllBytes(path);
+            var injected = new IOException("injected operation save failure");
+            AtomicStateFile.ReplaceOverrideForTests = (source, destination) =>
+            {
+                if (destination == path) throw injected;
+                File.Replace(source, destination, null);
+            };
+
+            Assert.Throws<IOException>(() => OperationStore.Update("save-failure", "{\"status\":\"success\"}"));
+
+            Assert.That(File.ReadAllBytes(path), Is.EqualTo(before));
+            Assert.That(Directory.GetFiles(directory, "*.tmp"), Is.Empty);
+            AtomicStateFile.ReplaceOverrideForTests = null;
+            OperationStore.ClearLiveForTests();
+            Assert.That(JObject.Parse(OperationStore.Read("save-failure")).Value<string>("status"), Is.EqualTo("outcomeUnknown"));
         }
     }
 }

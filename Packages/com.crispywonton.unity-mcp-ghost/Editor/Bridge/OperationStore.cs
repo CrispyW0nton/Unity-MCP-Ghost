@@ -321,25 +321,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static void Save(OperationRecord record)
         {
-            var path = PathFor(record.OperationId);
-            var temporaryPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            File.WriteAllText(temporaryPath, JsonConvert.SerializeObject(record, Formatting.Indented), new UTF8Encoding(false));
-            if (File.Exists(path))
-            {
-                try
-                {
-                    File.Replace(temporaryPath, path, null);
-                }
-                catch (IOException)
-                {
-                    File.Delete(path);
-                    File.Move(temporaryPath, path);
-                }
-            }
-            else
-            {
-                File.Move(temporaryPath, path);
-            }
+            AtomicStateFile.WriteAllText(PathFor(record.OperationId), JsonConvert.SerializeObject(record, Formatting.Indented));
         }
 
         private static OperationRecord Load(string path)

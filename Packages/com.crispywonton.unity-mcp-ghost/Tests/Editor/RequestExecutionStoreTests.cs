@@ -25,6 +25,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
         [TearDown]
         public void TearDown()
         {
+            AtomicStateFile.ReplaceOverrideForTests = null;
             RequestExecutionStore.ResetForTests();
             if (Directory.Exists(directory))
             {
@@ -145,6 +146,31 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
 
             Assert.That(duplicate.Disposition, Is.EqualTo(RequestClaimDisposition.OutcomeUnknown));
             Assert.That(JObject.Parse(duplicate.ResponseJson)["error"]["data"]["outcomeUnknown"].Value<bool>(), Is.True);
+        }
+
+        [Test]
+        public void FailedCompletionStateWritePreservesClaimAndCommittedResultWithoutReplay()
+        {
+            var request = Request("script.write", "completion-write-failure", "{\"content\":\"one\"}");
+            var raw = Raw(request, request.RawJson);
+            RequestExecutionStore.Begin(request, raw, "owner-a");
+            var path = Directory.GetFiles(directory, "*.state.json").Single();
+            var before = File.ReadAllBytes(path);
+            var response = JsonRpcUtil.Success(request, "{\"ok\":true,\"mutationCount\":1}");
+            AtomicStateFile.ReplaceOverrideForTests = (source, destination) =>
+            {
+                if (destination == path) throw new IOException("injected request state save failure");
+                File.Replace(source, destination, null);
+            };
+
+            Assert.Throws<IOException>(() => RequestExecutionStore.Complete(request, "owner-a", response));
+
+            Assert.That(File.ReadAllBytes(path), Is.EqualTo(before));
+            Assert.That(Directory.GetFiles(directory, "*.tmp"), Is.Empty);
+            AtomicStateFile.ReplaceOverrideForTests = null;
+            var retry = RequestExecutionStore.Begin(request, raw, "owner-b");
+            Assert.That(retry.Disposition, Is.EqualTo(RequestClaimDisposition.Cached));
+            Assert.That(retry.ResponseJson, Is.EqualTo(response));
         }
 
         private static UnityMcpRequest Request(string method, string key, string parameters)

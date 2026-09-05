@@ -281,25 +281,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static void WriteAtomic(string path, string contents)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
-            var temporaryPath = path + "." + Guid.NewGuid().ToString("N").Substring(0, 8) + ".tmp";
-            File.WriteAllText(temporaryPath, contents ?? string.Empty, new UTF8Encoding(false));
-            if (File.Exists(path))
-            {
-                try
-                {
-                    File.Replace(temporaryPath, path, null);
-                }
-                catch (IOException)
-                {
-                    File.Delete(path);
-                    File.Move(temporaryPath, path);
-                }
-            }
-            else
-            {
-                File.Move(temporaryPath, path);
-            }
+            AtomicStateFile.WriteAllText(path, contents);
         }
 
         private static void DeleteIfExists(string path)

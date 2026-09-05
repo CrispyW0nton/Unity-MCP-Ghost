@@ -388,26 +388,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static void Save()
         {
-            var directory = Path.GetDirectoryName(StatePath);
-            Directory.CreateDirectory(directory);
-            var temporaryPath = StatePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            File.WriteAllText(temporaryPath, JsonConvert.SerializeObject(state, Formatting.Indented));
-            if (File.Exists(StatePath))
-            {
-                try
-                {
-                    File.Replace(temporaryPath, StatePath, null);
-                }
-                catch (IOException)
-                {
-                    File.Delete(StatePath);
-                    File.Move(temporaryPath, StatePath);
-                }
-            }
-            else
-            {
-                File.Move(temporaryPath, StatePath);
-            }
+            AtomicStateFile.WriteAllText(StatePath, JsonConvert.SerializeObject(state, Formatting.Indented));
         }
 
         [Serializable]
