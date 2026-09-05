@@ -89,6 +89,9 @@ Commits and verified gates:
   - Added MIT licenses, root/UPM changelogs, a reproducible release checklist, secure install/profile guidance, migration and rollback steps, corrected root `dist/index.js` paths, and an explicit supported-version boundary.
   - Preserved the qualification `GAM 215-equivalent fixture complete; real course-project certification pending` and documented the unavailable copyrighted-project gate without weakening local gates.
   - Passed `npm run release:check` and `git diff --check` before commit.
+- `1ab18f3` — `test(fixture): keep headless runtime validation active`
+  - Made the test project's recurring Unity Test Runner `runInBackground` setting explicit so Play/input validation does not depend on Game-view focus and repeatable EditMode/PlayMode runs leave the tracked fixture clean.
+  - Passed 87/87 Unity EditMode tests and 1/1 Unity PlayMode test on Unity `2022.3.62f1` for Windows.
 
 Next required slice:
 
