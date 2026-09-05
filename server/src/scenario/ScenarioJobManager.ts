@@ -163,6 +163,8 @@ export class ScenarioJobManager {
   private readonly evidenceRoot?: string;
   private readonly leasePath?: string;
   private readonly controllers = new Map<string, AbortController>();
+  private readonly finalizationFailures = new Map<string, ScenarioFailureShape>();
+  private readonly replaceFile = rename;
   private recovery: Promise<void> | undefined;
 
   public constructor(private readonly options: ScenarioJobManagerOptions) {
@@ -235,7 +237,7 @@ export class ScenarioJobManager {
   public async get(operationId: string): Promise<Record<string, unknown>> {
     this.requireAvailable();
     await this.ensureRecovered();
-    return this.envelope(await this.loadRequired(operationId));
+    return this.envelope(await this.visibleRecord(await this.loadRequired(operationId)));
   }
 
   public async list(limit = 50): Promise<Record<string, unknown>> {
@@ -246,14 +248,15 @@ export class ScenarioJobManager {
       .filter((record): record is ScenarioJobRecord => record !== undefined)
       .sort((left, right) => right.updatedUtc.localeCompare(left.updatedUtc))
       .slice(0, Math.max(1, Math.min(limit, 200)));
-    return { ok: true, operations: records.map((record) => this.summary(record)), count: records.length, truncated: files.length > records.length };
+    const visible = await Promise.all(records.map((record) => this.visibleRecord(record)));
+    return { ok: true, operations: visible.map((record) => this.summary(record)), count: records.length, truncated: files.length > records.length };
   }
 
   public async cancel(operationId: string): Promise<Record<string, unknown>> {
     this.requireAvailable();
     await this.ensureRecovered();
     const record = await this.loadRequired(operationId);
-    if (terminalStatuses.has(record.status)) return this.envelope(record);
+    if (terminalStatuses.has(record.status) || this.finalizationFailures.has(operationId)) return this.envelope(await this.visibleRecord(record));
     record.cancelRequested = true;
     record.status = "cancelling";
     record.phase = "cancellation-requested";
@@ -265,9 +268,16 @@ export class ScenarioJobManager {
   public async result(operationId: string): Promise<Record<string, unknown>> {
     this.requireAvailable();
     await this.ensureRecovered();
-    const record = await this.loadRequired(operationId);
+    const record = await this.visibleRecord(await this.loadRequired(operationId));
     if (!terminalStatuses.has(record.status)) {
-      return { ok: true, operationId, status: record.status, ready: false };
+      const persistenceFailed = record.phase === "finalization-failed";
+      return {
+        ok: !persistenceFailed,
+        operationId,
+        status: record.status,
+        ready: false,
+        ...(persistenceFailed ? { outcomeUnknown: true, error: record.failure } : {})
+      };
     }
     return {
       ok: record.status === "success",
@@ -289,7 +299,7 @@ export class ScenarioJobManager {
   public async createEvidence(operationId: string): Promise<Record<string, unknown>> {
     this.requireAvailable();
     await this.ensureRecovered();
-    const record = await this.loadRequired(operationId);
+    const record = await this.visibleRecord(await this.loadRequired(operationId));
     if (!terminalStatuses.has(record.status)) {
       throw new ScenarioFailure("SCENARIO_NOT_COMPLETE", "Evidence can only be finalized after the scenario reaches a terminal state.");
     }
@@ -307,7 +317,9 @@ export class ScenarioJobManager {
     this.requireAvailable();
     await this.ensureRecovered();
     if (!evidenceFiles.has(file)) throw new ScenarioFailure("EVIDENCE_FILE_NOT_FOUND", "The requested evidence file is not a public bundle document.");
-    const record = await this.loadRequired(operationId);
+    const record = await this.visibleRecord(await this.loadRequired(operationId));
+    if (!terminalStatuses.has(record.status))
+      throw new ScenarioFailure("SCENARIO_NOT_COMPLETE", "Evidence is available after scenario finalization completes.");
     const path = this.safeEvidencePath(record, file);
     const bytes = await readFile(path);
     const mimeType = file.endsWith(".md") ? "text/markdown" : "application/json";
@@ -346,12 +358,28 @@ export class ScenarioJobManager {
         latest.phase = "failed";
         latest.failure = failureShape(error);
         latest.completedUtc = new Date().toISOString();
+        latest.restorationRequired = record.restorationRequired;
+        latest.restorationComplete = record.restorationComplete;
         await this.writeEvidence(latest).catch(() => undefined);
-        await this.save(latest).catch(() => undefined);
+        try {
+          await this.save(latest);
+        } catch (persistenceError) {
+          const persistenceFailure = failureShape(persistenceError);
+          this.finalizationFailures.set(record.operationId, {
+            code: "SCENARIO_FINALIZATION_PERSIST_FAILED",
+            message: "Terminal scenario state could not be persisted; the project lease is retained for recovery.",
+            data: {
+              persistenceCode: redactSecrets(persistenceFailure.code),
+              persistenceMessage: redactSecrets(persistenceFailure.message),
+              originalFailureCode: redactSecrets(latest.failure.code)
+            }
+          });
+          return;
+        }
+        await this.releaseLease(record.operationId);
       })
       .finally(() => {
         this.controllers.delete(record.operationId);
-        void this.releaseLease(record.operationId);
       });
   }
 
@@ -425,8 +453,10 @@ export class ScenarioJobManager {
         };
       }
       record.completedUtc = new Date().toISOString();
+      // Keep ownership through durable completion; launch's catch finalizes failures.
       await this.writeEvidence(record);
       await this.save(record);
+      await this.releaseLease(record.operationId);
     }
   }
 
@@ -508,7 +538,7 @@ export class ScenarioJobManager {
       await this.setPlayMode("playing", this.remaining(deadline), signal);
       for (const input of definition.inputs ?? []) {
         this.checkCancellation(record, signal);
-        result.inputs.push(await this.simulateInput(input, signal, Math.min(input.timeoutMs ?? 5000, this.remaining(deadline))));
+        result.inputs.push(await this.simulateInput(input, signal, Math.min(input.timeoutMs ?? 15000, this.remaining(deadline))));
       }
       for (const assertion of definition.consoleAssertions ?? []) {
         const observed = await this.waitForConsole({ ...assertion, boundary: assertion.boundary ?? result.consoleBoundary }, signal, deadline);
@@ -694,10 +724,11 @@ export class ScenarioJobManager {
   }
 
   private async setPlayMode(state: "playing" | "paused" | "stopped", timeoutMs: number, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + timeoutMs;
     let initiated: Record<string, unknown> = {};
     let generation = 0;
     try {
-      initiated = await this.request("play_mode.set", { state, saveModifiedScenes: false }, signal, timeoutMs);
+      initiated = await this.request("play_mode.set", { state, saveModifiedScenes: false }, signal, this.remaining(deadline));
       if (initiated.ok === false) {
         if (!requiresDurableTransactionRecovery(initiated)) {
           throw new ScenarioFailure(errorCode(initiated, "PLAY_MODE_TRANSITION_FAILED"), errorMessage(initiated), initiated);
@@ -708,39 +739,54 @@ export class ScenarioJobManager {
     } catch (error) {
       if (!isAmbiguousExecutionCode(failureShape(error).code)) throw error;
     }
-    const started = Date.now();
     let last = initiated;
-    while (Date.now() - started < timeoutMs) {
+    while (Date.now() < deadline) {
       throwIfAborted(signal);
       try {
-        last = await this.request("play_mode.get", {}, signal, Math.min(5000, timeoutMs));
+        last = await this.request("play_mode.get", {}, signal, this.remaining(deadline, 5000));
       } catch (error) {
-        if (!isAmbiguousExecutionCode(failureShape(error).code)) throw error;
-        await delay(100, signal);
+        if (!isRetryableReadFailure(error)) throw error;
+        await delay(Math.max(0, Math.min(100, deadline - Date.now())), signal);
         continue;
       }
       if (last.ok === false) {
         if (!requiresDurableTransactionRecovery(last)) {
           throw new ScenarioFailure(errorCode(last, "PLAY_MODE_STATUS_FAILED"), errorMessage(last), last);
         }
-        await delay(100, signal);
+        await delay(Math.max(0, Math.min(100, deadline - Date.now())), signal);
         continue;
       }
       if (last.state === state && numberValue(last.transitionGeneration) >= generation) return last;
-      await delay(100, signal);
+      await delay(Math.max(0, Math.min(100, deadline - Date.now())), signal);
     }
     throw new ScenarioFailure("PLAY_MODE_TRANSITION_TIMEOUT", `Timed out waiting for Play mode state '${state}'.`, last);
   }
 
   private async simulateInput(input: ScenarioInput, signal: AbortSignal, timeoutMs: number): Promise<Record<string, unknown>> {
     const { timeoutMs: _ignored, ...request } = input;
-    const initiated = await this.request("input.simulate", request, signal, timeoutMs);
+    const deadline = Date.now() + timeoutMs;
+    let initiated: Record<string, unknown>;
+    for (;;) {
+      try {
+        initiated = await this.request("input.simulate", request, signal, this.remaining(deadline, 5000));
+        break;
+      } catch (error) {
+        if (!isKnownNonExecutionExpiry(error) || Date.now() >= deadline) throw error;
+        await delay(50, signal);
+      }
+    }
     if (initiated.ok === false) throw new ScenarioFailure(errorCode(initiated, "INPUT_SIMULATION_FAILED"), errorMessage(initiated), initiated);
     if (initiated.status !== "running") return initiated;
     const operationId = stringValue(initiated.operationId);
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-      const status = await this.request("input.status", { operationId }, signal, timeoutMs);
+    while (Date.now() < deadline) {
+      let status: Record<string, unknown>;
+      try {
+        status = await this.request("input.status", { operationId }, signal, this.remaining(deadline, 5000));
+      } catch (error) {
+        if (!isRetryableReadFailure(error)) throw error;
+        await delay(50, signal);
+        continue;
+      }
       if (status.status !== "running") {
         if (status.ok === false) throw new ScenarioFailure(errorCode(status, "INPUT_DELIVERY_NOT_VERIFIED"), errorMessage(status), status);
         return status;
@@ -771,19 +817,33 @@ export class ScenarioJobManager {
 
   private async waitForConsole(assertion: ScenarioConsoleAssertion, signal: AbortSignal, caseDeadline: number): Promise<Record<string, unknown>> {
     const timeoutMs = Math.min(assertion.timeoutMs ?? 30000, this.remaining(caseDeadline));
-    const started = Date.now();
+    const deadline = Date.now() + timeoutMs;
     const { timeoutMs: _ignored, ...query } = assertion;
     let last: Record<string, unknown> = {};
-    while (Date.now() - started < timeoutMs) {
-      last = await this.request("console.query", query, signal, Math.min(5000, timeoutMs));
+    let observed = false;
+    let lastReadFailure: ScenarioFailureShape | undefined;
+    while (Date.now() < deadline) {
+      try {
+        last = await this.request("console.query", query, signal, this.remaining(deadline, 5000));
+      } catch (error) {
+        if (!isRetryableReadFailure(error)) throw error;
+        lastReadFailure = failureShape(error);
+        await delay(50, signal);
+        continue;
+      }
       if (last.ok === false) throw new ScenarioFailure(errorCode(last, "CONSOLE_QUERY_FAILED"), errorMessage(last), last);
+      if (typeof last.matched !== "boolean") throw new ScenarioFailure("CONSOLE_QUERY_FAILED", "Unity returned no Console assertion observation.", last);
+      observed = true;
       if (last.matched === true) return last;
       if (arrayValue(last.unexpectedErrors).length > 0) {
         throw new ScenarioFailure("UNEXPECTED_CONSOLE_ERROR", "An unexpected Unity Console error appeared after the case boundary.", last);
       }
       await delay(100, signal);
     }
-    throw new ScenarioFailure("CONSOLE_WAIT_TIMEOUT", "Timed out waiting for the declared Console assertion.", last);
+    if (!observed) {
+      throw new ScenarioFailure("CONSOLE_OBSERVATION_UNAVAILABLE", "No Console assertion could be observed before its polling deadline.", { lastReadFailure });
+    }
+    throw new ScenarioFailure("CONSOLE_WAIT_TIMEOUT", "Timed out waiting for the declared Console assertion.", { ...last, lastReadFailure });
   }
 
   private async captureScreenshot(
@@ -954,7 +1014,9 @@ export class ScenarioJobManager {
       if (!record || terminalStatuses.has(record.status)) continue;
       await this.acquireLease(record.operationId);
       try {
-        await this.recoverInterruptedJob(record);
+        // The previous owner can finish between our initial read and lease acquisition.
+        const latest = await this.loadRequired(record.operationId);
+        if (!terminalStatuses.has(latest.status)) await this.recoverInterruptedJob(latest);
       } finally {
         await this.releaseLease(record.operationId);
       }
@@ -1041,12 +1103,32 @@ export class ScenarioJobManager {
   private remaining(deadline: number, fallback?: number): number {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new ScenarioFailure("SCENARIO_CASE_TIMEOUT", "Scenario case exceeded its declared timeout.");
-    return Math.max(100, fallback === undefined ? remaining : Math.min(remaining, fallback));
+    return Math.max(1, fallback === undefined ? remaining : Math.min(remaining, fallback));
+  }
+
+  private async visibleRecord(record: ScenarioJobRecord): Promise<ScenarioJobRecord> {
+    const persistenceFailure = this.finalizationFailures.get(record.operationId);
+    if (persistenceFailure) {
+      return { ...record, status: "running", phase: "finalization-failed", failure: persistenceFailure, restorationComplete: false, completedUtc: undefined };
+    }
+    if (!terminalStatuses.has(record.status)) return record;
+    const lease = objectValue(await readJson(this.leasePath!));
+    const ownerAlive = numberValue(lease.processId) === process.pid || processIsAlive(numberValue(lease.processId));
+    if (!this.controllers.has(record.operationId) && !(lease.operationId === record.operationId && ownerAlive)) return record;
+    // Only public reads use this projection. Internal finalization/recovery must never
+    // wait on the execution they are completing, or persist this temporary status.
+    return {
+      ...record,
+      status: record.status === "cancelled" ? "cancelling" : "running",
+      phase: "finalizing",
+      restorationComplete: false,
+      completedUtc: undefined
+    };
   }
 
   private summary(record: ScenarioJobRecord): Record<string, unknown> {
     return {
-      ok: record.status === "running" || record.status === "cancelling" || record.status === "success",
+      ok: record.phase !== "finalization-failed" && (record.status === "running" || record.status === "cancelling" || record.status === "success"),
       operationId: record.operationId,
       kind: record.kind,
       name: record.name,
@@ -1058,7 +1140,8 @@ export class ScenarioJobManager {
       restorationRequired: record.restorationRequired,
       restorationComplete: record.restorationComplete,
       updatedUtc: record.updatedUtc,
-      evidenceDirectory: record.evidenceDirectory
+      evidenceDirectory: record.evidenceDirectory,
+      ...(record.phase === "finalization-failed" ? { outcomeUnknown: true } : {})
     };
   }
 
@@ -1153,15 +1236,23 @@ export class ScenarioJobManager {
   private async atomicWrite(path: string, contents: string): Promise<void> {
     const temporary = `${path}.${randomUUID()}.tmp`;
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(temporary, contents, "utf8");
     try {
-      await rename(temporary, path);
-    } catch (error) {
-      await rm(path, { force: true });
-      await rename(temporary, path).catch(async (renameError) => {
-        await rm(temporary, { force: true });
-        throw renameError ?? error;
-      });
+      await writeFile(temporary, contents, "utf8");
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await this.replaceFile(temporary, path);
+          return;
+        } catch (error) {
+          if (attempt === 7 || !["EPERM", "EACCES", "EBUSY"].includes(stringValue(objectValue(error).code))) throw error;
+          // Windows readers/scanners may briefly deny replacement. Allow at most
+          // 1.95 seconds of backoff, retaining the readable old record throughout.
+          await delay(Math.min(50 * 2 ** attempt, 400));
+        }
+      }
+    } finally {
+      // A failed replacement must leave the previous durable record readable.
+      // Only this write's temporary file belongs to this cleanup.
+      await rm(temporary, { force: true }).catch(() => undefined);
     }
   }
 
@@ -1172,11 +1263,15 @@ export class ScenarioJobManager {
   }
 
   private async loadPath(path: string): Promise<ScenarioJobRecord | undefined> {
-    try {
-      return JSON.parse(await readFile(path, "utf8")) as ScenarioJobRecord;
-    } catch {
-      return undefined;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        return JSON.parse(await readFile(path, "utf8")) as ScenarioJobRecord;
+      } catch {
+        if (attempt === 5) return undefined;
+        await delay(10);
+      }
     }
+    return undefined;
   }
 
   private safeEvidenceDirectory(operationId: string): string {
@@ -1234,6 +1329,17 @@ function requiresDurableTransactionRecovery(value: Record<string, unknown>): boo
 function isAmbiguousExecutionCode(code: string): boolean {
   const normalized = code.toUpperCase();
   return normalized === "EXECUTING" || normalized === "OUTCOME_UNKNOWN" || normalized === "REQUEST_EXECUTION_IN_PROGRESS";
+}
+
+function isKnownNonExecutionExpiry(error: unknown): boolean {
+  const failure = failureShape(error);
+  const data = objectValue(failure.data);
+  return failure.code.toUpperCase() === "EXPIRED" && data.outcomeUnknown === false && stringValue(data.status).toLowerCase() === "expired";
+}
+
+function isRetryableReadFailure(error: unknown): boolean {
+  const code = failureShape(error).code.toUpperCase();
+  return code === "UNITY_REQUEST_TIMEOUT" || isAmbiguousExecutionCode(code) || isKnownNonExecutionExpiry(error);
 }
 
 function isErrorDiagnostic(value: unknown): boolean {
@@ -1306,9 +1412,117 @@ function ensureContained(candidate: string, root: string): string {
 }
 
 function redactSecrets(value: string): string {
-  return value
-    .replace(/(authorization\s*[:=]\s*)([^\s"']+)/gi, "$1[REDACTED]")
-    .replace(/((?:api[_-]?key|token|password|secret)\s*[:=]\s*["']?)([^\s"']+)/gi, "$1[REDACTED]");
+  const assignments = /([a-z_][a-z0-9_-]*)\s*([:=])\s*/gi;
+  let redacted = "";
+  let copiedThrough = 0;
+  for (let match = assignments.exec(value); match; match = assignments.exec(value)) {
+    const name = match[1];
+    if (!/(?:authorization|api[_-]?key|token|password|secret)$/i.test(name) && !/^(?:local)?(?:fullName|name|username|securityPin|pin)$/i.test(name)) continue;
+    const start = assignments.lastIndex;
+    const end = sensitiveAssignmentEnd(value, start, match[2] === ":");
+    redacted += value.slice(copiedThrough, start) + "[REDACTED]";
+    copiedThrough = end;
+    assignments.lastIndex = end;
+  }
+  return redacted + value.slice(copiedThrough);
+}
+
+// Scan the entire RHS so quoted semicolons, interpolation expressions, and string
+// concatenation cannot leave secret suffixes in receipts. Unknown/malformed syntax
+// consumes the remaining text: a partial diff is safer than a partially redacted secret.
+function sensitiveAssignmentEnd(value: string, start: number, lineValue: boolean): number {
+  const closers: string[] = [];
+  for (let index = start; index < value.length;) {
+    const character = value[index];
+    if (closers.length === 0 && (character === ";" || character === "," || (lineValue && /[\r\n]/.test(character)))) return index;
+    const literalEnd = csharpLiteralEnd(value, index);
+    if (literalEnd !== undefined) {
+      if (literalEnd < 0) return value.length;
+      index = literalEnd;
+      continue;
+    }
+    const commentEnd = csharpCommentEnd(value, index);
+    if (commentEnd !== undefined) {
+      if (commentEnd < 0) return value.length;
+      index = commentEnd;
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") closers.push(character === "(" ? ")" : character === "[" ? "]" : "}");
+    else if (character === ")" || character === "]" || character === "}") {
+      if (closers.pop() !== character) return value.length;
+    }
+    index++;
+  }
+  return value.length;
+}
+
+function csharpLiteralEnd(value: string, start: number, depth = 0): number | undefined {
+  let quoteAt = start;
+  while (value[quoteAt] === "@" || value[quoteAt] === "$") quoteAt++;
+  const quote = value[quoteAt];
+  if (quote !== '"' && quote !== "'") return quoteAt === start ? undefined : -1;
+  const prefix = value.slice(start, quoteAt);
+  if (depth > 64 || !["", "@", "$", "@$", "$@"].includes(prefix) || (quote === "'" && prefix)) return -1;
+  // Raw literals require different delimiter rules; fail closed for unsupported forms.
+  if (!prefix.includes("@") && quote === '"' && value.slice(quoteAt, quoteAt + 3) === '"""') return -1;
+  const verbatim = prefix.includes("@");
+  const interpolated = prefix.includes("$");
+  for (let index = quoteAt + 1; index < value.length; index++) {
+    const character = value[index];
+    if (!verbatim && character === "\\") {
+      index++;
+      continue;
+    }
+    if (character === quote) {
+      if (verbatim && value[index + 1] === quote) index++;
+      else return index + 1;
+    } else if (interpolated && character === "{") {
+      if (value[index + 1] === "{") index++;
+      else {
+        const end = csharpInterpolationEnd(value, index + 1, depth + 1);
+        if (end < 0) return -1;
+        index = end - 1;
+      }
+    } else if (interpolated && character === "}") {
+      if (value[index + 1] !== "}") return -1;
+      index++;
+    } else if (!verbatim && /[\r\n]/.test(character)) return -1;
+  }
+  return -1;
+}
+
+function csharpInterpolationEnd(value: string, start: number, depth: number): number {
+  let braces = 1;
+  for (let index = start; index < value.length;) {
+    const literalEnd = csharpLiteralEnd(value, index, depth);
+    if (literalEnd !== undefined) {
+      if (literalEnd < 0) return -1;
+      index = literalEnd;
+      continue;
+    }
+    const commentEnd = csharpCommentEnd(value, index);
+    if (commentEnd !== undefined) {
+      if (commentEnd < 0) return -1;
+      index = commentEnd;
+      continue;
+    }
+    if (value[index] === "{") braces++;
+    if (value[index] === "}" && --braces === 0) return index + 1;
+    index++;
+  }
+  return -1;
+}
+
+function csharpCommentEnd(value: string, start: number): number | undefined {
+  if (value.slice(start, start + 2) === "//") {
+    const end = value.indexOf("\n", start + 2);
+    return end < 0 ? value.length : end;
+  }
+  if (value.slice(start, start + 2) === "/*") {
+    const end = value.indexOf("*/", start + 2);
+    return end < 0 ? -1 : end + 2;
+  }
+  return undefined;
 }
 
 function redactDefinition(definition: ScenarioMatrixDefinition): unknown {

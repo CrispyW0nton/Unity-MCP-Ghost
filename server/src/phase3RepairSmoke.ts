@@ -2,6 +2,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { readConfig } from "./config.js";
+import { UnityClient } from "./unity/UnityClient.js";
+import { DefaultFixtureScript, repairSmokeScene, RepairSmokeState } from "./testing/repairSmokeState.js";
 
 interface SmokeStep {
   name: string;
@@ -11,7 +13,6 @@ interface SmokeStep {
   error?: string;
 }
 
-const DefaultFixtureScript = "Assets/GAM215Fixture/StudentExercise.cs";
 const ScratchScriptPath = "Assets/UnityMcpGhostScratch/GhostRepairScratch.cs";
 const ScratchFolderPath = "Assets/UnityMcpGhostScratch";
 const ScratchContent = `using UnityEngine;
@@ -57,9 +58,28 @@ async function main(): Promise<void> {
 
   const steps: SmokeStep[] = [];
   let failed = false;
+  const unity = new UnityClient({
+    host: config.unityHost,
+    port: config.unityPort,
+    webSocketPort: config.unityWebSocketPort,
+    queueDir: config.unityQueueDir,
+    requestTimeoutMs: config.requestTimeoutMs,
+    projectId: config.unityProjectId,
+    editorInstanceId: config.unityEditorInstanceId,
+    tokenFile: config.unityTokenFile
+  });
+  const editorState = new RepairSmokeState(unity, Math.max(config.requestTimeoutMs, 30000));
 
   try {
     await client.connect(transport);
+    await editorState.prepare(
+      flags.scenePath
+        ? async () => {
+            const result = await callTool(client, "scene_open", { path: flags.scenePath, mode: "single", dryRun: false });
+            steps.push({ name: "open repair fixture scene", ok: true, summary: summarize(result) });
+          }
+        : undefined
+    );
     await record(steps, "target script validation", () =>
       callTool(client, "script_validate", {
         path: flags.scriptPath,
@@ -116,7 +136,17 @@ async function main(): Promise<void> {
     failed = true;
     steps.push({ name: "phase3 repair smoke", ok: false, error: message(error) });
   } finally {
-    await client.close().catch(() => undefined);
+    try {
+      const restored = await editorState.restore();
+      if (restored) steps.push({ name: "restore original editor snapshot", ok: true, summary: summarizeBridgeResult(restored) });
+    } catch (error) {
+      failed = true;
+      steps.push({ name: "restore original editor snapshot", ok: false, error: message(error) });
+    } finally {
+      unity.dispose();
+      await client.close().catch(() => undefined);
+      await transport.close().catch(() => undefined);
+    }
   }
 
   if (steps.some((step) => !step.ok)) {
@@ -420,8 +450,19 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
-function readFlags(args: string[]): { allowMutation: boolean; scriptPath: string; screenshotBaselineFilter: string } {
+function summarizeBridgeResult(result: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ok: result.ok,
+    restored: result.restored,
+    playMode: asRecord(result.playMode).state,
+    projectId: result.projectId,
+    editorInstanceId: result.editorInstanceId
+  };
+}
+
+function readFlags(args: string[]): { allowMutation: boolean; scriptPath: string; scenePath?: string; screenshotBaselineFilter: string } {
   let scriptPath = DefaultFixtureScript;
+  let explicitScene: string | undefined;
   let allowMutation = false;
   let screenshotBaselineFilter = "";
 
@@ -434,12 +475,16 @@ function readFlags(args: string[]): { allowMutation: boolean; scriptPath: string
       scriptPath = args[index + 1];
     }
 
+    if (args[index] === "--scene-path" && args[index + 1]) {
+      explicitScene = args[index + 1];
+    }
+
     if (args[index] === "--screenshot-baseline-filter" && args[index + 1]) {
       screenshotBaselineFilter = args[index + 1];
     }
   }
 
-  return { allowMutation, scriptPath, screenshotBaselineFilter };
+  return { allowMutation, scriptPath, scenePath: repairSmokeScene(scriptPath, explicitScene), screenshotBaselineFilter };
 }
 
 function message(error: unknown): string {

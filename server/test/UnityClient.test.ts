@@ -6,6 +6,7 @@ import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import { WebSocketServer } from "ws";
 import { UnityClient, UnityRequestTimeoutError } from "../src/unity/UnityClient.js";
 
 describe("UnityClient durable request semantics", () => {
@@ -125,25 +126,131 @@ describe("UnityClient durable request semantics", () => {
     assert.equal(await client.isConnected(), false);
   });
 
+  it("disposes an owned fallback WebSocket and rejects pending and future requests", { timeout: 2000 }, async () => {
+    const http = createServer((_request, response) => response.writeHead(503).end());
+    const websocket = new WebSocketServer({ server: http });
+    const port = await listen(http);
+    const client = new UnityClient({ host: "127.0.0.1", port, requestTimeoutMs: 60000, ...secureOptions(tokenFile) });
+    try {
+      assert.equal(typeof client.dispose, "function");
+      let received!: () => void;
+      const observed = new Promise<void>((resolve) => {
+        received = resolve;
+      });
+      let closed!: Promise<void>;
+      websocket.on("connection", (socket) => {
+        closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+        socket.on("message", () => received());
+      });
+      const pending = assert.rejects(client.request("health"), /cancelled|disposed/i);
+      await observed;
+      client.dispose();
+      client.dispose();
+      await pending;
+      await closed;
+      assert.equal(websocket.clients.size, 0);
+      await assert.rejects(client.request("health"), /disposed/i);
+      assert.equal(await client.isConnected(), false);
+    } finally {
+      for (const socket of websocket.clients) socket.terminate();
+      await new Promise<void>((resolve) => websocket.close(() => resolve()));
+      await close(http);
+    }
+  });
+
+  it("disposes during HTTP work without opening a fallback connection", { timeout: 2000 }, async () => {
+    let observed!: () => void;
+    const started = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    const http = createServer(() => observed());
+    const websocket = new WebSocketServer({ server: http });
+    const port = await listen(http);
+    const client = new UnityClient({ host: "127.0.0.1", port, requestTimeoutMs: 60000, ...secureOptions(tokenFile) });
+    let connections = 0;
+    websocket.on("connection", () => {
+      connections += 1;
+    });
+    try {
+      assert.equal(typeof client.dispose, "function");
+      const pending = assert.rejects(client.request("health"), /cancelled|disposed/i);
+      await started;
+      client.dispose();
+      await pending;
+      assert.equal(connections, 0);
+      await assert.rejects(client.request("health"), /disposed/i);
+    } finally {
+      http.closeAllConnections();
+      for (const socket of websocket.clients) socket.terminate();
+      await new Promise<void>((resolve) => websocket.close(() => resolve()));
+      await close(http);
+    }
+  });
+
+  it("disposes a WebSocket while its opening handshake is pending", { timeout: 2000 }, async () => {
+    const sockets = new Set<import("node:net").Socket>();
+    let observed!: () => void;
+    const started = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
+    let closed!: Promise<void>;
+    const stalled = createTcpServer((socket) => {
+      sockets.add(socket);
+      closed = new Promise<void>((resolve) =>
+        socket.once("close", () => {
+          sockets.delete(socket);
+          resolve();
+        })
+      );
+      socket.once("data", () => observed());
+    });
+    const webSocketPort = await listenTcp(stalled);
+    const client = new UnityClient({ host: "127.0.0.1", port: await closedPort(), webSocketPort, requestTimeoutMs: 60000, ...secureOptions(tokenFile) });
+    try {
+      const pending = assert.rejects(client.request("health"), /cancelled|disposed/i);
+      await started;
+      client.dispose();
+      await pending;
+      await closed;
+      assert.equal(sockets.size, 0);
+    } finally {
+      client.dispose();
+      for (const socket of sockets) socket.destroy();
+      await closeTcp(stalled);
+    }
+  });
+
   it("removes an unclaimed queue item on timeout and reports a known non-execution", async () => {
     const queueDir = await mkdtemp(join(tmpdir(), "unity-mcp-client-"));
+    const client = new UnityClient({ host: "127.0.0.1", port: 1, queueDir, requestTimeoutMs: 1000, ...secureOptions(tokenFile) });
+    let rejection: Promise<void> | undefined;
     try {
-      const client = new UnityClient({ host: "127.0.0.1", port: 1, queueDir, requestTimeoutMs: 100, ...secureOptions(tokenFile) });
-      const rejection = assert.rejects(
-        client.request("script.write", { path: "Assets/Test.cs", content: "" }, { requestId: "queued-timeout" }),
-        (error: unknown) => {
-          assert.ok(error instanceof UnityRequestTimeoutError);
-          assert.equal(error.outcomeUnknown, false);
-          return true;
-        }
-      );
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      const pendingFiles = await readdir(join(queueDir, "pending"));
+      rejection = assert.rejects(client.request("script.write", { path: "Assets/Test.cs", content: "" }, { requestId: "queued-timeout" }), (error: unknown) => {
+        assert.ok(error instanceof UnityRequestTimeoutError);
+        assert.equal(error.outcomeUnknown, false);
+        return true;
+      });
+      let pendingFiles: string[] = [];
+      const deadline = Date.now() + 2000;
+      while (pendingFiles.length === 0 && Date.now() < deadline) {
+        pendingFiles = await readdir(join(queueDir, "pending")).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return [];
+          throw error;
+        });
+        pendingFiles = pendingFiles.filter((file) => file.endsWith(".json"));
+        if (pendingFiles.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
       assert.equal(pendingFiles.length, 1);
       assert.match(pendingFiles[0], /^[0-9a-f]{24}\.json$/);
       await rejection;
+      assert.deepEqual(await readdir(join(queueDir, "pending")), []);
     } finally {
-      await rm(queueDir, { recursive: true, force: true });
+      try {
+        await rejection;
+      } finally {
+        client.dispose();
+        await rm(queueDir, { recursive: true, force: true });
+      }
     }
   });
 });

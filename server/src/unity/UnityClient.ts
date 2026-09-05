@@ -47,6 +47,7 @@ export interface UnityRequestOptions {
 }
 
 export class UnityClient {
+  private readonly lifetime = new AbortController();
   private socket: WebSocket | undefined;
   private connecting: Promise<WebSocket> | undefined;
   private token: string | undefined;
@@ -60,6 +61,15 @@ export class UnityClient {
   >();
 
   public constructor(private readonly options: UnityClientOptions) {}
+
+  /** Ends this client's lifetime, cancelling outstanding work and closing its owned socket. */
+  public dispose(): void {
+    if (this.lifetime.signal.aborted) return;
+    this.lifetime.abort();
+    this.socket?.terminate();
+    this.socket = undefined;
+    this.rejectPending(new Error("Unity client has been disposed."));
+  }
 
   public get endpoint(): string {
     return `ws://${this.options.host}:${this.options.webSocketPort ?? this.options.port}/unity-mcp-ghost/`;
@@ -75,9 +85,11 @@ export class UnityClient {
 
   public async isConnected(): Promise<boolean> {
     try {
+      this.throwIfDisposed();
       const token = await this.readToken();
+      this.throwIfDisposed();
       const payload = createPayload("health", {}, randomUUID(), this.options.requestTimeoutMs, this.options.projectId, this.options.editorInstanceId, token);
-      await this.requestViaHttp("health", payload, this.options.requestTimeoutMs, token);
+      await this.requestViaHttp("health", payload, this.options.requestTimeoutMs, token, this.lifetime.signal);
       return true;
     } catch {
       return false;
@@ -85,33 +97,36 @@ export class UnityClient {
   }
 
   public async request<T = unknown>(method: string, params: unknown = {}, options: UnityRequestOptions = {}): Promise<T> {
+    this.throwIfDisposed();
+    const signal = options.signal ? AbortSignal.any([options.signal, this.lifetime.signal]) : this.lifetime.signal;
     const id = options.requestId ?? readRequestId(params) ?? randomUUID();
     const timeoutMs = options.timeoutMs ?? this.options.requestTimeoutMs;
     const token = await this.readToken();
+    this.throwIfDisposed();
     const payload = createPayload(method, params, id, timeoutMs, this.options.projectId, this.options.editorInstanceId, token, options.idempotencyKey);
 
     try {
       return withRequestMetadata(
-        await this.requestViaHttp<T>(method, payload, timeoutMs, token, options.signal),
+        await this.requestViaHttp<T>(method, payload, timeoutMs, token, signal),
         id,
         this.options.projectId,
         this.options.editorInstanceId
       );
     } catch (error) {
-      if (error instanceof UnityCommandError || error instanceof UnityRequestTimeoutError) {
+      if (this.lifetime.signal.aborted || error instanceof UnityCommandError || error instanceof UnityRequestTimeoutError) {
         throw annotateError(error, id, this.options.projectId, this.options.editorInstanceId);
       }
 
       try {
-        const socket = await this.connect(token, timeoutMs, options.signal);
+        const socket = await this.connect(token, timeoutMs, signal);
         return withRequestMetadata(
-          await this.requestViaSocket<T>(socket, payload, method, timeoutMs, options.signal),
+          await this.requestViaSocket<T>(socket, payload, method, timeoutMs, signal),
           id,
           this.options.projectId,
           this.options.editorInstanceId
         );
       } catch (socketError) {
-        if (socketError instanceof UnityCommandError || socketError instanceof UnityRequestTimeoutError) {
+        if (this.lifetime.signal.aborted || socketError instanceof UnityCommandError || socketError instanceof UnityRequestTimeoutError) {
           throw annotateError(socketError, id, this.options.projectId, this.options.editorInstanceId);
         }
         if (!this.options.queueDir) {
@@ -119,7 +134,7 @@ export class UnityClient {
         }
         try {
           return withRequestMetadata(
-            await this.requestViaQueue<T>(payload, method, timeoutMs, options.signal),
+            await this.requestViaQueue<T>(payload, method, timeoutMs, signal),
             id,
             this.options.projectId,
             this.options.editorInstanceId
@@ -129,6 +144,10 @@ export class UnityClient {
         }
       }
     }
+  }
+
+  private throwIfDisposed(): void {
+    if (this.lifetime.signal.aborted) throw Object.assign(new Error("Unity client has been disposed."), { code: "UNITY_CLIENT_DISPOSED" });
   }
 
   private async requestViaHttp<T>(method: string, payload: UnityRpcRequest, timeoutMs: number, token: string, signal?: AbortSignal): Promise<T> {
