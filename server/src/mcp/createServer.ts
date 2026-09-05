@@ -4,26 +4,22 @@ import { access } from "node:fs/promises";
 import { z } from "zod";
 import { ScenarioJobManager, type ScenarioMatrixDefinition } from "../scenario/ScenarioJobManager.js";
 import type { UnityClient } from "../unity/UnityClient.js";
-import { asObject, failureResponse, type GhostToolMeta, successResponse, type ToolDiagnostic } from "./toolResponse.js";
+import { listOperationCatalog, operationEnabled, recordOperation, searchOperationCatalog, type OperationProfile, type ToolSchema } from "./operationCatalog.js";
+import { asObject, failureResponse, GhostToolResponseSchema, type GhostToolMeta, successResponse, type ToolDiagnostic } from "./toolResponse.js";
 
 export interface ToolContext {
   unity: UnityClient;
   projectPath?: string;
   projectId?: string;
   editorInstanceId?: string;
+  toolProfiles?: OperationProfile[];
 }
 
-type ToolSchema = Record<string, z.ZodType>;
 type ToolHandler<TArgs> = (args: TArgs) => Promise<CallToolResult>;
-type ToolCatalogEntry = GhostToolMeta & {
-  name: string;
-  description: string;
-};
 
 const EmptySchema = {};
 const ParamsSchema = z.record(z.string(), z.unknown()).default({});
 const DryRunSchema = z.boolean().default(false);
-const RegisteredToolCatalog: ToolCatalogEntry[] = [];
 
 const TransformSchema = {
   instanceId: z.number().int(),
@@ -146,40 +142,44 @@ function registerTool<TSchema extends ToolSchema>(
   meta: GhostToolMeta,
   handler: ToolHandler<z.output<z.ZodObject<TSchema>>>
 ): void {
-  const existingIndex = RegisteredToolCatalog.findIndex((tool) => tool.name === name);
-  const catalogEntry = { name, description, ...meta };
-  if (existingIndex >= 0) {
-    RegisteredToolCatalog[existingIndex] = catalogEntry;
-  } else {
-    RegisteredToolCatalog.push(catalogEntry);
-  }
+  const catalogEntry = recordOperation(server, name, description, inputSchema, GhostToolResponseSchema, meta);
+  if (!operationEnabled(catalogEntry, contextProfiles(server))) return;
 
   server.registerTool(
     name,
     {
       description,
       inputSchema,
+      outputSchema: GhostToolResponseSchema,
       annotations: annotationsFor(meta),
       _meta: {
-        "unity-mcp-ghost/risk": meta.risk,
-        "unity-mcp-ghost/mutates": meta.mutates,
-        "unity-mcp-ghost/supportsDryRun": meta.supportsDryRun,
-        "unity-mcp-ghost/phase": meta.phase,
-        "unity-mcp-ghost/relatedResources": meta.relatedResources ?? [],
-        "unity-mcp-ghost/examples": meta.examples ?? []
+        "unity-mcp-ghost/operationId": catalogEntry.operationId,
+        "unity-mcp-ghost/catalogVersion": catalogEntry.version,
+        "unity-mcp-ghost/profile": catalogEntry.profile,
+        "unity-mcp-ghost/risk": catalogEntry.risk,
+        "unity-mcp-ghost/mutates": catalogEntry.mutates,
+        "unity-mcp-ghost/supportsDryRun": catalogEntry.supportsDryRun,
+        "unity-mcp-ghost/phase": catalogEntry.phase,
+        "unity-mcp-ghost/relatedResources": catalogEntry.relatedResources ?? [],
+        "unity-mcp-ghost/examples": catalogEntry.examples,
+        "unity-mcp-ghost/permissionClass": catalogEntry.permissionClass,
+        "unity-mcp-ghost/mainThread": catalogEntry.mainThread,
+        "unity-mcp-ghost/undoable": catalogEntry.undoable,
+        "unity-mcp-ghost/expectedDurationMs": catalogEntry.expectedDurationMs,
+        "unity-mcp-ghost/bridgeOperations": catalogEntry.bridgeOperations ?? []
       }
     },
     handler as never
   );
 }
 
-function registerJsonResource(
-  server: McpServer,
-  name: string,
-  uri: string,
-  description: string,
-  read: () => Promise<unknown> | unknown
-): void {
+const serverProfiles = new WeakMap<McpServer, OperationProfile[]>();
+
+function contextProfiles(server: McpServer): OperationProfile[] {
+  return serverProfiles.get(server) ?? ["all"];
+}
+
+function registerJsonResource(server: McpServer, name: string, uri: string, description: string, read: () => Promise<unknown> | unknown): void {
   server.registerResource(
     name,
     uri,
@@ -492,9 +492,7 @@ function screenshotPath(entry: Record<string, unknown> | null | undefined): stri
 }
 
 function screenshotLooksLikeBaseline(entry: Record<string, unknown>): boolean {
-  const haystack = [entry.label, entry.fileName, entry.path, entry.scenePath, entry.cameraName]
-    .map((value) => stringValue(value).toLowerCase())
-    .join(" ");
+  const haystack = [entry.label, entry.fileName, entry.path, entry.scenePath, entry.cameraName].map((value) => stringValue(value).toLowerCase()).join(" ");
   return haystack.includes("baseline");
 }
 
@@ -686,15 +684,14 @@ function firstComponentOfType(payload: Record<string, unknown>, typeName: string
 }
 
 function serializedPropertyPaths(payload: Record<string, unknown>): Set<string> {
-  return new Set(arrayValue(payload.properties).map((property) => stringValue(asObject(property).path)).filter(Boolean));
+  return new Set(
+    arrayValue(payload.properties)
+      .map((property) => stringValue(asObject(property).path))
+      .filter(Boolean)
+  );
 }
 
-async function ensureUnityComponent(
-  context: ToolContext,
-  instanceId: number,
-  typeName: string,
-  dryRun: boolean
-): Promise<ComponentSetupResult> {
+async function ensureUnityComponent(context: ToolContext, instanceId: number, typeName: string, dryRun: boolean): Promise<ComponentSetupResult> {
   const operations: Record<string, unknown>[] = [];
   const existing = asObject(
     await context.unity.request("component.get", {
@@ -1005,64 +1002,47 @@ function registerCoreResources(server: McpServer, context: ToolContext): void {
         "unity://visual/validation/latest",
         "unity://visual/validation/{filter}"
       ],
-      tools: RegisteredToolCatalog.map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        risk: tool.risk,
-        mutates: tool.mutates,
-        supportsDryRun: tool.supportsDryRun,
-        phase: tool.phase,
-        relatedResources: tool.relatedResources ?? []
-      }))
+      profiles: contextProfiles(server),
+      catalogVersion: 1,
+      tools: listOperationCatalog(server)
+        .filter((tool) => operationEnabled(tool, contextProfiles(server)))
+        .map((tool) => ({
+          operationId: tool.operationId,
+          name: tool.name,
+          description: tool.description,
+          profile: tool.profile,
+          risk: tool.risk,
+          mutates: tool.mutates,
+          supportsDryRun: tool.supportsDryRun,
+          phase: tool.phase,
+          relatedResources: tool.relatedResources ?? [],
+          examples: tool.examples
+        }))
     })
   );
 
-  registerJsonResource(
-    server,
-    "Unity Editor State",
-    "unity://editor/state",
-    "Read current Unity Editor state without invoking a mutating tool.",
-    () => readUnityResource(context, "editor.get_state")
+  registerJsonResource(server, "Unity Editor State", "unity://editor/state", "Read current Unity Editor state without invoking a mutating tool.", () =>
+    readUnityResource(context, "editor.get_state")
   );
 
-  registerJsonResource(
-    server,
-    "Unity Active Scene Hierarchy",
-    "unity://scenes/active",
-    "Read the active scene hierarchy as deterministic JSON.",
-    () => readUnityResource(context, "scene.get_hierarchy", { includeInactive: true, maxDepth: 32 })
+  registerJsonResource(server, "Unity Active Scene Hierarchy", "unity://scenes/active", "Read the active scene hierarchy as deterministic JSON.", () =>
+    readUnityResource(context, "scene.get_hierarchy", { includeInactive: true, maxDepth: 32 })
   );
 
-  registerJsonResource(
-    server,
-    "Unity Console Errors",
-    "unity://console/errors",
-    "Read recent Unity console errors for validation and repair workflows.",
-    () => readUnityResource(context, "console.get_logs", { severity: "error", limit: 200 })
+  registerJsonResource(server, "Unity Console Errors", "unity://console/errors", "Read recent Unity console errors for validation and repair workflows.", () =>
+    readUnityResource(context, "console.get_logs", { severity: "error", limit: 200 })
   );
 
-  registerJsonResource(
-    server,
-    "Unity Packages",
-    "unity://packages",
-    "Read Unity Package Manager packages through a short-polled operation.",
-    () => readUnityOperationResource(context, "package.list", { includeIndirect: true, includeOffline: true })
+  registerJsonResource(server, "Unity Packages", "unity://packages", "Read Unity Package Manager packages through a short-polled operation.", () =>
+    readUnityOperationResource(context, "package.list", { includeIndirect: true, includeOffline: true })
   );
 
-  registerJsonResource(
-    server,
-    "Unity Ghost Operations",
-    "unity://operations",
-    "List long-running Ghost operations tracked in the Unity editor session.",
-    () => readUnityResource(context, "operation.list")
+  registerJsonResource(server, "Unity Ghost Operations", "unity://operations", "List long-running Ghost operations tracked in the Unity editor session.", () =>
+    readUnityResource(context, "operation.list")
   );
 
-  registerJsonResourceTemplate(
-    server,
-    "Unity GameObject",
-    "unity://gameobject/{instanceId}",
-    "Read a GameObject by Unity instance id.",
-    (variables) => readUnityResource(context, "gameobject.get", { instanceId: Number.parseInt(firstVariable(variables.instanceId), 10) })
+  registerJsonResourceTemplate(server, "Unity GameObject", "unity://gameobject/{instanceId}", "Read a GameObject by Unity instance id.", (variables) =>
+    readUnityResource(context, "gameobject.get", { instanceId: Number.parseInt(firstVariable(variables.instanceId), 10) })
   );
 
   registerJsonResourceTemplate(
@@ -1085,12 +1065,8 @@ function registerCoreResources(server: McpServer, context: ToolContext): void {
     (variables) => readUnityResource(context, "asset.find", { query: decodeURIComponent(firstVariable(variables.filter)), limit: 100 })
   );
 
-  registerJsonResourceTemplate(
-    server,
-    "Unity Ghost Operation",
-    "unity://operation/{operationId}",
-    "Read a tracked Ghost operation status.",
-    (variables) => readUnityResource(context, "operation.get", { operationId: firstVariable(variables.operationId) })
+  registerJsonResourceTemplate(server, "Unity Ghost Operation", "unity://operation/{operationId}", "Read a tracked Ghost operation status.", (variables) =>
+    readUnityResource(context, "operation.get", { operationId: firstVariable(variables.operationId) })
   );
 
   registerJsonResourceTemplate(
@@ -1234,17 +1210,24 @@ function registerUnityRequestTool<TSchema extends ToolSchema>(
   method: string | ((args: z.output<z.ZodObject<TSchema>>) => string),
   params: (args: z.output<z.ZodObject<TSchema>>) => unknown = (args) => args
 ): void {
-  registerTool(server, name, description, inputSchema, meta, async (args) => {
-    const startedAt = Date.now();
-    const unityMethod = typeof method === "function" ? method(args) : method;
+  registerTool(
+    server,
+    name,
+    description,
+    inputSchema,
+    { ...meta, bridgeOperations: typeof method === "string" ? [method] : meta.bridgeOperations },
+    async (args) => {
+      const startedAt = Date.now();
+      const unityMethod = typeof method === "function" ? method(args) : method;
 
-    try {
-      const data = await context.unity.request(unityMethod, params(args));
-      return successResponse(`${name} completed.`, asObject(data), startedAt);
-    } catch (error) {
-      return failureResponse(`${name} failed`, error, startedAt);
+      try {
+        const data = await context.unity.request(unityMethod, params(args));
+        return successResponse(`${name} completed.`, asObject(data), startedAt);
+      } catch (error) {
+        return failureResponse(`${name} failed`, error, startedAt);
+      }
     }
-  });
+  );
 }
 
 export function createMcpServer(context: ToolContext): McpServer {
@@ -1252,6 +1235,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     name: "unity-mcp-ghost",
     version: "0.1.0"
   });
+  serverProfiles.set(server, context.toolProfiles ?? ["all"]);
   const scenarios = new ScenarioJobManager({
     unity: context.unity,
     projectPath: context.projectPath,
@@ -1352,7 +1336,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       severity: z.enum(["log", "warning", "error", "all"]).default("all"),
       limit: z.number().int().positive().max(1000).default(200)
     },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 1, relatedResources: ["unity://console/{level}"] },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 1, relatedResources: ["unity://console/errors"] },
     "console.get_logs"
   );
 
@@ -1635,7 +1619,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       severity: z.enum(["log", "warning", "error", "all"]).default("all"),
       limit: z.number().int().positive().max(1000).default(200)
     },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 1, relatedResources: ["unity://console/{level}"] },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 1, relatedResources: ["unity://console/errors"] },
     "console.get_logs"
   );
 
@@ -1740,7 +1724,13 @@ export function createMcpServer(context: ToolContext): McpServer {
       threshold: z.number().nonnegative().max(1).default(0.02),
       maxSamples: z.number().int().positive().max(200000).default(20000)
     },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://screenshots/baselines", "unity://screenshots/baselines/{filter}"] },
+    {
+      risk: "read",
+      mutates: false,
+      supportsDryRun: false,
+      phase: 3,
+      relatedResources: ["unity://screenshots/baselines", "unity://screenshots/baselines/{filter}"]
+    },
     "screenshot.diff"
   );
 
@@ -1754,7 +1744,13 @@ export function createMcpServer(context: ToolContext): McpServer {
       limit: z.number().int().positive().max(500).default(50),
       includeDimensions: z.boolean().default(true)
     },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://screenshots/baselines", "unity://screenshots/baselines/{filter}"] },
+    {
+      risk: "read",
+      mutates: false,
+      supportsDryRun: false,
+      phase: 3,
+      relatedResources: ["unity://screenshots/baselines", "unity://screenshots/baselines/{filter}"]
+    },
     "screenshot.baselines_list"
   );
 
@@ -1774,7 +1770,13 @@ export function createMcpServer(context: ToolContext): McpServer {
       protectedLabels: z.string().default(""),
       dryRun: z.boolean().default(true)
     },
-    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 3, relatedResources: ["unity://screenshots/baselines", "unity://screenshots/baselines/{filter}"] },
+    {
+      risk: "destructive",
+      mutates: true,
+      supportsDryRun: true,
+      phase: 3,
+      relatedResources: ["unity://screenshots/baselines", "unity://screenshots/baselines/{filter}"]
+    },
     "screenshot.baselines_cleanup"
   );
 
@@ -2127,7 +2129,7 @@ export function createMcpServer(context: ToolContext): McpServer {
       label: z.string().optional(),
       limit: z.number().int().positive().max(500).default(100)
     },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 2, relatedResources: ["unity://assets?filter=..."] },
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 2, relatedResources: ["unity://assets/{filter}"] },
     "asset.find"
   );
 
@@ -2211,8 +2213,14 @@ export function createMcpServer(context: ToolContext): McpServer {
     "unused_assets_find",
     "Find conservative unused Unity asset candidates by scanning serialized GUID references across the project.",
     {
-      extensions: z.string().default(".prefab,.unity,.asset,.controller,.overrideController,.mat,.anim,.playable,.renderTexture,.lighting,.shadergraph,.asmdef,.uxml,.uss"),
-      candidateExtensions: z.string().default(".prefab,.mat,.asset,.controller,.overrideController,.anim,.png,.jpg,.jpeg,.tga,.psd,.fbx,.obj,.wav,.mp3,.ogg,.shadergraph,.renderTexture,.uxml,.uss"),
+      extensions: z
+        .string()
+        .default(".prefab,.unity,.asset,.controller,.overrideController,.mat,.anim,.playable,.renderTexture,.lighting,.shadergraph,.asmdef,.uxml,.uss"),
+      candidateExtensions: z
+        .string()
+        .default(
+          ".prefab,.mat,.asset,.controller,.overrideController,.anim,.png,.jpg,.jpeg,.tga,.psd,.fbx,.obj,.wav,.mp3,.ogg,.shadergraph,.renderTexture,.uxml,.uss"
+        ),
       includeScripts: z.boolean().default(false),
       limit: z.number().int().positive().max(5000).default(500)
     },
@@ -2399,7 +2407,10 @@ export function createMcpServer(context: ToolContext): McpServer {
       namespace: z.string().optional(),
       content: z.string().optional(),
       overwrite: z.boolean().default(false),
-      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+      expectedSha256: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/i)
+        .optional(),
       dryRun: DryRunSchema
     },
     { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
@@ -2415,7 +2426,10 @@ export function createMcpServer(context: ToolContext): McpServer {
       path: z.string().min(1),
       content: z.string(),
       overwrite: z.boolean().default(true),
-      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+      expectedSha256: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/i)
+        .optional(),
       dryRun: DryRunSchema
     },
     { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
@@ -2430,7 +2444,10 @@ export function createMcpServer(context: ToolContext): McpServer {
     {
       path: z.string().min(1),
       edits: z.array(ScriptEditSchema).min(1),
-      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+      expectedSha256: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/i)
+        .optional(),
       dryRun: DryRunSchema
     },
     { risk: "code-write", mutates: true, supportsDryRun: true, phase: 2 },
@@ -2444,7 +2461,10 @@ export function createMcpServer(context: ToolContext): McpServer {
     "Move a Unity C# script asset to trash through AssetDatabase.",
     {
       path: z.string().min(1),
-      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+      expectedSha256: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/i)
+        .optional(),
       dryRun: DryRunSchema
     },
     { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2 },
@@ -2460,7 +2480,10 @@ export function createMcpServer(context: ToolContext): McpServer {
       path: z.string().min(1),
       backupPath: z.string().min(1),
       backupMetaPath: z.string().default(""),
-      expectedSha256: z.string().regex(/^[a-f0-9]{64}$/i).optional()
+      expectedSha256: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/i)
+        .optional()
     },
     { risk: "code-write", mutates: true, supportsDryRun: false, phase: 3 },
     "script.restore"
@@ -2703,14 +2726,18 @@ export function createMcpServer(context: ToolContext): McpServer {
           return successResponse("operation_result completed.", await scenarios.result(args.operationId), startedAt);
         }
         const operation = asObject(await context.unity.request("operation.get", args));
-        return successResponse("operation_result completed.", {
-          ok: operation.status === "success",
-          operationId: args.operationId,
-          status: operation.status,
-          ready: ["success", "failed", "timeout", "cancelled", "outcomeUnknown"].includes(stringValue(operation.status)),
-          result: operation.state ?? null,
-          error: asObject(operation.state).error ?? null
-        }, startedAt);
+        return successResponse(
+          "operation_result completed.",
+          {
+            ok: operation.status === "success",
+            operationId: args.operationId,
+            status: operation.status,
+            ready: ["success", "failed", "timeout", "cancelled", "outcomeUnknown"].includes(stringValue(operation.status)),
+            result: operation.state ?? null,
+            error: asObject(operation.state).error ?? null
+          },
+          startedAt
+        );
       } catch (error) {
         return failureResponse("operation_result failed", error, startedAt);
       }
@@ -2739,15 +2766,19 @@ export function createMcpServer(context: ToolContext): McpServer {
       phase: 5,
       idempotent: false,
       relatedResources: ["unity://evidence/{operationId}/{file}"],
-      examples: [{
-        name: "page navigation",
-        scenePath: "Assets/GAM215Fixture/RuntimeControlFixture.unity",
-        cases: [{
-          id: "page-up",
-          inputs: [{ device: "keyboard", action: "tap", key: "PageUp" }],
-          consoleAssertions: [{ severity: "log", exact: "GAM215_PAGE:1", count: 1 }]
-        }]
-      }]
+      examples: [
+        {
+          name: "page navigation",
+          scenePath: "Assets/GAM215Fixture/RuntimeControlFixture.unity",
+          cases: [
+            {
+              id: "page-up",
+              inputs: [{ device: "keyboard", action: "tap", key: "PageUp" }],
+              consoleAssertions: [{ severity: "log", exact: "GAM215_PAGE:1", count: 1 }]
+            }
+          ]
+        }
+      ]
     },
     async (args) => {
       const startedAt = Date.now();
@@ -2872,9 +2903,14 @@ export function createMcpServer(context: ToolContext): McpServer {
             proposals,
             dryRunPreviews,
             source: diagnosticSource,
-            nextActions: proposals.length > 0
-              ? ["Review proposal confidence and rationale.", "Apply only high-confidence proposals through script_apply_edits with dryRun=true first.", "Run compile_wait and script_validate after any accepted edit."]
-              : ["No diagnostics were available for patch proposal."]
+            nextActions:
+              proposals.length > 0
+                ? [
+                    "Review proposal confidence and rationale.",
+                    "Apply only high-confidence proposals through script_apply_edits with dryRun=true first.",
+                    "Run compile_wait and script_validate after any accepted edit."
+                  ]
+                : ["No diagnostics were available for patch proposal."]
           },
           startedAt,
           {
@@ -3124,7 +3160,13 @@ export function createMcpServer(context: ToolContext): McpServer {
       screenshotThreshold: z.number().nonnegative().max(1).default(0.02),
       screenshotWaitMs: z.number().int().positive().max(30000).default(5000)
     },
-    { risk: "test-execution", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://console/errors", "unity://tests/{mode}", "unity://semantic/index", "unity://screenshots/baselines"] },
+    {
+      risk: "test-execution",
+      mutates: false,
+      supportsDryRun: false,
+      phase: 3,
+      relatedResources: ["unity://console/errors", "unity://tests/{mode}", "unity://semantic/index", "unity://screenshots/baselines"]
+    },
     async (args) => {
       const startedAt = Date.now();
       try {
@@ -3553,7 +3595,10 @@ export function createMcpServer(context: ToolContext): McpServer {
             ok: false,
             error: {
               code: restored && restored.ok === false ? "REPAIR_ROLLBACK_FAILED" : "REPAIR_EXHAUSTED",
-              message: restored && restored.ok === false ? "Repair failed and original-source restoration was incomplete." : "No repair iteration passed all required checks."
+              message:
+                restored && restored.ok === false
+                  ? "Repair failed and original-source restoration was incomplete."
+                  : "No repair iteration passed all required checks."
             },
             objective: args.objective,
             scriptPath: args.scriptPath,
@@ -3710,6 +3755,67 @@ export function createMcpServer(context: ToolContext): McpServer {
     "batch.execute"
   );
 
+  registerTool(
+    server,
+    "capabilities_search",
+    "Search the versioned Ghost operation catalog with bounded pagination and field projection. This discovers disabled profiles but never bypasses their registration or risk gates.",
+    {
+      query: z.string().max(200).default(""),
+      profiles: z
+        .array(z.enum(["core", "authoring", "code", "runtime", "validation", "all"]))
+        .max(6)
+        .default(["all"]),
+      risk: z
+        .enum(["read", "safe-write", "asset-write", "code-write", "destructive", "external", "arbitrary-code", "build-system", "test-execution"])
+        .optional(),
+      mutates: z.boolean().optional(),
+      limit: z.number().int().positive().max(100).default(25),
+      cursor: z.string().max(100).optional(),
+      fields: z
+        .array(
+          z.enum([
+            "description",
+            "version",
+            "inputSchema",
+            "outputSchema",
+            "examples",
+            "risk",
+            "mutates",
+            "supportsDryRun",
+            "phase",
+            "relatedResources",
+            "destructive",
+            "idempotent",
+            "openWorld",
+            "permissionClass",
+            "mainThread",
+            "undoable",
+            "expectedDurationMs",
+            "bridgeOperations"
+          ])
+        )
+        .max(20)
+        .default(["description", "risk", "mutates", "supportsDryRun", "examples"])
+    },
+    {
+      risk: "read",
+      mutates: false,
+      supportsDryRun: false,
+      phase: 7,
+      relatedResources: ["unity://capabilities"],
+      examples: [{ query: "compile", profiles: ["validation"], limit: 10, fields: ["description", "inputSchema", "risk", "examples"] }]
+    },
+    async (args) => {
+      const startedAt = Date.now();
+      try {
+        const data = searchOperationCatalog(server, args);
+        return successResponse(`Found ${data.totalMatched} matching Ghost operations.`, data, startedAt, { projectId: context.projectId });
+      } catch (error) {
+        return failureResponse("Operation catalog search failed", error, startedAt, [], { projectId: context.projectId });
+      }
+    }
+  );
+
   registerCoreResources(server, context);
   server.registerResource(
     "scenario-evidence",
@@ -3752,5 +3858,5 @@ function isScenarioOperationId(operationId: string): boolean {
 }
 
 function variableString(value: string | string[] | undefined): string {
-  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
+  return Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
 }

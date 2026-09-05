@@ -24,6 +24,8 @@ async function main(): Promise<void> {
       "dist/index.js",
       "--transport",
       "stdio",
+      "--tool-profile",
+      "all",
       "--unity-project-path",
       config.unityProjectPath ?? "",
       "--request-timeout-ms",
@@ -53,12 +55,19 @@ async function main(): Promise<void> {
 
     await inputCase(client, checks, "PageUp", "GAM215_PAGE:1");
     await inputCase(client, checks, "PageDown", "GAM215_PAGE:0");
-    await expectedFailure(client, checks, "unsupported input is truthful", "input_simulate", {
-      device: "keyboard",
-      action: "tap",
-      key: "F12",
-      timeoutMs: 5000
-    }, "UNSUPPORTED_INPUT_BACKEND");
+    await expectedFailure(
+      client,
+      checks,
+      "unsupported input is truthful",
+      "input_simulate",
+      {
+        device: "keyboard",
+        action: "tap",
+        key: "F12",
+        timeoutMs: 5000
+      },
+      "UNSUPPORTED_INPUT_BACKEND"
+    );
     const pointerMark = await checkedCall(client, checks, "pointer boundary", "console_mark", { label: "before-pointer" });
     await checkedCall(client, checks, "pointer click delivery", "input_simulate", {
       device: "pointer",
@@ -141,7 +150,13 @@ async function inputCase(client: Client, checks: SmokeCheck[], key: "PageUp" | "
   });
 }
 
-async function checkedCall(client: Client, checks: SmokeCheck[], name: string, toolName: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function checkedCall(
+  client: Client,
+  checks: SmokeCheck[],
+  name: string,
+  toolName: string,
+  args: Record<string, unknown>
+): Promise<Record<string, unknown>> {
   try {
     const result = await client.callTool({ name: toolName, arguments: args });
     const envelope = (result.structuredContent ?? {}) as Record<string, unknown>;
@@ -199,6 +214,6 @@ function numberValue(value: unknown): number {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
   process.exitCode = 1;
 });

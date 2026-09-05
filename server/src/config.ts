@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { platform } from "node:os";
 import { join, resolve } from "node:path";
+import { parseOperationProfiles, type OperationProfile } from "./mcp/operationCatalog.js";
 
 export type TransportKind = "stdio";
 
@@ -16,6 +17,7 @@ export interface ServerConfig {
   unityEditorInstanceId: string;
   unityTokenFile: string;
   requestTimeoutMs: number;
+  toolProfiles: OperationProfile[];
 }
 
 interface BridgeIdentity {
@@ -40,13 +42,16 @@ export function readConfig(argv: string[]): ServerConfig {
 
   const projectInput = args.get("unity-project-path");
   const unityProjectPath = projectInput ? resolve(projectInput) : undefined;
-  const identityPath = args.get("unity-identity-file") ?? (unityProjectPath ? join(unityProjectPath, "Library", "UnityMcpGhost", "bridge-identity.json") : undefined);
+  const identityPath =
+    args.get("unity-identity-file") ?? (unityProjectPath ? join(unityProjectPath, "Library", "UnityMcpGhost", "bridge-identity.json") : undefined);
   const identity = identityPath ? readIdentity(identityPath) : undefined;
   const computedProjectId = unityProjectPath ? projectIdForPath(unityProjectPath) : undefined;
   const unityProjectId = args.get("unity-project-id") ?? readString(identity?.projectId) ?? computedProjectId;
   const unityEditorInstanceId = args.get("unity-editor-id") ?? readString(identity?.editorInstanceId);
   const unityTokenFile =
-    args.get("unity-token-file") ?? readString(identity?.tokenFile) ?? (unityProjectPath ? join(unityProjectPath, "Library", "UnityMcpGhost", "bridge-token.txt") : undefined);
+    args.get("unity-token-file") ??
+    readString(identity?.tokenFile) ??
+    (unityProjectPath ? join(unityProjectPath, "Library", "UnityMcpGhost", "bridge-token.txt") : undefined);
 
   if (!unityProjectId || !unityEditorInstanceId || !unityTokenFile) {
     throw new Error(
@@ -63,14 +68,9 @@ export function readConfig(argv: string[]): ServerConfig {
   const identityPort = typeof identity?.port === "number" && Number.isInteger(identity.port) ? identity.port : undefined;
   const identityWebSocketPort = typeof identity?.webSocketPort === "number" && Number.isInteger(identity.webSocketPort) ? identity.webSocketPort : undefined;
   const unityPort = parseInteger(args.get("unity-port"), identityPort ?? deterministicPort(unityProjectId), "unity-port", 1024, 65535);
-  const unityWebSocketPort = parseInteger(
-    args.get("unity-websocket-port"),
-    identityWebSocketPort ?? unityPort,
-    "unity-websocket-port",
-    1024,
-    65535
-  );
+  const unityWebSocketPort = parseInteger(args.get("unity-websocket-port"), identityWebSocketPort ?? unityPort, "unity-websocket-port", 1024, 65535);
   const requestTimeoutMs = parseInteger(args.get("request-timeout-ms"), 30000, "request-timeout-ms", 100, 3600000);
+  const toolProfiles = parseOperationProfiles(args.get("tool-profile"), ["core"]);
 
   return {
     transport,
@@ -82,7 +82,8 @@ export function readConfig(argv: string[]): ServerConfig {
     unityProjectId,
     unityEditorInstanceId,
     unityTokenFile,
-    requestTimeoutMs
+    requestTimeoutMs,
+    toolProfiles
   };
 }
 

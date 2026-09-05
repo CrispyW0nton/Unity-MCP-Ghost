@@ -1,0 +1,10 @@
+dist
+node_modules
+test-project/Library
+test-project/Logs
+test-project/Temp
+test-project/UserSettings
+Packages/**/Library
+Packages/**/Logs
+docs/unity-mcp-deep-audit-2026-09-04.md
+docs/development-prompt-course-ready-reliability.md

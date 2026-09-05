@@ -94,13 +94,7 @@ async function jsonErrorCheck(checks: Check[], name: string, expectedCode: strin
   checks.push({ name, ok: response.status === 200 && code === expectedCode, observed: { status: response.status, code } });
 }
 
-async function resultCheck(
-  checks: Check[],
-  name: string,
-  projectId: string,
-  editorInstanceId: string,
-  run: () => Promise<Response>
-): Promise<void> {
+async function resultCheck(checks: Check[], name: string, projectId: string, editorInstanceId: string, run: () => Promise<Response>): Promise<void> {
   const response = await run();
   const text = await response.text();
   let body: { result?: { ok?: unknown; projectId?: unknown; editorInstanceId?: unknown } } = {};
@@ -193,6 +187,6 @@ async function websocketOversizeCheck(checks: Check[], url: string, token: strin
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
   process.exitCode = 1;
 });

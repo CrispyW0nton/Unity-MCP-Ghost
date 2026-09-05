@@ -91,7 +91,12 @@ export class UnityClient {
     const payload = createPayload(method, params, id, timeoutMs, this.options.projectId, this.options.editorInstanceId, token, options.idempotencyKey);
 
     try {
-      return withRequestMetadata(await this.requestViaHttp<T>(method, payload, timeoutMs, token, options.signal), id, this.options.projectId, this.options.editorInstanceId);
+      return withRequestMetadata(
+        await this.requestViaHttp<T>(method, payload, timeoutMs, token, options.signal),
+        id,
+        this.options.projectId,
+        this.options.editorInstanceId
+      );
     } catch (error) {
       if (error instanceof UnityCommandError || error instanceof UnityRequestTimeoutError) {
         throw annotateError(error, id, this.options.projectId, this.options.editorInstanceId);
@@ -99,7 +104,12 @@ export class UnityClient {
 
       try {
         const socket = await this.connect(token);
-        return withRequestMetadata(await this.requestViaSocket<T>(socket, payload, method, timeoutMs, options.signal), id, this.options.projectId, this.options.editorInstanceId);
+        return withRequestMetadata(
+          await this.requestViaSocket<T>(socket, payload, method, timeoutMs, options.signal),
+          id,
+          this.options.projectId,
+          this.options.editorInstanceId
+        );
       } catch (socketError) {
         if (socketError instanceof UnityCommandError || socketError instanceof UnityRequestTimeoutError) {
           throw annotateError(socketError, id, this.options.projectId, this.options.editorInstanceId);
@@ -108,7 +118,12 @@ export class UnityClient {
           throw annotateError(socketError, id, this.options.projectId, this.options.editorInstanceId);
         }
         try {
-          return withRequestMetadata(await this.requestViaQueue<T>(payload, method, timeoutMs, options.signal), id, this.options.projectId, this.options.editorInstanceId);
+          return withRequestMetadata(
+            await this.requestViaQueue<T>(payload, method, timeoutMs, options.signal),
+            id,
+            this.options.projectId,
+            this.options.editorInstanceId
+          );
         } catch (queueError) {
           throw annotateError(queueError, id, this.options.projectId, this.options.editorInstanceId);
         }
@@ -138,7 +153,12 @@ export class UnityClient {
       });
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
-          throw new UnityCommandError(`Unity bridge authentication failed (${response.status}).`, response.status, { code: "UNITY_BRIDGE_AUTHENTICATION_FAILED" }, payload.id);
+          throw new UnityCommandError(
+            `Unity bridge authentication failed (${response.status}).`,
+            response.status,
+            { code: "UNITY_BRIDGE_AUTHENTICATION_FAILED" },
+            payload.id
+          );
         }
         throw new Error(`Unity HTTP bridge responded ${response.status}: ${method}`);
       }
@@ -399,7 +419,12 @@ function delay(durationMs: number): Promise<void> {
 export class UnityCommandError extends Error {
   public readonly code: string;
 
-  public constructor(message: string, public readonly rpcCode?: number, public readonly data?: unknown, public readonly requestId?: string) {
+  public constructor(
+    message: string,
+    public readonly rpcCode?: number,
+    public readonly data?: unknown,
+    public readonly requestId?: string
+  ) {
     super(message);
     this.name = "UnityCommandError";
     this.code = readErrorDataCode(data) ?? "UNITY_COMMAND_ERROR";

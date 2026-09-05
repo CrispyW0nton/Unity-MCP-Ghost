@@ -96,11 +96,7 @@ describe("tool response envelope", () => {
   });
 
   it("preserves the request id and warns when a timed-out mutation has an unknown outcome", () => {
-    const result = failureResponse(
-      "request failed",
-      new UnityRequestTimeoutError("timed out", "mutation-1", true),
-      Date.now()
-    );
+    const result = failureResponse("request failed", new UnityRequestTimeoutError("timed out", "mutation-1", true), Date.now());
 
     assert.equal(structured(result).requestId, "mutation-1");
     assert.equal((structured(result).error as { code: string }).code, "UNITY_REQUEST_TIMEOUT_OUTCOME_UNKNOWN");

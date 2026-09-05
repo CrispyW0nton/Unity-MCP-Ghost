@@ -10,6 +10,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx server/src/index.ts",
+    "format": "prettier --write \"server/**/*.ts\" \"*.json\" \"Packages/*/package.json\" \"*.{js,mjs}\"",
+    "format:check": "prettier --check \"server/**/*.ts\" \"*.json\" \"Packages/*/package.json\" \"*.{js,mjs}\"",
+    "generate:catalog": "tsx server/scripts/generateOperationCatalog.ts",
+    "check:catalog": "tsx server/scripts/generateOperationCatalog.ts --check",
+    "lint": "eslint server",
     "phase3:repair-smoke": "tsx server/src/phase3RepairSmoke.ts --transport stdio",
     "smoke": "tsx server/src/devSmoke.ts --transport stdio",
     "smoke:security": "tsx server/src/securitySmoke.ts --transport stdio",
@@ -17,7 +22,9 @@
     "smoke:scenario": "tsx server/src/scenarioSmoke.ts --transport stdio",
     "test": "node --import tsx --test \"server/test/**/*.test.ts\"",
     "test:course": "tsx server/src/courseSmoke.ts --transport stdio --unity-project-path test-project --request-timeout-ms 60000",
+    "test:protocol": "npm run check:catalog && node --import tsx --test server/test/protocol.test.ts",
     "test:unity:editmode": "tsx server/scripts/runUnityTests.ts EditMode",
+    "test:unity:playmode": "tsx server/scripts/runUnityTests.ts PlayMode",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {
@@ -30,9 +37,13 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^25.9.5",
     "@types/ws": "^8.18.1",
+    "eslint": "^10.10.0",
+    "prettier": "^3.9.6",
     "tsx": "^4.23.13",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.69.0"
   }
 }

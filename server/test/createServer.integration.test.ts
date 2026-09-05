@@ -66,11 +66,7 @@ describe("MCP result adaptation", () => {
       assert.equal((result.structuredContent as Record<string, unknown>).ok, true);
       assert.ok(observedRequests.length >= 2);
       assert.ok(observedRequests.every((request) => request.method === "compile.status_get"));
-      assert.ok(
-        observedRequests.every(
-          (request) => (request.params as { requestedCompileGeneration?: number }).requestedCompileGeneration === 7
-        )
-      );
+      assert.ok(observedRequests.every((request) => (request.params as { requestedCompileGeneration?: number }).requestedCompileGeneration === 7));
     } finally {
       await client.close();
       await server.close();

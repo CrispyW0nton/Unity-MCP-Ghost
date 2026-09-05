@@ -3,13 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { readConfig } from "./config.js";
-import {
-  buildModule1Matrix,
-  buildModule2Matrix,
-  cancellationCase,
-  CourseFixtureScene,
-  CourseFixtureScript
-} from "./course/courseMatrices.js";
+import { buildModule1Matrix, buildModule2Matrix, cancellationCase, CourseFixtureScene, CourseFixtureScript } from "./course/courseMatrices.js";
 import type { ScenarioMatrixDefinition } from "./scenario/ScenarioJobManager.js";
 
 interface ModuleReceipt {
@@ -36,6 +30,8 @@ async function main(): Promise<void> {
       "dist/index.js",
       "--transport",
       "stdio",
+      "--tool-profile",
+      "all",
       "--unity-project-path",
       config.unityProjectPath,
       "--request-timeout-ms",
@@ -62,12 +58,18 @@ async function main(): Promise<void> {
       receipts.push(await verifyModule(client, module, definition, completed, originalSha256, cancellationOperationId));
     }
 
-    process.stdout.write(`${JSON.stringify({
-      ok: true,
-      qualification: "GAM 215-equivalent fixture complete; real course-project certification pending",
-      unityProjectPath: config.unityProjectPath,
-      modules: receipts
-    }, null, 2)}\n`);
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ok: true,
+          qualification: "GAM 215-equivalent fixture complete; real course-project certification pending",
+          unityProjectPath: config.unityProjectPath,
+          modules: receipts
+        },
+        null,
+        2
+      )}\n`
+    );
   } finally {
     await client.close();
   }
@@ -80,12 +82,7 @@ async function runMatrix(client: Client, definition: ScenarioMatrixDefinition): 
   return waitForTerminal(client, operationId, 20 * 60 * 1000);
 }
 
-async function runCancellation(
-  client: Client,
-  moduleId: "m1" | "m2",
-  originalContent: string,
-  originalSha256: string
-): Promise<string> {
+async function runCancellation(client: Client, moduleId: "m1" | "m2", originalContent: string, originalSha256: string): Promise<string> {
   const definition: ScenarioMatrixDefinition = {
     name: `GAM 215-equivalent ${moduleId.toUpperCase()} cancellation restoration`,
     scenePath: CourseFixtureScene,
@@ -97,10 +94,15 @@ async function runCancellation(
   };
   const started = await successfulTool(client, "scenario_matrix_run", definition as unknown as Record<string, unknown>);
   const operationId = stringValue(started.operationId);
-  await waitForOperation(client, operationId, (state) => {
-    const apply = objectValue(objectValue(state.activeCase).sourceApply);
-    return apply.ok === true || arrayValue(apply.receipts).length > 0 || apply.recoveredAfterReload === true;
-  }, 180000);
+  await waitForOperation(
+    client,
+    operationId,
+    (state) => {
+      const apply = objectValue(objectValue(state.activeCase).sourceApply);
+      return apply.ok === true || arrayValue(apply.receipts).length > 0 || apply.recoveredAfterReload === true;
+    },
+    180000
+  );
   await successfulTool(client, "operation_cancel", { operationId });
   const terminal = await waitForTerminal(client, operationId, 180000);
   if (terminal.status !== "cancelled" || terminal.restorationComplete !== true) {
@@ -124,28 +126,35 @@ async function verifyModule(
   const failures = cases.filter((item) => item.status !== "passed");
   const incompleteRestorations = cases.filter((item) => objectValue(item.restoration).ok !== true);
   const source = await successfulTool(client, "script_read", { path: CourseFixtureScript });
-  if (terminal.status !== "success"
-    || terminal.restorationComplete !== true
-    || cases.length !== definition.cases.length
-    || failures.length > 0
-    || incompleteRestorations.length > 0
-    || source.sha256 !== originalSha256) {
+  if (
+    terminal.status !== "success" ||
+    terminal.restorationComplete !== true ||
+    cases.length !== definition.cases.length ||
+    failures.length > 0 ||
+    incompleteRestorations.length > 0 ||
+    source.sha256 !== originalSha256
+  ) {
     throw new Error(`${module} verification failed: ${JSON.stringify({ terminal, failures, incompleteRestorations, source })}`);
   }
 
   const bundle = await successfulTool(client, "evidence_bundle_create", { operationId });
-  const manifestPath = stringValue(arrayValue(bundle.files).map(objectValue).find((item) => item.name === "manifest.json")?.path);
+  const manifestPath = stringValue(
+    arrayValue(bundle.files)
+      .map(objectValue)
+      .find((item) => item.name === "manifest.json")?.path
+  );
   await access(manifestPath);
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
   if (manifest.status !== "success" || manifest.restorationComplete !== true) {
     throw new Error(`${module} evidence manifest does not prove successful restoration.`);
   }
 
-  const expectedScreenshots = definition.cases.filter((item) =>
-    (item.screenshotAssertions?.length ?? 0) > 0
-    && item.expectedResult !== "compile-failure"
-    && item.expectedResult !== "timeout"
-    && item.expectedResult !== "cancelled"
+  const expectedScreenshots = definition.cases.filter(
+    (item) =>
+      (item.screenshotAssertions?.length ?? 0) > 0 &&
+      item.expectedResult !== "compile-failure" &&
+      item.expectedResult !== "timeout" &&
+      item.expectedResult !== "cancelled"
   ).length;
   const screenshotCount = cases.reduce((count, item) => count + arrayValue(item.screenshots).length, 0);
   if (screenshotCount !== expectedScreenshots) {
@@ -167,19 +176,19 @@ async function verifyModule(
 
 async function waitForTerminal(client: Client, operationId: string, timeoutMs: number): Promise<Record<string, unknown>> {
   let terminal: Record<string, unknown> = {};
-  await waitForOperation(client, operationId, (state) => {
-    terminal = state;
-    return ["success", "failed", "cancelled", "outcomeUnknown"].includes(stringValue(state.status));
-  }, timeoutMs);
+  await waitForOperation(
+    client,
+    operationId,
+    (state) => {
+      terminal = state;
+      return ["success", "failed", "cancelled", "outcomeUnknown"].includes(stringValue(state.status));
+    },
+    timeoutMs
+  );
   return terminal;
 }
 
-async function waitForOperation(
-  client: Client,
-  operationId: string,
-  predicate: (state: Record<string, unknown>) => boolean,
-  timeoutMs: number
-): Promise<void> {
+async function waitForOperation(client: Client, operationId: string, predicate: (state: Record<string, unknown>) => boolean, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const state = await toolData(client, "operation_get", { operationId });
@@ -204,7 +213,7 @@ async function toolData(client: Client, name: string, args: Record<string, unkno
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function arrayValue(value: unknown): unknown[] {
@@ -216,6 +225,6 @@ function stringValue(value: unknown): string {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
   process.exitCode = 1;
 });

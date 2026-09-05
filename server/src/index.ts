@@ -21,7 +21,8 @@ async function main(): Promise<void> {
     unity,
     projectPath: config.unityProjectPath,
     projectId: config.unityProjectId,
-    editorInstanceId: config.unityEditorInstanceId
+    editorInstanceId: config.unityEditorInstanceId,
+    toolProfiles: config.toolProfiles
   });
 
   if (config.transport === "stdio") {
@@ -32,7 +33,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.stack ?? error.message : String(error);
+  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
   process.stderr.write(`${message}\n`);
   process.exitCode = 1;
 });

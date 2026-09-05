@@ -22,6 +22,8 @@ async function main(): Promise<void> {
       "dist/index.js",
       "--transport",
       "stdio",
+      "--tool-profile",
+      "all",
       "--unity-project-path",
       config.unityProjectPath ?? "",
       "--request-timeout-ms",
@@ -103,10 +105,12 @@ async function main(): Promise<void> {
     });
     await waitForOperation(client, cancelStarted, (state) => {
       const apply = objectValue(objectValue(state.activeCase).sourceApply);
-      return apply.ok === true
-        || arrayValue(apply.receipts).length > 0
-        || ["applied", "recovered"].includes(stringValue(apply.status))
-        || apply.recoveredAfterReload === true;
+      return (
+        apply.ok === true ||
+        arrayValue(apply.receipts).length > 0 ||
+        ["applied", "recovered"].includes(stringValue(apply.status)) ||
+        apply.recoveredAfterReload === true
+      );
     });
     await successfulTool(client, "operation_cancel", { operationId: cancelStarted });
     const cancelled = await waitForTerminal(client, cancelStarted);
@@ -161,14 +165,19 @@ async function verifyTerminal(
   const hashes = arrayValue(restoration.hashes).map(objectValue);
   const source = await successfulTool(client, "script_read", { path: FixtureScript });
   const bundle = await successfulTool(client, "evidence_bundle_create", { operationId });
-  const manifestPath = stringValue(arrayValue(bundle.files).map(objectValue).find((item) => item.name === "manifest.json")?.path);
+  const manifestPath = stringValue(
+    arrayValue(bundle.files)
+      .map(objectValue)
+      .find((item) => item.name === "manifest.json")?.path
+  );
   await access(manifestPath);
   const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
-  const ok = terminal.status === expectedStatus
-    && terminal.restorationComplete === true
-    && stringValue(source.sha256) === originalHash
-    && hashes.every((item) => item.matches === true)
-    && manifest.restorationComplete === true;
+  const ok =
+    terminal.status === expectedStatus &&
+    terminal.restorationComplete === true &&
+    stringValue(source.sha256) === originalHash &&
+    hashes.every((item) => item.matches === true) &&
+    manifest.restorationComplete === true;
   checks.push({
     name,
     ok,
@@ -194,11 +203,7 @@ async function waitForTerminal(client: Client, operationId: string): Promise<Rec
   return terminal;
 }
 
-async function waitForOperation(
-  client: Client,
-  operationId: string,
-  predicate: (state: Record<string, unknown>) => boolean
-): Promise<void> {
+async function waitForOperation(client: Client, operationId: string, predicate: (state: Record<string, unknown>) => boolean): Promise<void> {
   const deadline = Date.now() + 240000;
   while (Date.now() < deadline) {
     const state = await toolData(client, "operation_get", { operationId });
@@ -235,6 +240,6 @@ function stringValue(value: unknown): string {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
   process.exitCode = 1;
 });

@@ -63,16 +63,13 @@ describe("UnityClient durable request semantics", () => {
     const port = await listen(server);
     try {
       const client = new UnityClient({ host: "127.0.0.1", port, requestTimeoutMs: 30, ...secureOptions(tokenFile) });
-      await assert.rejects(
-        client.request("script.write", { path: "Assets/Test.cs", content: "" }, { requestId: "mutation-timeout" }),
-        (error: unknown) => {
-          assert.ok(error instanceof UnityRequestTimeoutError);
-          assert.equal(error.requestId, "mutation-timeout");
-          assert.equal(error.outcomeUnknown, true);
-          assert.equal(error.code, "UNITY_REQUEST_TIMEOUT_OUTCOME_UNKNOWN");
-          return true;
-        }
-      );
+      await assert.rejects(client.request("script.write", { path: "Assets/Test.cs", content: "" }, { requestId: "mutation-timeout" }), (error: unknown) => {
+        assert.ok(error instanceof UnityRequestTimeoutError);
+        assert.equal(error.requestId, "mutation-timeout");
+        assert.equal(error.outcomeUnknown, true);
+        assert.equal(error.code, "UNITY_REQUEST_TIMEOUT_OUTCOME_UNKNOWN");
+        return true;
+      });
     } finally {
       server.closeAllConnections();
       await close(server);

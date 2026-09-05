@@ -17,6 +17,7 @@ describe("secure Unity project configuration", () => {
       assert.equal(config.unityPort, 7123);
       assert.equal(config.unityWebSocketPort, 17123);
       assert.equal(config.unityQueueDir, join(project.path, "Library/UnityMcpGhost/queue"));
+      assert.deepEqual(config.toolProfiles, ["core"]);
     } finally {
       await rm(project.path, { recursive: true, force: true });
     }
@@ -33,6 +34,17 @@ describe("secure Unity project configuration", () => {
 
   it("rejects non-loopback bridge hosts", () => {
     assert.throws(() => readConfig(["--unity-host", "192.0.2.10"]), /Remote Unity bridge hosts are disabled/);
+  });
+
+  it("parses explicit opt-in operation profiles and rejects unknown profiles", async () => {
+    const project = await createProjectIdentity();
+    try {
+      assert.deepEqual(readConfig(["--unity-project-path", project.path, "--tool-profile", "runtime,validation"]).toolProfiles, ["runtime", "validation"]);
+      assert.deepEqual(readConfig(["--unity-project-path", project.path, "--tool-profile", "all,core"]).toolProfiles, ["all"]);
+      assert.throws(() => readConfig(["--unity-project-path", project.path, "--tool-profile", "unsafe"]), /unsupported values/i);
+    } finally {
+      await rm(project.path, { recursive: true, force: true });
+    }
   });
 });
 

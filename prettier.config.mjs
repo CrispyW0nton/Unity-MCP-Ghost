@@ -1,0 +1,4 @@
+export default {
+  printWidth: 160,
+  trailingComma: "none"
+};

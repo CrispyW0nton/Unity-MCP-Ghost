@@ -321,9 +321,7 @@ export class ScenarioJobManager {
     const record = await this.loadRequired(operationId);
     const path = this.safeEvidencePath(record, join(kind, file));
     const bytes = await readFile(path);
-    return kind === "screenshots"
-      ? { path, mimeType: "image/png", blob: bytes }
-      : { path, mimeType: "text/x-diff", text: bytes.toString("utf8") };
+    return kind === "screenshots" ? { path, mimeType: "image/png", blob: bytes } : { path, mimeType: "text/x-diff", text: bytes.toString("utf8") };
   }
 
   private launch(record: ScenarioJobRecord): void {
@@ -351,7 +349,9 @@ export class ScenarioJobManager {
       record.originalState = originalState;
       const dirtyScenes = arrayValue(originalState.dirtyScenes);
       if (dirtyScenes.length > 0) {
-        throw new ScenarioFailure("SCENARIO_DIRTY_SCENE_CONFLICT", "Scenario execution refuses to discard pre-existing modified scenes.", { scenes: dirtyScenes });
+        throw new ScenarioFailure("SCENARIO_DIRTY_SCENE_CONFLICT", "Scenario execution refuses to discard pre-existing modified scenes.", {
+          scenes: dirtyScenes
+        });
       }
       await this.save(record);
 
@@ -457,12 +457,7 @@ export class ScenarioJobManager {
         await this.save(record);
         let applied: Record<string, unknown>;
         try {
-          applied = await this.request(
-            "scenario.source_apply",
-            { transactionId, mutations: definition.sourceMutations },
-            undefined,
-            this.remaining(deadline)
-          );
+          applied = await this.request("scenario.source_apply", { transactionId, mutations: definition.sourceMutations }, undefined, this.remaining(deadline));
         } catch (error) {
           applied = await this.recoverAppliedTransaction(transactionId, Math.min(30000, this.remaining(deadline)), error);
         }
@@ -549,9 +544,11 @@ export class ScenarioJobManager {
           if (restored.ok === false) throw new ScenarioFailure("SCENARIO_RESTORE_FAILED", errorMessage(restored), restored);
           const generation = numberValue(restored.requestedCompileGeneration);
           const restorationCompile = await this.waitForCompile(generation, record.definition.compileTimeoutMs ?? 60000, undefined);
-          if (restorationCompile.ok === false) throw new ScenarioFailure("SCENARIO_RESTORE_COMPILE_FAILED", errorMessage(restorationCompile), restorationCompile);
+          if (restorationCompile.ok === false)
+            throw new ScenarioFailure("SCENARIO_RESTORE_COMPILE_FAILED", errorMessage(restorationCompile), restorationCompile);
           const hashes = await this.verifyRestoredHashes(applyReceipts);
-          if (!hashes.every((item) => item.matches)) throw new ScenarioFailure("SCENARIO_RESTORE_HASH_MISMATCH", "Source restoration was not byte-identical.", hashes);
+          if (!hashes.every((item) => item.matches))
+            throw new ScenarioFailure("SCENARIO_RESTORE_HASH_MISMATCH", "Source restoration was not byte-identical.", hashes);
           await this.request("scenario.source_complete", { transactionId, receipts: [...applyReceipts, ...restoreOutcomes] }, undefined, 10000);
           result.restoration = { ok: true, source: restored, compile: restorationCompile, hashes };
         } catch (error) {
@@ -784,7 +781,11 @@ export class ScenarioJobManager {
     const destination = this.safeEvidencePath(record, join("screenshots", fileName));
     await mkdir(dirname(destination), { recursive: true });
     await copyFile(sourcePath, destination);
-    const result: Record<string, unknown> = { capture, evidencePath: destination, evidenceUri: `unity://evidence/${record.operationId}/screenshots/${fileName}` };
+    const result: Record<string, unknown> = {
+      capture,
+      evidencePath: destination,
+      evidenceUri: `unity://evidence/${record.operationId}/screenshots/${fileName}`
+    };
     if (assertion.baselinePath) {
       const diff = await this.request(
         "screenshot.diff",
@@ -806,7 +807,9 @@ export class ScenarioJobManager {
     return result;
   }
 
-  private async verifyRestoredHashes(receipts: Record<string, unknown>[]): Promise<Array<{ path: string; expectedSha256: string; observedSha256: string; matches: boolean }>> {
+  private async verifyRestoredHashes(
+    receipts: Record<string, unknown>[]
+  ): Promise<Array<{ path: string; expectedSha256: string; observedSha256: string; matches: boolean }>> {
     const results = [];
     for (const receipt of receipts) {
       const path = stringValue(receipt.path);
@@ -867,16 +870,23 @@ export class ScenarioJobManager {
     const compiler = record.cases.map((item) => ({ caseId: item.id, compile: item.compile, restorationCompile: objectValue(item.restoration).compile }));
     const console = record.cases.map((item) => ({ caseId: item.id, boundary: item.consoleBoundary, assertions: item.consoleAssertions }));
     await this.atomicWrite(this.safeEvidencePath(record, "manifest.json"), JSON.stringify(manifest, null, 2));
-    await this.atomicWrite(this.safeEvidencePath(record, "scenario-results.json"), JSON.stringify({ ...record, definition: redactDefinition(record.definition) }, null, 2));
+    await this.atomicWrite(
+      this.safeEvidencePath(record, "scenario-results.json"),
+      JSON.stringify({ ...record, definition: redactDefinition(record.definition) }, null, 2)
+    );
     await this.atomicWrite(this.safeEvidencePath(record, "compiler.json"), JSON.stringify(compiler, null, 2));
     await this.atomicWrite(this.safeEvidencePath(record, "console.json"), JSON.stringify(console, null, 2));
-    const rows = record.cases.map((item) => `| ${item.id} | ${item.expectedResult} | ${item.observedResult ?? "-"} | ${item.status} | ${item.durationMs ?? "-"} |`);
+    const rows = record.cases.map(
+      (item) => `| ${item.id} | ${item.expectedResult} | ${item.observedResult ?? "-"} | ${item.status} | ${item.durationMs ?? "-"} |`
+    );
     const summary = `# ${record.name}\n\nStatus: **${record.status}**\n\nProject: \`${record.projectId}\`  \nUnity: \`${stringValue(record.health?.unityVersion) || "unknown"}\`  \nCommit: \`${commit}\`  \nRestoration complete: **${record.restorationComplete}**\n\n| Case | Expected | Observed | Result | Duration (ms) |\n|---|---|---|---|---:|\n${rows.join("\n")}\n`;
     await this.atomicWrite(this.safeEvidencePath(record, "summary.md"), summary);
   }
 
   private evidenceHandles(record: ScenarioJobRecord): Array<{ name: string; path: string; uri: string }> {
-    return [...evidenceFiles].sort().map((name) => ({ name, path: this.safeEvidencePath(record, name), uri: `unity://evidence/${record.operationId}/${name}` }));
+    return [...evidenceFiles]
+      .sort()
+      .map((name) => ({ name, path: this.safeEvidencePath(record, name), uri: `unity://evidence/${record.operationId}/${name}` }));
   }
 
   private async artifactHandles(record: ScenarioJobRecord): Promise<Array<{ name: string; path: string; uri: string }>> {
@@ -934,10 +944,12 @@ export class ScenarioJobManager {
         if (receipts.length === 0) receipts = arrayValue(restored.receipts).map(objectValue);
         if (restored.ok === false) throw new ScenarioFailure("SCENARIO_RECOVERY_RESTORE_FAILED", errorMessage(restored), restored);
         const restorationCompile = await this.waitForCompile(numberValue(restored.requestedCompileGeneration), record.definition.compileTimeoutMs ?? 60000);
-        if (restorationCompile.ok === false) throw new ScenarioFailure("SCENARIO_RECOVERY_COMPILE_FAILED", errorMessage(restorationCompile), restorationCompile);
+        if (restorationCompile.ok === false)
+          throw new ScenarioFailure("SCENARIO_RECOVERY_COMPILE_FAILED", errorMessage(restorationCompile), restorationCompile);
         const outcomes = arrayValue(restored.outcomes).map(objectValue);
         const hashes = await this.verifyRestoredHashes(receipts);
-        if (!hashes.every((item) => item.matches)) throw new ScenarioFailure("SCENARIO_RECOVERY_HASH_MISMATCH", "Interrupted scenario sources were not restored byte-identically.", hashes);
+        if (!hashes.every((item) => item.matches))
+          throw new ScenarioFailure("SCENARIO_RECOVERY_HASH_MISMATCH", "Interrupted scenario sources were not restored byte-identically.", hashes);
         await this.request("scenario.source_complete", { transactionId, receipts: [...receipts, ...outcomes] }, undefined, 10000);
         active.restoration = { ok: true, source: restored, compile: restorationCompile, hashes, recovered: true };
       }
@@ -1075,7 +1087,11 @@ export class ScenarioJobManager {
 }
 
 export class ScenarioFailure extends Error {
-  public constructor(public readonly code: string, message: string, public readonly data?: unknown) {
+  public constructor(
+    public readonly code: string,
+    message: string,
+    public readonly data?: unknown
+  ) {
     super(message);
   }
 }
@@ -1178,7 +1194,8 @@ function ensureContained(candidate: string, root: string): string {
   const normalizedRoot = resolve(root);
   const normalized = resolve(candidate);
   const relation = relative(normalizedRoot, normalized);
-  if (relation.startsWith("..") || isAbsolute(relation)) throw new ScenarioFailure("PATH_OUTSIDE_EVIDENCE_ROOT", "Resolved path escaped its fixed scenario directory.");
+  if (relation.startsWith("..") || isAbsolute(relation))
+    throw new ScenarioFailure("PATH_OUTSIDE_EVIDENCE_ROOT", "Resolved path escaped its fixed scenario directory.");
   return normalized;
 }
 
@@ -1223,7 +1240,12 @@ async function readGitCommit(projectPath: string): Promise<string> {
     const direct = await readFile(join(gitDirectory, reference), "utf8").catch(() => undefined);
     if (direct) return direct.trim();
     const packed = await readFile(join(gitDirectory, "packed-refs"), "utf8");
-    return packed.split(/\r?\n/).find((line) => line.endsWith(` ${reference}`))?.split(" ")[0] ?? "unknown";
+    return (
+      packed
+        .split(/\r?\n/)
+        .find((line) => line.endsWith(` ${reference}`))
+        ?.split(" ")[0] ?? "unknown"
+    );
   } catch {
     return "unknown";
   }

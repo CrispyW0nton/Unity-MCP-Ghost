@@ -1,7 +1,9 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 
-export type ToolRiskLevel = "read" | "safe-write" | "asset-write" | "code-write" | "destructive" | "external" | "arbitrary-code" | "build-system" | "test-execution";
+export type ToolRiskLevel =
+  "read" | "safe-write" | "asset-write" | "code-write" | "destructive" | "external" | "arbitrary-code" | "build-system" | "test-execution";
 
 export interface ToolDiagnostic {
   severity: "info" | "warning" | "error";
@@ -40,7 +42,39 @@ export interface GhostToolMeta {
   destructive?: boolean;
   idempotent?: boolean;
   openWorld?: boolean;
+  permissionClass?: string;
+  mainThread?: boolean;
+  undoable?: boolean;
+  expectedDurationMs?: { minimum: number; maximum: number };
+  bridgeOperations?: string[];
 }
+
+export const GhostToolResponseSchema = {
+  ok: z.boolean(),
+  data: z.unknown().nullable(),
+  error: z
+    .object({
+      code: z.string(),
+      message: z.string(),
+      data: z.unknown().optional()
+    })
+    .nullable(),
+  diagnostics: z.array(
+    z.object({
+      severity: z.enum(["info", "warning", "error"]),
+      message: z.string(),
+      code: z.string().optional(),
+      data: z.unknown().optional()
+    })
+  ),
+  requestId: z.string(),
+  operationId: z.string().nullable(),
+  projectId: z.string().nullable(),
+  confidence: z.number().min(0).max(1),
+  undoGroupId: z.number().int().nullable(),
+  durationMs: z.number().nonnegative(),
+  warnings: z.array(z.string())
+};
 
 export function successResponse<TData>(
   text: string,
@@ -120,7 +154,8 @@ export function failureResponse(
     confidence: 0,
     undoGroupId: null,
     durationMs: Date.now() - startedAt,
-    warnings: options.warnings ?? (outcomeUnknown ? ["The request may have mutated Unity after the caller stopped waiting; retry only with the same request ID."] : [])
+    warnings:
+      options.warnings ?? (outcomeUnknown ? ["The request may have mutated Unity after the caller stopped waiting; retry only with the same request ID."] : [])
   };
 
   return {

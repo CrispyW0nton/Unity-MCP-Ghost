@@ -1,9 +1,4 @@
-import type {
-  ScenarioCaseDefinition,
-  ScenarioConsoleAssertion,
-  ScenarioMatrixDefinition,
-  ScenarioObjectAssertion
-} from "../scenario/ScenarioJobManager.js";
+import type { ScenarioCaseDefinition, ScenarioConsoleAssertion, ScenarioMatrixDefinition, ScenarioObjectAssertion } from "../scenario/ScenarioJobManager.js";
 
 export const CourseFixtureScene = "Assets/GAM215Fixture/RuntimeControlFixture.unity";
 export const CourseFixtureScript = "Assets/GAM215Fixture/StudentExercise.cs";
@@ -116,7 +111,9 @@ export function buildModule1Matrix(originalContent: string, originalSha256: stri
       expectedMarvinLog: "MARVIN|Write|Module1|Float Range Inferred|true|true",
       objectAssertions: harnessEquals("VisibleText", "true")
     }),
-    compileFailure("m1-syntax-malformed-comment", `using UnityEngine;
+    compileFailure(
+      "m1-syntax-malformed-comment",
+      `using UnityEngine;
 public sealed class StudentExercise : MonoBehaviour
 {
     private void Start()
@@ -124,26 +121,52 @@ public sealed class StudentExercise : MonoBehaviour
         /* unterminated clean-room comment
     }
 }
-`, originalSha256),
-    compileFailure("m1-syntax-malformed-brace", `using UnityEngine;
+`,
+      originalSha256
+    ),
+    compileFailure(
+      "m1-syntax-malformed-brace",
+      `using UnityEngine;
 public sealed class StudentExercise : MonoBehaviour
 {
     private void Start()
     {
         print("brace");
-`, originalSha256),
+`,
+      originalSha256
+    ),
     compileFailure("m1-syntax-malformed-quote", studentSource(`print("unterminated);`), originalSha256),
-    compileFailure("m1-syntax-missing-semicolon", studentSource(`int localValue = 1
-        print(localValue);`), originalSha256),
+    compileFailure(
+      "m1-syntax-missing-semicolon",
+      studentSource(`int localValue = 1
+        print(localValue);`),
+      originalSha256
+    ),
     compileFailure("m1-identifier-undeclared", studentSource(`localScore = 1;`), originalSha256),
-    compileFailure("m1-identifier-unassigned", studentSource(`int localScore;
-        print(localScore);`), originalSha256),
-    compileFailure("m1-identifier-redeclared", studentSource(`int localScore = 1;
-        int localScore = 2;`), originalSha256),
-    compileFailure("m1-identifier-use-before-declaration", studentSource(`print(localScore);
-        int localScore = 1;`), originalSha256),
-    compileFailure("m1-identifier-case-mismatch", studentSource(`int localScore = 1;
-        print(localscore);`), originalSha256),
+    compileFailure(
+      "m1-identifier-unassigned",
+      studentSource(`int localScore;
+        print(localScore);`),
+      originalSha256
+    ),
+    compileFailure(
+      "m1-identifier-redeclared",
+      studentSource(`int localScore = 1;
+        int localScore = 2;`),
+      originalSha256
+    ),
+    compileFailure(
+      "m1-identifier-use-before-declaration",
+      studentSource(`print(localScore);
+        int localScore = 1;`),
+      originalSha256
+    ),
+    compileFailure(
+      "m1-identifier-case-mismatch",
+      studentSource(`int localScore = 1;
+        print(localscore);`),
+      originalSha256
+    ),
     runtime({
       id: "m1-lifecycle-missing-start",
       methodName: "Begin",
@@ -164,18 +187,48 @@ public sealed class StudentExercise : MonoBehaviour
       consoleAssertions: [exactLog("COURSE|m1-lifecycle-wrong-case-start", 0)],
       objectAssertions: harnessEquals("LastAction", "Write")
     }),
-    semanticFailure(runtime, "m1-semantic-quoted-variable", `int localScore = 7;
-        Marvin.Write("Score", "localScore");`, "VisibleText", "7"),
-    semanticFailure(runtime, "m1-semantic-wrong-variable", `int localScore = 7;
+    semanticFailure(
+      runtime,
+      "m1-semantic-quoted-variable",
+      `int localScore = 7;
+        Marvin.Write("Score", "localScore");`,
+      "VisibleText",
+      "7"
+    ),
+    semanticFailure(
+      runtime,
+      "m1-semantic-wrong-variable",
+      `int localScore = 7;
         int localOtherScore = 9;
-        Marvin.Write("Score", localOtherScore);`, "VisibleText", "7"),
-    semanticFailure(runtime, "m1-semantic-wrong-type", `int localScore = 7;
+        Marvin.Write("Score", localOtherScore);`,
+      "VisibleText",
+      "7"
+    ),
+    semanticFailure(
+      runtime,
+      "m1-semantic-wrong-type",
+      `int localScore = 7;
         string localWrongValue = "seven";
-        Marvin.Write("Score", localWrongValue);`, "VisibleText", "7"),
-    semanticFailure(runtime, "m1-semantic-wrong-marvin-argument-order", `string localQuote = "Stay curious";
-        Marvin.Write(localQuote, "Favorite Quote");`, "Target", "Favorite Quote"),
-    semanticFailure(runtime, "m1-semantic-wrong-label-value", `int localScore = 7;
-        Marvin.Write("Wrong Label", localScore + 1);`, "Target", "Score"),
+        Marvin.Write("Score", localWrongValue);`,
+      "VisibleText",
+      "7"
+    ),
+    semanticFailure(
+      runtime,
+      "m1-semantic-wrong-marvin-argument-order",
+      `string localQuote = "Stay curious";
+        Marvin.Write(localQuote, "Favorite Quote");`,
+      "Target",
+      "Favorite Quote"
+    ),
+    semanticFailure(
+      runtime,
+      "m1-semantic-wrong-label-value",
+      `int localScore = 7;
+        Marvin.Write("Wrong Label", localScore + 1);`,
+      "Target",
+      "Score"
+    ),
     runtime({
       id: "m1-timeout-restoration",
       body: `Marvin.Write("Timeout", "source must restore");`,
@@ -196,14 +249,16 @@ export function buildModule2Matrix(originalContent: string, originalSha256: stri
   for (const target of ["Candle", "Key", "Raft", "Ladder"]) {
     for (const visible of [false, true]) {
       const value = visible ? "true" : "false";
-      cases.push(runtime({
-        id: `m2-boolean-${target.toLowerCase()}-${value}`,
-        body: `bool localVisible = ${value};
+      cases.push(
+        runtime({
+          id: `m2-boolean-${target.toLowerCase()}-${value}`,
+          body: `bool localVisible = ${value};
         Marvin.Play("Inventory");
         Marvin.ShowOrHide("Inventory", "${target}", localVisible);`,
-        expectedMarvinLog: `MARVIN|ShowOrHide|Inventory|${target}|${value}|${value}`,
-        objectAssertions: [...harnessEquals("Target", target), ...harnessEquals("Visible", visible)]
-      }));
+          expectedMarvinLog: `MARVIN|ShowOrHide|Inventory|${target}|${value}|${value}`,
+          objectAssertions: [...harnessEquals("Target", target), ...harnessEquals("Visible", visible)]
+        })
+      );
     }
   }
 
@@ -227,9 +282,10 @@ export function buildModule2Matrix(originalContent: string, originalSha256: stri
     }
   }
 
-  cases.push(runtime({
-    id: "m2-return-stops-later-scene",
-    body: `bool localGameOver = true;
+  cases.push(
+    runtime({
+      id: "m2-return-stops-later-scene",
+      body: `bool localGameOver = true;
         Marvin.Play("Current Scene");
         print("M2|RETURN|before");
         if (localGameOver)
@@ -239,10 +295,11 @@ export function buildModule2Matrix(originalContent: string, originalSha256: stri
         }
         Marvin.Play("Later Scene");
         print("M2|RETURN|after");`,
-    consoleAssertions: [exactLog("M2|RETURN|before"), exactLog("M2|RETURN|after", 0)],
-    expectedMarvinLog: "MARVIN|Draw|Current Scene|Outcome|Game Over|true",
-    objectAssertions: [...harnessEquals("CurrentScene", "Current Scene"), ...harnessEquals("VisibleText", "Game Over")]
-  }));
+      consoleAssertions: [exactLog("M2|RETURN|before"), exactLog("M2|RETURN|after", 0)],
+      expectedMarvinLog: "MARVIN|Draw|Current Scene|Outcome|Game Over|true",
+      objectAssertions: [...harnessEquals("CurrentScene", "Current Scene"), ...harnessEquals("VisibleText", "Game Over")]
+    })
+  );
 
   cases.push(
     comparisonCase(runtime, "eq", "==", 'string localLeft = "alpha";', 'string localRight = "alpha";', "Equal"),
@@ -255,9 +312,10 @@ export function buildModule2Matrix(originalContent: string, originalSha256: stri
     ...orderedComparisonCases(runtime, "gte", ">=", "int", [9, 10, 11], 10)
   );
 
-  cases.push(runtime({
-    id: "m2-assignment-operator-flow",
-    body: `float localMoney = 0.0f;
+  cases.push(
+    runtime({
+      id: "m2-assignment-operator-flow",
+      body: `float localMoney = 0.0f;
         float localWallet = 20.0f;
         localMoney = localWallet;
         print("M2|ASSIGN|=|" + localMoney);
@@ -274,18 +332,19 @@ export function buildModule2Matrix(originalContent: string, originalSha256: stri
         localMoney /= 3;
         print("M2|ASSIGN|/=|" + localMoney);
         Marvin.Write("Casino", "Money", localMoney);`,
-    consoleAssertions: [
-      exactLog("M2|ASSIGN|=|20"),
-      exactLog("M2|ASSIGN|++|21"),
-      exactLog("M2|ASSIGN|--|20"),
-      exactLog("M2|ASSIGN|+=|105"),
-      exactLog("M2|ASSIGN|-=|100"),
-      exactLog("M2|ASSIGN|*=|900"),
-      exactLog("M2|ASSIGN|/=|300")
-    ],
-    expectedMarvinLog: "MARVIN|Write|Casino|Money|300|true",
-    objectAssertions: harnessEquals("VisibleText", "300")
-  }));
+      consoleAssertions: [
+        exactLog("M2|ASSIGN|=|20"),
+        exactLog("M2|ASSIGN|++|21"),
+        exactLog("M2|ASSIGN|--|20"),
+        exactLog("M2|ASSIGN|+=|105"),
+        exactLog("M2|ASSIGN|-=|100"),
+        exactLog("M2|ASSIGN|*=|900"),
+        exactLog("M2|ASSIGN|/=|300")
+      ],
+      expectedMarvinLog: "MARVIN|Write|Casino|Money|300|true",
+      objectAssertions: harnessEquals("VisibleText", "300")
+    })
+  );
 
   cases.push(
     wiringCase(runtime, "m2-wiring-both-false-conceals-defect", false, false, "pass"),
@@ -293,26 +352,33 @@ export function buildModule2Matrix(originalContent: string, originalSha256: stri
     wiringCase(runtime, "m2-wiring-isolated-change-exposes-defect", true, false, "assertion-failure")
   );
 
-  cases.push(runtime({
-    id: "m2-page-up-page-down-navigation",
-    body: `Marvin.Play("Navigation");`,
-    consoleAssertions: [exactLog("GAM215_PAGE:1"), exactLog("GAM215_PAGE:0")],
-    expectedMarvinLog: "MARVIN|Play|Navigation||Navigation|true",
-    objectAssertions: [
-      ...harnessEquals("CurrentScene", "Navigation"),
-      { name: "GAM215 Runtime Driver", component: "Gam215InputDriver", propertyPath: "PageIndex", equals: 0 }
-    ],
-    inputs: [{ device: "keyboard", action: "tap", key: "PageUp" }, { device: "keyboard", action: "tap", key: "PageDown" }]
-  }));
+  cases.push(
+    runtime({
+      id: "m2-page-up-page-down-navigation",
+      body: `Marvin.Play("Navigation");`,
+      consoleAssertions: [exactLog("GAM215_PAGE:1"), exactLog("GAM215_PAGE:0")],
+      expectedMarvinLog: "MARVIN|Play|Navigation||Navigation|true",
+      objectAssertions: [
+        ...harnessEquals("CurrentScene", "Navigation"),
+        { name: "GAM215 Runtime Driver", component: "Gam215InputDriver", propertyPath: "PageIndex", equals: 0 }
+      ],
+      inputs: [
+        { device: "keyboard", action: "tap", key: "PageUp" },
+        { device: "keyboard", action: "tap", key: "PageDown" }
+      ]
+    })
+  );
 
-  cases.push(runtime({
-    id: "m2-timeout-restoration",
-    body: `Marvin.Play("Timeout");`,
-    expectedResult: "timeout",
-    expectedFailureCode: "CONSOLE_WAIT_TIMEOUT",
-    consoleAssertions: [exactLog("M2|THIS_LOG_DOES_NOT_EXIST", 1, 300)],
-    objectAssertions: harnessEquals("CurrentScene", "Timeout")
-  }));
+  cases.push(
+    runtime({
+      id: "m2-timeout-restoration",
+      body: `Marvin.Play("Timeout");`,
+      expectedResult: "timeout",
+      expectedFailureCode: "CONSOLE_WAIT_TIMEOUT",
+      consoleAssertions: [exactLog("M2|THIS_LOG_DOES_NOT_EXIST", 1, 300)],
+      objectAssertions: harnessEquals("CurrentScene", "Timeout")
+    })
+  );
 
   return matrix("GAM 215-equivalent Module 2", cases);
 }
@@ -338,15 +404,9 @@ function matrix(name: string, cases: ScenarioCaseDefinition[]): ScenarioMatrixDe
   };
 }
 
-function runtimeCase(
-  originalContent: string,
-  originalSha256: string,
-  options: RuntimeCaseOptions
-): ScenarioCaseDefinition {
+function runtimeCase(originalContent: string, originalSha256: string, options: RuntimeCaseOptions): ScenarioCaseDefinition {
   const marker = `COURSE|${options.id}`;
-  const body = options.body.includes("return;")
-    ? options.body
-    : `${options.body}\n        print("${marker}");`;
+  const body = options.body.includes("return;") ? options.body : `${options.body}\n        print("${marker}");`;
   const source = studentSource(body, options.methodName ?? "Start");
   const assertions = options.consoleAssertions ?? [exactLog(marker)];
   if (options.expectedMarvinLog) assertions.push(exactLog(options.expectedMarvinLog));
@@ -404,12 +464,7 @@ function semanticFailure(
   });
 }
 
-function branchCase(
-  runtime: (options: RuntimeCaseOptions) => ScenarioCaseDefinition,
-  id: string,
-  hasItem: boolean,
-  expected: string
-): ScenarioCaseDefinition {
+function branchCase(runtime: (options: RuntimeCaseOptions) => ScenarioCaseDefinition, id: string, hasItem: boolean, expected: string): ScenarioCaseDefinition {
   return runtime({
     id,
     body: `bool localHasItem = ${hasItem ? "true" : "false"};
@@ -508,7 +563,7 @@ function orderedComparisonCases(
     const relation = ["below", "equal", "above"][index];
     const condition = evaluateOrdered(value, boundary, operator);
     const expected = condition ? "Condition True" : "Condition False";
-    const format = (item: number) => type === "float" ? `${item.toFixed(1)}f` : String(item);
+    const format = (item: number) => (type === "float" ? `${item.toFixed(1)}f` : String(item));
     return runtime({
       id: `m2-comparison-${family}-${relation}`,
       body: `${type} localLeft = ${format(value)};
@@ -529,11 +584,16 @@ function orderedComparisonCases(
 
 function evaluateOrdered(left: number, right: number, operator: string): boolean {
   switch (operator) {
-    case "<=": return left <= right;
-    case "<": return left < right;
-    case ">": return left > right;
-    case ">=": return left >= right;
-    default: throw new Error(`Unsupported comparison operator: ${operator}`);
+    case "<=":
+      return left <= right;
+    case "<":
+      return left < right;
+    case ">":
+      return left > right;
+    case ">=":
+      return left >= right;
+    default:
+      throw new Error(`Unsupported comparison operator: ${operator}`);
   }
 }
 

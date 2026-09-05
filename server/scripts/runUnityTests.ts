@@ -25,19 +25,7 @@ await mkdir(logDirectory, { recursive: true });
 
 const child = spawn(
   editorPath,
-  [
-    "-batchmode",
-    "-nographics",
-    "-projectPath",
-    projectPath,
-    "-runTests",
-    "-testPlatform",
-    requestedPlatform,
-    "-testResults",
-    resultPath,
-    "-logFile",
-    logPath
-  ],
+  ["-batchmode", "-nographics", "-projectPath", projectPath, "-runTests", "-testPlatform", requestedPlatform, "-testResults", resultPath, "-logFile", logPath],
   { stdio: "inherit" }
 );
 

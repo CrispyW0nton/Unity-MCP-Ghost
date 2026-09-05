@@ -35,6 +35,8 @@ async function main(): Promise<void> {
       "dist/index.js",
       "--transport",
       "stdio",
+      "--tool-profile",
+      "all",
       "--unity-host",
       config.unityHost,
       "--unity-port",
@@ -69,35 +71,41 @@ async function main(): Promise<void> {
       "repair loop semantic test scope",
       () =>
         callTool(client, "repair_inspect", {
-        objective: "Verify repair loop includes semantic test-scope planning for the target gameplay script.",
-        scriptPath: flags.scriptPath,
-        useSemanticTestScope: true,
-        runTests: false,
-        captureScreenshot: true,
-        screenshotBaselineFilter: "kotor-main-menu-baseline",
-        screenshotWidth: 640,
-        screenshotHeight: 360,
-        screenshotWaitMs: 5000,
-        compileTimeoutMs: config.requestTimeoutMs
+          objective: "Verify repair loop includes semantic test-scope planning for the target gameplay script.",
+          scriptPath: flags.scriptPath,
+          useSemanticTestScope: true,
+          runTests: false,
+          captureScreenshot: true,
+          screenshotBaselineFilter: "kotor-main-menu-baseline",
+          screenshotWidth: 640,
+          screenshotHeight: 360,
+          screenshotWaitMs: 5000,
+          compileTimeoutMs: config.requestTimeoutMs
         }),
       assertRepairLoop
     );
-    await record(steps, "visual validation report", () =>
-      callTool(client, "visual_validation_report", {
-        currentFilter: "repair-loop",
-        baselineFilter: "kotor-main-menu-baseline",
-        cleanupKeepNewest: 3,
-        includeCleanup: true
-      }),
+    await record(
+      steps,
+      "visual validation report",
+      () =>
+        callTool(client, "visual_validation_report", {
+          currentFilter: "repair-loop",
+          baselineFilter: "kotor-main-menu-baseline",
+          cleanupKeepNewest: 3,
+          includeCleanup: true
+        }),
       assertVisualValidationReport
     );
-    await record(steps, "repair apply dry-run against target script", () =>
-      callTool(client, "repair_apply_edits", {
-        objective: "Preview a no-op ranged repair edit without mutating gameplay code.",
-        scriptPath: flags.scriptPath,
-        edits: [{ startLine: 0, startColumn: 0, endLine: 0, endColumn: 0, text: "" }],
-        dryRun: true
-      }),
+    await record(
+      steps,
+      "repair apply dry-run against target script",
+      () =>
+        callTool(client, "repair_apply_edits", {
+          objective: "Preview a no-op ranged repair edit without mutating gameplay code.",
+          scriptPath: flags.scriptPath,
+          edits: [{ startLine: 0, startColumn: 0, endLine: 0, endColumn: 0, text: "" }],
+          dryRun: true
+        }),
       assertRepairApplyDryRun
     );
 
@@ -251,14 +259,17 @@ interface AssertionResult {
 
 function assertCompileWait(result: Record<string, unknown>): AssertionResult {
   const data = asRecord(result.data);
-  return assertion({
-    toolOk: result.ok !== false,
-    compileSettled: data.status === "success" || data.ok === true,
-    notCompiling: asRecord(data.state).isCompiling !== true
-  }, {
-    status: data.status,
-    elapsedMs: data.elapsedMs
-  });
+  return assertion(
+    {
+      toolOk: result.ok !== false,
+      compileSettled: data.status === "success" || data.ok === true,
+      notCompiling: asRecord(data.state).isCompiling !== true
+    },
+    {
+      status: data.status,
+      elapsedMs: data.elapsedMs
+    }
+  );
 }
 
 function assertRepairLoop(result: Record<string, unknown>): AssertionResult {
@@ -268,19 +279,22 @@ function assertRepairLoop(result: Record<string, unknown>): AssertionResult {
   const capture = asRecord(screenshotValidation.capture);
   const selectedBaseline = asRecord(screenshotValidation.selectedBaseline);
   const diff = asRecord(screenshotValidation.diff);
-  return assertion({
-    toolOk: result.ok !== false,
-    diagnosticPassMode: data.mode === "diagnostic-pass",
-    semanticTestScopeSelected: plannedTestScope.source === "semantic-test-scope",
-    screenshotCaptured: typeof capture.path === "string" && capture.path.length > 0,
-    baselineSelected: typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0,
-    visualDiffWithinThreshold: diff.withinThreshold === true
-  }, {
-    plannedTestScope,
-    screenshotPath: capture.path,
-    baselinePath: selectedBaseline.path,
-    differentRatio: diff.differentRatio
-  });
+  return assertion(
+    {
+      toolOk: result.ok !== false,
+      diagnosticPassMode: data.mode === "diagnostic-pass",
+      semanticTestScopeSelected: plannedTestScope.source === "semantic-test-scope",
+      screenshotCaptured: typeof capture.path === "string" && capture.path.length > 0,
+      baselineSelected: typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0,
+      visualDiffWithinThreshold: diff.withinThreshold === true
+    },
+    {
+      plannedTestScope,
+      screenshotPath: capture.path,
+      baselinePath: selectedBaseline.path,
+      differentRatio: diff.differentRatio
+    }
+  );
 }
 
 function assertVisualValidationReport(result: Record<string, unknown>): AssertionResult {
@@ -288,29 +302,35 @@ function assertVisualValidationReport(result: Record<string, unknown>): Assertio
   const currentCapture = asRecord(data.currentCapture);
   const selectedBaseline = asRecord(data.selectedBaseline);
   const diff = asRecord(data.diff);
-  return assertion({
-    toolOk: result.ok !== false,
-    currentCaptureFound: typeof currentCapture.path === "string" && currentCapture.path.length > 0,
-    baselineSelected: typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0,
-    visualDiffWithinThreshold: diff.withinThreshold === true,
-    recommendationsPresent: Array.isArray(data.recommendations)
-  }, {
-    current: currentCapture.fileName,
-    baseline: selectedBaseline.fileName,
-    differentRatio: diff.differentRatio
-  });
+  return assertion(
+    {
+      toolOk: result.ok !== false,
+      currentCaptureFound: typeof currentCapture.path === "string" && currentCapture.path.length > 0,
+      baselineSelected: typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0,
+      visualDiffWithinThreshold: diff.withinThreshold === true,
+      recommendationsPresent: Array.isArray(data.recommendations)
+    },
+    {
+      current: currentCapture.fileName,
+      baseline: selectedBaseline.fileName,
+      differentRatio: diff.differentRatio
+    }
+  );
 }
 
 function assertRepairApplyDryRun(result: Record<string, unknown>): AssertionResult {
   const data = asRecord(result.data);
-  return assertion({
-    toolOk: result.ok !== false,
-    dryRunMode: data.mode === "dry-run",
-    hasEditPreview: Number(data.editCount ?? 0) >= 1
-  }, {
-    mode: data.mode,
-    editCount: data.editCount
-  });
+  return assertion(
+    {
+      toolOk: result.ok !== false,
+      dryRunMode: data.mode === "dry-run",
+      hasEditPreview: Number(data.editCount ?? 0) >= 1
+    },
+    {
+      mode: data.mode,
+      editCount: data.editCount
+    }
+  );
 }
 
 function assertion(checks: Record<string, boolean>, details?: Record<string, unknown>): AssertionResult {
@@ -358,11 +378,13 @@ async function callToolOnce(client: Client, name: string, args: Record<string, u
 
 function isTransientUnityBridgeError(error: unknown): boolean {
   const text = message(error);
-  return text.includes("ECONNREFUSED")
-    || text.includes("fetch failed")
-    || text.includes("socket hang up")
-    || text.includes("other side closed")
-    || text.includes("Unity HTTP bridge responded 503");
+  return (
+    text.includes("ECONNREFUSED") ||
+    text.includes("fetch failed") ||
+    text.includes("socket hang up") ||
+    text.includes("other side closed") ||
+    text.includes("Unity HTTP bridge responded 503")
+  );
 }
 
 function delay(ms: number): Promise<void> {

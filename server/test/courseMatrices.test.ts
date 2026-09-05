@@ -37,7 +37,8 @@ describe("GAM 215-equivalent declarative matrices", () => {
       "m1-semantic-wrong-marvin-argument-order",
       "m1-semantic-wrong-label-value",
       "m1-timeout-restoration"
-    ]) assert.ok(ids.includes(id), `missing ${id}`);
+    ])
+      assert.ok(ids.includes(id), `missing ${id}`);
 
     for (const token of [
       "// A clean-room single-line comment",
@@ -56,7 +57,8 @@ describe("GAM 215-equivalent declarative matrices", () => {
       "(localAdd + localSubtract) * 2",
       "Random.Range(localMin, localMax + 1)",
       "float localRoll = Random.Range(localMin, localMax)"
-    ]) assert.ok(sources.includes(token), `missing source token ${token}`);
+    ])
+      assert.ok(sources.includes(token), `missing source token ${token}`);
 
     verifyRestorableRuntimeEvidence(matrix.cases);
   });
@@ -106,10 +108,14 @@ describe("GAM 215-equivalent declarative matrices", () => {
       "Marvin.Write(",
       "Marvin.Draw(",
       "Marvin.ShowOrHide("
-    ]) assert.ok(sources.includes(token), `missing source token ${token}`);
+    ])
+      assert.ok(sources.includes(token), `missing source token ${token}`);
 
     const navigation = matrix.cases.find((item) => item.id === "m2-page-up-page-down-navigation");
-    assert.deepEqual(navigation?.inputs?.map((item) => item.key), ["PageUp", "PageDown"]);
+    assert.deepEqual(
+      navigation?.inputs?.map((item) => item.key),
+      ["PageUp", "PageDown"]
+    );
     verifyRestorableRuntimeEvidence(matrix.cases);
   });
 });
