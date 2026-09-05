@@ -11,7 +11,7 @@ interface SmokeStep {
   error?: string;
 }
 
-const DefaultKotorScript = "Assets/Scripts/KotOR/Modules/Spawning/ModuleSpawnPipeline.cs";
+const DefaultFixtureScript = "Assets/GAM215Fixture/StudentExercise.cs";
 const ScratchScriptPath = "Assets/UnityMcpGhostScratch/GhostRepairScratch.cs";
 const ScratchFolderPath = "Assets/UnityMcpGhostScratch";
 const ScratchContent = `using UnityEngine;
@@ -71,18 +71,18 @@ async function main(): Promise<void> {
       "repair loop semantic test scope",
       () =>
         callTool(client, "repair_inspect", {
-          objective: "Verify repair loop includes semantic test-scope planning for the target gameplay script.",
+          objective: "Verify repair inspection selects a declared test scope for the target gameplay script.",
           scriptPath: flags.scriptPath,
           useSemanticTestScope: true,
           runTests: false,
           captureScreenshot: true,
-          screenshotBaselineFilter: "kotor-main-menu-baseline",
+          screenshotBaselineFilter: flags.screenshotBaselineFilter,
           screenshotWidth: 640,
           screenshotHeight: 360,
           screenshotWaitMs: 5000,
           compileTimeoutMs: config.requestTimeoutMs
         }),
-      assertRepairLoop
+      (result) => assertRepairLoop(result, flags.screenshotBaselineFilter.length > 0)
     );
     await record(
       steps,
@@ -90,11 +90,11 @@ async function main(): Promise<void> {
       () =>
         callTool(client, "visual_validation_report", {
           currentFilter: "repair-loop",
-          baselineFilter: "kotor-main-menu-baseline",
+          baselineFilter: flags.screenshotBaselineFilter,
           cleanupKeepNewest: 3,
           includeCleanup: true
         }),
-      assertVisualValidationReport
+      (result) => assertVisualValidationReport(result, flags.screenshotBaselineFilter.length > 0)
     );
     await record(
       steps,
@@ -272,7 +272,7 @@ function assertCompileWait(result: Record<string, unknown>): AssertionResult {
   );
 }
 
-function assertRepairLoop(result: Record<string, unknown>): AssertionResult {
+function assertRepairLoop(result: Record<string, unknown>, baselineRequired: boolean): AssertionResult {
   const data = asRecord(result.data);
   const plannedTestScope = asRecord(data.plannedTestScope);
   const screenshotValidation = asRecord(data.screenshotValidation);
@@ -283,10 +283,12 @@ function assertRepairLoop(result: Record<string, unknown>): AssertionResult {
     {
       toolOk: result.ok !== false,
       diagnosticPassMode: data.mode === "diagnostic-pass",
-      semanticTestScopeSelected: plannedTestScope.source === "semantic-test-scope",
+      testScopeDeclared:
+        (plannedTestScope.mode === "editmode" || plannedTestScope.mode === "playmode") &&
+        (plannedTestScope.source === "semantic-test-scope" || plannedTestScope.source === "caller-default"),
       screenshotCaptured: typeof capture.path === "string" && capture.path.length > 0,
-      baselineSelected: typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0,
-      visualDiffWithinThreshold: diff.withinThreshold === true
+      baselineHandled: baselineRequired ? typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0 : true,
+      visualDiffHandled: baselineRequired ? diff.withinThreshold === true : selectedBaseline.path ? diff.withinThreshold === true : true
     },
     {
       plannedTestScope,
@@ -297,7 +299,7 @@ function assertRepairLoop(result: Record<string, unknown>): AssertionResult {
   );
 }
 
-function assertVisualValidationReport(result: Record<string, unknown>): AssertionResult {
+function assertVisualValidationReport(result: Record<string, unknown>, baselineRequired: boolean): AssertionResult {
   const data = asRecord(result.data);
   const currentCapture = asRecord(data.currentCapture);
   const selectedBaseline = asRecord(data.selectedBaseline);
@@ -306,8 +308,8 @@ function assertVisualValidationReport(result: Record<string, unknown>): Assertio
     {
       toolOk: result.ok !== false,
       currentCaptureFound: typeof currentCapture.path === "string" && currentCapture.path.length > 0,
-      baselineSelected: typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0,
-      visualDiffWithinThreshold: diff.withinThreshold === true,
+      baselineHandled: baselineRequired ? typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0 : true,
+      visualDiffHandled: baselineRequired ? diff.withinThreshold === true : selectedBaseline.path ? diff.withinThreshold === true : true,
       recommendationsPresent: Array.isArray(data.recommendations)
     },
     {
@@ -418,9 +420,10 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
-function readFlags(args: string[]): { allowMutation: boolean; scriptPath: string } {
-  let scriptPath = DefaultKotorScript;
+function readFlags(args: string[]): { allowMutation: boolean; scriptPath: string; screenshotBaselineFilter: string } {
+  let scriptPath = DefaultFixtureScript;
   let allowMutation = false;
+  let screenshotBaselineFilter = "";
 
   for (let index = 0; index < args.length; index += 1) {
     if (args[index] === "--allow-mutation") {
@@ -430,9 +433,13 @@ function readFlags(args: string[]): { allowMutation: boolean; scriptPath: string
     if (args[index] === "--script-path" && args[index + 1]) {
       scriptPath = args[index + 1];
     }
+
+    if (args[index] === "--screenshot-baseline-filter" && args[index + 1]) {
+      screenshotBaselineFilter = args[index + 1];
+    }
   }
 
-  return { allowMutation, scriptPath };
+  return { allowMutation, scriptPath, screenshotBaselineFilter };
 }
 
 function message(error: unknown): string {

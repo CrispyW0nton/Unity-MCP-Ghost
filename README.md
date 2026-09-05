@@ -52,11 +52,13 @@ Override the port with an unused loopback port to force the durable queue fallba
 npm run smoke -- --unity-project-path C:/Path/To/UnityProject --unity-port 6400 --request-timeout-ms 20000
 ```
 
-Run the Phase 3 repair-loop smoke against an open Unity project:
+Run the project-neutral repair-loop smoke against an open repository fixture:
 
 ```bash
 npm run phase3:repair-smoke -- --unity-project-path C:/Path/To/UnityProject --request-timeout-ms 30000
 ```
+
+Use `--script-path Assets/.../Target.cs` for another project. Add `--screenshot-baseline-filter <label>` only when that project already has a named Ghost baseline; when supplied, the smoke requires baseline selection and a passing visual diff.
 
 Add `--allow-mutation` only for a controlled scratch-script rollback test. It creates and removes `Assets/UnityMcpGhostScratch`.
 
