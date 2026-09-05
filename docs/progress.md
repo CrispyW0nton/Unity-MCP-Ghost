@@ -74,6 +74,12 @@ Commits and verified gates:
 - `c0263d8` — `chore(deps): patch runtime dependencies and clear audit findings`
   - Updated the MCP SDK, `ws`, Zod, `tsx`, and Node type declarations within their compatible release lines and re-locked transitive dependencies.
   - Passed `npm run typecheck`, `npm run build`, 24 Node tests, `npm audit --audit-level=high` with zero vulnerabilities, and `git diff --check`.
+- `3262494` — `refactor(contracts): generate typed operation catalog`
+  - Added a deterministic 90-operation catalog with stable IDs, JSON Schema 2020-12 input/output contracts, validated examples, resource relationships, domain profiles, and complete risk/execution metadata. Every MCP tool now advertises an output schema.
+  - Added the paginated `capabilities_search` tool and a seven-tool default core profile; authoring, code, runtime, validation, and all-tool surfaces require explicit CLI profile selection.
+  - Split the C# command registry registration table by domain and generated a direct bridge-operation parity list consumed by both Node protocol tests and Unity EditMode tests.
+  - Added reproducible format, lint, catalog drift, protocol, and PlayMode scripts. Protocol coverage includes deterministic discovery, invalid cursors, resource URI parity, soft failures, and fragmented WebSocket responses.
+  - Passed `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm run build`, 31 Node tests, 6 focused protocol tests, 87 Unity EditMode tests, `npm audit --audit-level=high` with zero vulnerabilities, and `git diff --check`.
 
 Next required slice:
 
