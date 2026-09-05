@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import fs, { access, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -167,6 +168,89 @@ describe("durable scenario matrix jobs", () => {
       await removeTestProject(projectPath);
     }
   });
+
+  for (const document of ["job", "lease", "evidence"] as const) {
+    it(`waits for a held ${document} read in another manager before replacing its file`, async (context) => {
+      const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-owned-read-"));
+      const options = { unity: new FakeScenarioUnity() as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" };
+      const writer = new ScenarioJobManager(options);
+      const reader = new ScenarioJobManager(options);
+      const started = await writer.start({ name: "owned read", scenePath: "Assets/Fixture.unity", cases: [{ id: "green" }] });
+      const operationId = String(started.operationId);
+      await waitForTerminal(writer, operationId);
+      await reader.get(operationId);
+      const jobsRoot = join(projectPath, "Library", "UnityMcpGhost", "scenario-jobs");
+      const path =
+        document === "job"
+          ? join(jobsRoot, `${operationId}.json`)
+          : document === "lease"
+            ? join(jobsRoot, "active-scenario-lease.json")
+            : join(projectPath, "Library", "UnityMcpGhost", "evidence", operationId, "manifest.json");
+      if (document === "lease") await writeFile(path, JSON.stringify({ operationId: "another-operation", processId: process.pid }));
+      const previous = await readFile(path, "utf8");
+      const opened = deferred();
+      const allowRead = deferred();
+      const replacementAttempted = deferred();
+      const originalRead = fs.readFile;
+      const heldRead = context.mock.method(fs, "readFile", async (...args: Parameters<typeof readFile>) => {
+        if (args[0] !== path) return originalRead(...args);
+        const handle = await open(path, "r");
+        opened.resolve();
+        try {
+          await allowRead.promise;
+          return await handle.readFile(args[1]);
+        } finally {
+          await handle.close();
+        }
+      });
+      syncBuiltinESMExports();
+      let attempts = 0;
+      let replacementCode: unknown;
+      const replace = internals(writer).replaceFile.bind(writer);
+      context.mock.method(internals(writer), "replaceFile", async (temporary: string, destination: string) => {
+        if (destination.toLowerCase() !== path.toLowerCase()) return replace(temporary, destination);
+        attempts++;
+        try {
+          await replace(temporary, destination);
+        } catch (error) {
+          replacementCode = (error as NodeJS.ErrnoException).code;
+          throw error;
+        } finally {
+          replacementAttempted.resolve();
+        }
+      });
+      let reading: Promise<unknown> | undefined;
+      let replacing: Promise<void> | undefined;
+      let observationTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        reading = document === "evidence" ? reader.readEvidence(operationId, "manifest.json") : reader.get(operationId);
+        await opened.promise;
+        // Windows aliases must share the same interlock across manager instances.
+        replacing = internals(writer).atomicWrite(process.platform === "win32" ? path.toUpperCase() : path, previous);
+        const observed = await Promise.race([
+          replacementAttempted.promise.then(() => "replacement attempted"),
+          new Promise<string>((done) => {
+            observationTimer = setTimeout(() => done("read still held"), 200);
+          })
+        ]);
+        assert.equal(observed, "read still held", `Replacement reached an owned open reader (code: ${String(replacementCode)}).`);
+        assert.equal(attempts, 0);
+        await internals(writer).atomicWrite(join(projectPath, "unrelated.json"), "{}");
+        allowRead.resolve();
+        await reading;
+        await replacing;
+        assert.equal(attempts, 1);
+        assert.equal(await originalRead(path, "utf8"), previous);
+      } finally {
+        clearTimeout(observationTimer);
+        allowRead.resolve();
+        await Promise.allSettled([reading, replacing]);
+        heldRead.mock.restore();
+        syncBuiltinESMExports();
+        await removeTestProject(projectPath);
+      }
+    });
+  }
 
   it("does not report a known operation missing during an atomic job-file replacement", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-read-race-"));

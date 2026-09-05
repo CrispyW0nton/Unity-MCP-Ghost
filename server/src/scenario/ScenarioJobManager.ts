@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { UnityClient } from "../unity/UnityClient.js";
 import { PackageVersion } from "../version.js";
@@ -154,6 +154,7 @@ interface ScenarioJobManagerOptions {
 const terminalStatuses = new Set(["success", "failed", "cancelled", "outcomeUnknown"]);
 const evidenceFiles = new Set(["manifest.json", "scenario-results.json", "compiler.json", "console.json", "summary.md"]);
 const scenarioLeaseDurationMs = 2 * 60 * 1000;
+const scenarioFileAccess = new Map<string, Promise<void>>();
 
 export class ScenarioJobManager {
   private readonly projectPath?: string;
@@ -321,7 +322,7 @@ export class ScenarioJobManager {
     if (!terminalStatuses.has(record.status))
       throw new ScenarioFailure("SCENARIO_NOT_COMPLETE", "Evidence is available after scenario finalization completes.");
     const path = this.safeEvidencePath(record, file);
-    const bytes = await readFile(path);
+    const bytes = await readScenarioFile(path);
     const mimeType = file.endsWith(".md") ? "text/markdown" : "application/json";
     return { path, mimeType, text: bytes.toString("utf8") };
   }
@@ -344,7 +345,7 @@ export class ScenarioJobManager {
     }
     const record = await this.loadRequired(operationId);
     const path = this.safeEvidencePath(record, join(kind, file));
-    const bytes = await readFile(path);
+    const bytes = await readScenarioFile(path);
     return kind === "screenshots" ? { path, mimeType: "image/png", blob: bytes } : { path, mimeType: "text/x-diff", text: bytes.toString("utf8") };
   }
 
@@ -873,7 +874,7 @@ export class ScenarioJobManager {
     const fileName = `${safeSegment(caseId)}-${assertionIndex + 1}-${safeSegment(assertion.label)}${extension}`;
     const destination = this.safeEvidencePath(record, join("screenshots", fileName));
     await mkdir(dirname(destination), { recursive: true });
-    await copyFile(sourcePath, destination);
+    await withScenarioFileAccess(destination, () => copyFile(sourcePath, destination));
     const result: Record<string, unknown> = {
       capture,
       evidencePath: destination,
@@ -938,7 +939,7 @@ export class ScenarioJobManager {
       const fileName = `${safeSegment(caseId)}-${index + 1}-${safeSegment(basename(stringValue(receipt.path)))}.diff`;
       const path = this.safeEvidencePath(record, join("diffs", fileName));
       await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, redactSecrets(stringValue(receipt.diff)), "utf8");
+      await withScenarioFileAccess(path, () => writeFile(path, redactSecrets(stringValue(receipt.diff)), "utf8"));
     }
   }
 
@@ -1176,10 +1177,12 @@ export class ScenarioJobManager {
     const path = this.leasePath!;
     await mkdir(this.jobsRoot!, { recursive: true });
     const claim = async () =>
-      writeFile(
-        path,
-        JSON.stringify({ operationId, processId: process.pid, acquiredUtc: new Date().toISOString(), expiresUnixMs: Date.now() + scenarioLeaseDurationMs }),
-        { encoding: "utf8", flag: "wx" }
+      withScenarioFileAccess(path, () =>
+        writeFile(
+          path,
+          JSON.stringify({ operationId, processId: process.pid, acquiredUtc: new Date().toISOString(), expiresUnixMs: Date.now() + scenarioLeaseDurationMs }),
+          { encoding: "utf8", flag: "wx" }
+        )
       );
     try {
       await claim();
@@ -1201,7 +1204,7 @@ export class ScenarioJobManager {
 
     const stalePath = `${path}.${randomUUID()}.stale`;
     try {
-      await rename(path, stalePath);
+      await withScenarioFileAccess(path, () => rename(path, stalePath));
       await rm(stalePath, { force: true });
       await claim();
     } catch (error) {
@@ -1226,7 +1229,7 @@ export class ScenarioJobManager {
     if (stringValue(current.operationId) !== operationId) return;
     const releasePath = `${this.leasePath!}.${operationId}.release`;
     try {
-      await rename(this.leasePath!, releasePath);
+      await withScenarioFileAccess(this.leasePath!, () => rename(this.leasePath!, releasePath));
       await rm(releasePath, { force: true });
     } catch {
       // A concurrent stale-lease recovery or prior release already owns cleanup.
@@ -1240,7 +1243,7 @@ export class ScenarioJobManager {
       await writeFile(temporary, contents, "utf8");
       for (let attempt = 0; ; attempt++) {
         try {
-          await this.replaceFile(temporary, path);
+          await withScenarioFileAccess(path, () => this.replaceFile(temporary, path));
           return;
         } catch (error) {
           if (attempt === 7 || !["EPERM", "EACCES", "EBUSY"].includes(stringValue(objectValue(error).code))) throw error;
@@ -1265,7 +1268,7 @@ export class ScenarioJobManager {
   private async loadPath(path: string): Promise<ScenarioJobRecord | undefined> {
     for (let attempt = 0; attempt < 6; attempt += 1) {
       try {
-        return JSON.parse(await readFile(path, "utf8")) as ScenarioJobRecord;
+        return JSON.parse((await readScenarioFile(path)).toString("utf8")) as ScenarioJobRecord;
       } catch {
         if (attempt === 5) return undefined;
         await delay(10);
@@ -1561,9 +1564,37 @@ function sanitizeEvidenceValue(value: unknown, key = ""): unknown {
 
 async function readJson(path: string): Promise<unknown> {
   try {
-    return JSON.parse(await readFile(path, "utf8"));
+    return JSON.parse((await readScenarioFile(path)).toString("utf8"));
   } catch {
     return {};
+  }
+}
+
+function readScenarioFile(path: string): Promise<Buffer> {
+  return withScenarioFileAccess(path, () => readFile(path));
+}
+
+// Node's open readers can block replacement on Windows. Coordinate leaf file I/O
+// across managers, not whole scenario methods: nested read/write calls must not
+// reacquire their own lock. External readers still use atomicWrite's bounded retry.
+async function withScenarioFileAccess<T>(path: string, action: () => Promise<T>): Promise<T> {
+  const canonical = await realpath(path).catch(async (error: unknown) => {
+    if (objectValue(error).code !== "ENOENT") throw error;
+    return join(await realpath(dirname(path)), basename(path));
+  });
+  const key = process.platform === "win32" ? canonical.toLowerCase() : canonical;
+  const previous = scenarioFileAccess.get(key);
+  let release!: () => void;
+  const current = new Promise<void>((done) => {
+    release = done;
+  });
+  scenarioFileAccess.set(key, current);
+  await previous;
+  try {
+    return await action();
+  } finally {
+    release();
+    if (scenarioFileAccess.get(key) === current) scenarioFileAccess.delete(key);
   }
 }
 
