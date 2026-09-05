@@ -92,6 +92,9 @@ Commits and verified gates:
 - `1ab18f3` — `test(fixture): keep headless runtime validation active`
   - Made the test project's recurring Unity Test Runner `runInBackground` setting explicit so Play/input validation does not depend on Game-view focus and repeatable EditMode/PlayMode runs leave the tracked fixture clean.
   - Passed 87/87 Unity EditMode tests and 1/1 Unity PlayMode test on Unity `2022.3.62f1` for Windows.
+- `c773cd9` — `test(smoke): remove KOTOR-specific baseline assumptions`
+  - Made the repair smoke default to the repository fixture, accept truthful caller-default test scope when no semantic match exists, and require visual baseline selection/diff only when a baseline filter is explicitly supplied.
+  - Passed formatting, lint, typecheck, all 32 Node tests, the live fixture script validation/repair inspection/screenshot/dry-run flow, and `git diff --check`.
 
 Next required slice:
 
