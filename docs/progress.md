@@ -11,6 +11,24 @@ Milestone source documents:
 
 Commits and verified gates:
 
+- `f553e69` — `fix(runtime): drain scenario restoration before HTTP shutdown`
+  - Applied remaining completed-review findings #1/#2/#7 through an injectable CLI coordinator, actual HTTP handler drains and tracked scenario start/recovery/execution/finalization. SIGINT/SIGTERM remain handled through restoration; no cancellation/replay or arbitrary grace expiry is introduced.
+  - Added visible sanitized listener/cleanup failures, retained nonterminal finalization records/leases, and startup/output/partial-registration cleanup. Opt-in HTTP is wired through the CLI; stdio remains default.
+  - Worker red evidence: missing drain/fatal APIs failed five initial tests; subsequent startup/output errors were reproduced and fixed. Final focused tests passed 90/90. Parent inspected the complete source/test delta and passed `npm test` 181/181, `npm run test:protocol` 9/9, format, lint, typecheck, build, direct strict test-file type checking and `git diff --check`.
+  - Real listener/coordinator/manager tests use temporary source/backup files and a controlled Unity bridge to prove original bytes/editor state, late-start admission, repeated signals, final persistence and leases. They do not claim new live Unity or native Windows OS signal coverage. The built CLI rejected an invalid transport with exit 1 and only `MCP_CLI_STARTUP_FAILED`.
+  - An attempted `npm run test:course` without a running Unity fixture failed with MCP request timeout before the baseline read; it is not a passing course gate. The unchanged fixture hash and remaining final live checks are recorded in the verification map.
+- `0556c94` — `feat(mcp): bound authenticated Streamable HTTP execution`
+  - Added the private loopback MCP HTTP transport, token-file permission validation, constant-time authentication, exact project/editor pins, Origin/host/media restrictions and bounded body/header/connection/result processing. Shared scenario state can be supplied to stateless request servers.
+  - Applied completed review `20260905-140723-c9592b15` findings #3/#4/#5/#8 with legacy batch preflight/correlation and per-entry admission, authenticated quota accounting, output deadlines through response finish/close, and standard JSON-RPC error classes. Detached requests are not implicitly cancelled or replayed.
+  - Red-first tests reproduced batch failures, quota starvation, protocol-code loss and retained real socket output beyond its deadline. A separate Windows raw-reader test is integration evidence, not a deterministic backpressure reproduction. Its owned child cleanup is idempotent and awaits observed exit.
+  - Parent verification: `npm test` 149/149; `npm run test:protocol` 9/9; format, lint, typecheck, build and diff checks passed; `npm audit --audit-level=high` reported zero vulnerabilities. After final test-helper/type-narrowing edits, parent reran all 24 HTTP tests, direct strict TypeScript checking of that test file and owned-file formatting successfully.
+  - At this commit, CLI enablement/config and review #1/#2/#7 were pending; `f553e69` subsequently completed that lifecycle slice. Neither commit certifies the full course-readiness milestone.
+- `23718cb` — `fix(reliability): preserve durable state on replacement failure`
+  - Replaced eight C# durable-state writers' delete/move fallbacks with one flushed, unique-sibling atomic replacement helper. A failed replacement preserves the prior bytes; only replacement I/O receives four bounded attempts, and cleanup failure preserves both errors.
+  - Added regressions for Unicode/no-BOM writes, original-byte preservation, unsupported/denied replacement, real Windows reader contention and temporary-file cleanup failure, operation persistence, and request-result recovery without mutation replay.
+  - Test-first evidence: the old writer failed five of 118 EditMode cases; after removing the fallback, a broader run exposed real Windows sharing failures. A focused retry regression failed before the bounded retry fix. The final fresh Unity 2022.3.62f1 EditMode run passed 121/121 (`editmode-5b248286-a707-4827-ae08-44a46d16429f-results.xml`).
+  - Parent verification also passed `npm test` (139/139), `npm run test:protocol` (9/9; 90 tools/57 direct mappings), and `git diff --check`. These Node results include the still-uncommitted HTTP work and do not certify its unresolved paths.
+  - Completed code review `20260905-140723-c9592b15` retained no atomic-writer finding; its seven independently validated HTTP findings were subsequently addressed in `0556c94` and `f553e69`. This commit does not close script-transaction compensation, queue recovery/authentication, or the full milestone.
 - `87d31b9` — `feat(physics): add collider and rigidbody setup tools`
   - Preserved and integrated the pre-existing `collider_setup` and `rigidbody_setup` user work.
   - Passed `npm run typecheck`, `npm run build`, `npm test`, and `git diff --check`.
@@ -140,10 +158,17 @@ Commits and verified gates:
   - Real runner evidence passed EditMode 111/111 and PlayMode 1/1 before the CLI-only extraction. Controlled real-Editor timeout/cancellation probes failed with the correct codes and unique evidence paths, preserved historical reports and left no Editor running. Exact paths are in `docs/course-ready-verification.md`.
   - The separate `-version` subprocess cleanup advisory remains open; suite-child cleanup and injected verification tests do not certify that earlier process boundary.
 
+- `af77d89` — `docs(reliability): distinguish verified evidence from remaining gates`
+  - Recorded the runner/scenario regression evidence, preserved failed-run chronology, corrected implemented transport claims and narrowed support wording to observed versions/platforms.
+  - Added the incomplete verification map, unique-evidence and Windows process-cleanup prerequisites, explicit remaining implementation gaps and final external gates.
+  - Passed `npm run release:check` (90 operations, 57 direct mappings, pinned Newtonsoft 3.2.1) and `git diff --check`. No credentials, course assets or generated Unity artifacts were committed.
+  - Post-commit real Unity runner checks passed EditMode 111/111 and PlayMode 1/1, with fresh unique XML recorded in the verification map, no remaining Editor processes and unchanged fixture/historical-report hashes. The narrow PlayMode coverage gap remains open.
+
 Next required slice:
 
 - Keep `docs/course-ready-verification.md` current as an incomplete evidence map, not a release certificate.
-- Complete secured MCP-facing Streamable HTTP and broader real PlayMode coverage. Do not treat the existing single driver-contract PlayMode test as the requested full lifecycle/Console/scenario coverage.
+- Fix the reproduced repair-backup retention defect, remaining script-transaction/queue/deadline safety gaps, and stdio generation conformance recorded in the verification map.
+- Add broader real PlayMode coverage. Do not treat the existing single driver-contract test or Editor-only Input System receipt tests as full lifecycle/Console/scenario or gameplay-input coverage. Include the new secured HTTP lifecycle in final live integration verification.
 - Strengthen the executable-verification subprocess cleanup boundary and its real-process regression coverage.
 - Run final complete-series gates after the remaining implementation work, including fresh course and repair live smokes. Do not label the release candidate complete from unit counts or partial cleanup proof.
 - Observe the configured remote CI matrices after an authorized push and run the opt-in real-project smoke manifests when the Variablekiller and Conditionalkiller projects are available.

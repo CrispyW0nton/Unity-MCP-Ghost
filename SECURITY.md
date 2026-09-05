@@ -39,6 +39,10 @@ Asset paths are canonicalized under the selected project's `Assets` root. Projec
 
 The bridge enforces JSON content type and POST method for HTTP; aggregate byte limits for HTTP and fragmented WebSocket messages; bounded concurrent HTTP requests and WebSocket clients; and a shared request-rate limit. HTTP uses the project-persisted bridge port. WebSocket uses its own project-persisted loopback port because Unity 2022.3's Mono `HttpListener` does not complete upgraded connections reliably; both endpoints are listed in the identity file and enforce the same token and project/editor pinning. Mutations retain request IDs, deadlines, idempotency metadata, and explicit unknown-outcome semantics across reconnects.
 
+The optional MCP-facing Streamable HTTP endpoint is separate from the Unity bridge. It also accepts only literal-loopback binding and requires the project's owner-only token plus exact project/editor headers. It rejects browser `Origin` requests, enables no CORS, and bounds bodies, results, admission and response delivery. Tool profiles control discovery, not authorization. Stdio remains the default. See the README for the explicit HTTP flags and credential handling; never put a token in a command-line argument.
+
+HTTP disconnect/timeout is not permission to cancel or replay a mutation. Graceful CLI shutdown closes HTTP admission, drains actual handlers and scenario restoration/finalization, and only then disposes Unity. A failed drain prevents disposal; unresolved finalization is reported with retained recovery state. Force-killing the process bypasses graceful cleanup and requires reconciliation of durable operations before retrying mutations.
+
 ## Reporting a vulnerability
 
 Do not open a public issue for a suspected vulnerability that could expose credentials or permit unintended code/project modification. Use GitHub's private vulnerability-reporting or Security Advisory flow for `CrispyW0nton/Unity-MCP-Ghost` and include affected versions, reproduction steps, impact, and any proposed mitigation. Remove project assets, tokens, usernames, and absolute private paths from the report.

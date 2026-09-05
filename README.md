@@ -4,7 +4,7 @@ Unity MCP Ghost is a Cursor-first Unity automation bridge inspired by the Unreal
 
 The `0.2.0-rc.1` release candidate contains:
 
-- `server/` - TypeScript MCP server, tool registry, Unity bridge client, and stdio transport entry point.
+- `server/` - TypeScript MCP server, tool registry, Unity bridge client, default stdio transport, and opt-in authenticated Streamable HTTP.
 - `Packages/com.crispywonton.unity-mcp-ghost/` - Unity UPM editor bridge package.
 - `docs/` - architecture and development notes for the Ghost roadmap.
 
@@ -39,6 +39,16 @@ node dist/index.js --transport stdio --unity-project-path C:/Path/To/UnityProjec
 The CLI exposes only the compact `core` profile by default. Opt into one or more additional profiles with `--tool-profile authoring,code,runtime,validation`, or use `--tool-profile all` for the complete catalog. `capabilities_search` can inspect disabled profiles without executing them.
 
 Destructive, package/network, arbitrary-code, and reflection capabilities default to disabled per project. Review [SECURITY.md](SECURITY.md) before enabling any of them in the Unity window.
+
+### Optional local Streamable HTTP
+
+```text
+node dist/index.js --transport streamable-http --mcp-host 127.0.0.1 --mcp-port 8080 --unity-project-path C:/Path/To/UnityProject
+```
+
+The MCP endpoint is `http://127.0.0.1:8080/mcp`, separate from Unity's own bridge ports. Only literal loopback binding (`127.0.0.1` or `::1`) is allowed. Each POST needs `Authorization: Bearer <project token>`, `X-Ghost-Project-Id`, and `X-Ghost-Editor-Id`; take the IDs and token-file location from the project's generated identity. Store credentials through the client's protected configuration, not command-line arguments, source control, logs, or evidence. The token file must have owner-only permissions.
+
+This is a stateless, bounded JSON-response transport, not the older HTTP+SSE transport. Browser `Origin` requests are rejected; no CORS or remote listener is enabled. Use durable operation tools to query/cancel jobs; a disconnected HTTP request does not cancel or replay its mutation. On SIGINT/SIGTERM, Ghost stops accepting requests and drains admitted handlers and scenario restoration before disposing Unity. Repeated signals share that cleanup path; force-killing the process is not a graceful shutdown. Failures use sanitized diagnostics and a nonzero exit status. These local lifecycle checks do not replace the remaining [readiness gates](docs/course-ready-verification.md).
 
 ## Smoke Test
 
@@ -92,7 +102,7 @@ Run the complete clean-room GAM 215-equivalent Module 1-2 matrix against an open
 npm run test:course
 ```
 
-The gate executes 23 Module 1 cases, 43 Module 2 cases, and a separate cancellation/restoration job per module. See [docs/gam-215-fixture.md](docs/gam-215-fixture.md) for the exact inventory and evidence contract. The honest qualification remains **GAM 215-equivalent fixture complete; real course-project certification pending** until separate non-destructive runs pass against user-supplied Variablekiller and Conditionalkiller projects.
+The gate executes 23 Module 1 cases, 43 Module 2 cases, and a separate cancellation/restoration job per module. See [docs/gam-215-fixture.md](docs/gam-215-fixture.md) for the exact inventory and evidence contract. Earlier fixture passes do not certify the current milestone. The qualified fixture-complete label is permitted only after every other readiness gate passes; real course-project certification additionally requires separate non-destructive runs against user-supplied Variablekiller and Conditionalkiller projects.
 
 ## Cursor MCP Config
 
@@ -125,7 +135,7 @@ npm run config:client -- --unity-project-path C:/Path/To/UnityProject --tool-pro
 
 Course-Ready Reliability remains **in progress**. Implemented capabilities include authenticated Unity bridge transport, truthful bridge results, generation-scoped compilation, transactional script and batch changes, normal Play/Console/input control, durable scenario matrices, and deterministic evidence bundles. The generated catalog is available at `docs/generated/operation-catalog.json`; every public tool has input/output schemas, a valid example, risk metadata, and a stable operation ID. See [docs/course-ready-verification.md](docs/course-ready-verification.md) for remaining implementation and verification gates; passing fixture matrices alone do not certify the milestone.
 
-The clean-room fixture passes the GAM 215-equivalent Modules 1-2 matrix. The release qualification remains **GAM 215-equivalent fixture complete; real course-project certification pending** until user-supplied Variablekiller and Conditionalkiller projects pass the opt-in non-destructive smoke run.
+Earlier live clean-room runs passed the GAM 215-equivalent Modules 1-2 matrix; complete-series verification is still pending. Use **GAM 215-equivalent fixture complete; real course-project certification pending** only after every other milestone gate passes and the real Variablekiller/Conditionalkiller projects remain unavailable. The unavailable-assets exception does not waive the remaining reliability or test gates.
 
 ## Reproducible Verification
 
