@@ -16,6 +16,8 @@ export interface ToolContext {
   projectId?: string;
   editorInstanceId?: string;
   toolProfiles?: OperationProfile[];
+  /** Process-scoped orchestration state shared by stateless HTTP request servers. */
+  scenarios?: ScenarioJobManager;
 }
 
 type ToolHandler<TArgs> = (args: TArgs) => Promise<CallToolResult>;
@@ -1257,12 +1259,14 @@ export function createMcpServer(context: ToolContext): McpServer {
     version: PackageVersion
   });
   serverProfiles.set(server, context.toolProfiles ?? ["all"]);
-  const scenarios = new ScenarioJobManager({
-    unity: context.unity,
-    projectPath: context.projectPath,
-    projectId: context.projectId,
-    editorInstanceId: context.editorInstanceId
-  });
+  const scenarios =
+    context.scenarios ??
+    new ScenarioJobManager({
+      unity: context.unity,
+      projectPath: context.projectPath,
+      projectId: context.projectId,
+      editorInstanceId: context.editorInstanceId
+    });
 
   registerTool(
     server,
