@@ -187,7 +187,7 @@ describe("durable scenario matrix jobs", () => {
       const observed = await manager.get(operationId);
       await restore;
       assert.equal(observed.operationId, operationId);
-      assert.equal(observed.status, "success");
+      assert.equal(observed.status, "success", JSON.stringify(observed.error));
     } finally {
       await removeTestProject(projectPath);
     }
@@ -243,7 +243,7 @@ describe("durable scenario matrix jobs", () => {
       });
       const completed = await waitForTerminal(manager, String(started.operationId));
 
-      assert.equal(completed.status, "success");
+      assert.equal(completed.status, "success", JSON.stringify(completed.error));
       assert.equal(fake.inputAttempts, 2);
     } finally {
       await removeTestProject(projectPath);
@@ -931,6 +931,8 @@ async function waitForTerminal(manager: ScenarioJobManager, operationId: string)
   await waitUntil(async () => {
     state = await manager.get(operationId);
     return ["success", "failed", "cancelled", "outcomeUnknown"].includes(String(state.status));
+  }).catch((cause: unknown) => {
+    throw new Error(`Scenario test observation expired: ${JSON.stringify({ operationId, status: state.status, error: state.error })}`, { cause });
   });
   return state;
 }
@@ -940,7 +942,9 @@ async function removeTestProject(projectPath: string): Promise<void> {
 }
 
 async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 5000;
+  // These observations include real disk writes, bounded sharing-lock retries,
+  // and lease cleanup. They are not the operation deadlines tested by each case.
+  const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
