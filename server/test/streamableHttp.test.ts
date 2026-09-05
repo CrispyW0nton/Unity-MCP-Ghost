@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer as createHttpServer, request as httpRequest, type ServerResponse } from "node:http";
 import { connect } from "node:net";
@@ -12,8 +14,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { createMcpServer } from "../src/mcp/createServer.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { startStreamableHttp, type StreamableHttpOptions } from "../src/transports/streamableHttp.js";
-import { ScenarioJobManager } from "../src/scenario/ScenarioJobManager.js";
+import { ScenarioJobManager, type ScenarioJobRecord, type ScenarioMatrixDefinition } from "../src/scenario/ScenarioJobManager.js";
 import { UnityClient } from "../src/unity/UnityClient.js";
+import { runMcpCli } from "../src/mcpCli.js";
+import type { StreamableHttpService } from "../src/transports/streamableHttp.js";
 
 const token = "a".repeat(64);
 const headers = { Authorization: `Bearer ${token}`, "X-Ghost-Project-Id": "project-http", "X-Ghost-Editor-Id": "editor-http" };
@@ -44,6 +48,156 @@ after(async () => {
 });
 
 describe("secured MCP Streamable HTTP", () => {
+  for (const stop of ["SIGINT", "SIGTERM", "fatal", "pending-start", "failed-persistence"] as const) {
+    it(`coordinates real scenario restoration and durable finalization on ${stop}`, { timeout: 30000 }, async (context) => {
+      const project = await mkdtemp(join(directory, "scenario-cli-"));
+      const sourcePath = join(project, "Assets", "Fixture.cs");
+      await mkdir(join(project, "Assets"));
+      const original = Buffer.from("// Original bytes\r\npublic class Fixture {}\r\n");
+      await writeFile(sourcePath, original);
+      const fake = new ShutdownScenarioUnity(sourcePath, original);
+      const signals = new EventEmitter() as EventEmitter & { argv: string[]; exitCode?: number | string };
+      signals.argv = [];
+      const ready = deferred();
+      const handlerEntered = deferred();
+      const allowStart = deferred();
+      const logs: string[] = [];
+      let manager!: ScenarioJobManager;
+      let service!: StreamableHttpService;
+      let listener!: ReturnType<typeof createHttpServer>;
+      let settled = false;
+      let jobId = "";
+      const running = runMcpCli({
+        process: signals,
+        readConfig: () => ({
+          transport: "streamable-http",
+          mcpHost: "127.0.0.1",
+          mcpPort: 0,
+          unityHost: "127.0.0.1",
+          unityPort: 7123,
+          unityWebSocketPort: 7123,
+          unityProjectPath: project,
+          unityProjectId: "project-http",
+          unityEditorInstanceId: "editor-http",
+          unityTokenFile: tokenFile,
+          requestTimeoutMs: 10000,
+          toolProfiles: ["all"]
+        }),
+        createUnity: () => fake as unknown as UnityClient,
+        createScenarios: (options) => {
+          manager = new ScenarioJobManager(options);
+          if (stop === "pending-start") {
+            const startJob = manager.start.bind(manager);
+            context.mock.method(manager, "start", async (definition: ScenarioMatrixDefinition) => {
+              handlerEntered.resolve();
+              await allowStart.promise;
+              return startJob(definition);
+            });
+          }
+          if (stop === "failed-persistence") {
+            const methods = manager as unknown as { save(record: ScenarioJobRecord): Promise<void> };
+            const save = methods.save.bind(manager);
+            context.mock.method(methods, "save", async (record: ScenarioJobRecord) => {
+              if (["success", "failed", "cancelled", "outcomeUnknown"].includes(record.status))
+                throw Object.assign(new Error("synthetic ENOSPC"), { code: "ENOSPC" });
+              await save(record);
+            });
+          }
+          return manager;
+        },
+        startHttp: async (options) => {
+          service = await startStreamableHttp({ ...options, httpServerFactory: (settings, handler) => (listener = createHttpServer(settings, handler)) });
+          return service;
+        },
+        writeError: (message) => {
+          logs.push(message);
+          if (message.includes("listening at")) ready.resolve();
+        }
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+      let request: Promise<unknown> | undefined;
+      try {
+        await ready.promise;
+        request = post(service.url, {
+          message: {
+            jsonrpc: "2.0",
+            id: "scenario",
+            method: "tools/call",
+            params: {
+              name: "scenario_matrix_run",
+              arguments: {
+                name: "shutdown fixture",
+                scenePath: "Assets/Scenario.unity",
+                cases: [{ id: "mutate", sourceMutations: [{ path: "Assets/Fixture.cs", content: "public class Changed {}", expectedSha256: hash(original) }] }]
+              }
+            }
+          }
+        }).catch(() => undefined);
+        if (stop === "pending-start") {
+          await handlerEntered.promise;
+          signals.emit("SIGTERM");
+          await eventually(() => service.stats().closing);
+          assert.equal(fake.disposed, 0);
+          assert.equal(service.stats().activeRequests, 1);
+          allowStart.resolve();
+        } else {
+          const reply = (await request) as { body: string };
+          jobId = String(JSON.parse(reply.body).result.structuredContent.operationId);
+        }
+        await fake.restoring.promise;
+        assert.deepEqual(await readFile(sourcePath), fake.mutated);
+        assert.deepEqual(await readFile(fake.backupPath), original);
+        if (stop === "fatal") listener.emit("error", new Error("Authorization: Bearer do-not-print-this-secret"));
+        else if (stop !== "pending-start") signals.emit(stop === "SIGINT" ? "SIGINT" : "SIGTERM");
+        await eventually(() => service.stats().closing);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(settled, false);
+        assert.equal(fake.disposed, 0, "Unity must remain alive while restoration is held");
+        assert.equal(fake.cancelled, 0);
+        const jobsRoot = join(project, "Library", "UnityMcpGhost", "scenario-jobs");
+        const lease = JSON.parse(await readFile(join(jobsRoot, "active-scenario-lease.json"), "utf8"));
+        if (jobId) assert.equal(lease.operationId, jobId);
+        jobId = lease.operationId;
+        fake.allowRestore.resolve();
+        const result = await running;
+        assert.equal(result.exitCode, stop === "fatal" || stop === "failed-persistence" ? 1 : 0);
+        assert.equal(fake.disposed, 1);
+        assert.equal(fake.cancelled, 0);
+        assert.equal(fake.applyCount, 1);
+        assert.equal(fake.restoreCount, 1);
+        assert.equal(fake.callsAfterDispose, 0);
+        assert.deepEqual(await readFile(sourcePath), original);
+        assert.deepEqual(fake.editor, fake.originalEditor);
+        await assert.rejects(access(fake.backupPath), { code: "ENOENT" });
+        const persisted = JSON.parse(await readFile(join(jobsRoot, `${jobId}.json`), "utf8"));
+        if (stop === "failed-persistence") {
+          assert.equal(persisted.status, "running");
+          assert.equal(persisted.phase, "restoring-original-state");
+          await access(join(jobsRoot, "active-scenario-lease.json"));
+          assert.ok(result.failureCodes.includes("MCP_SCENARIO_OUTCOME_UNKNOWN"));
+        } else {
+          assert.equal(persisted.status, "success");
+          assert.equal(persisted.restorationComplete, true);
+          await assert.rejects(access(join(jobsRoot, "active-scenario-lease.json")), { code: "ENOENT" });
+        }
+        if (stop === "pending-start") assert.match(logs.join(""), /1 unfinished request\(s\)/);
+        else assert.doesNotMatch(logs.join(""), /unfinished request/);
+        assert.doesNotMatch(logs.join(""), /do-not-print-this-secret|Authorization/);
+        assert.equal(signals.listenerCount("SIGINT") + signals.listenerCount("SIGTERM"), 0);
+        await request;
+      } finally {
+        allowStart.resolve();
+        fake.allowRestore.resolve();
+        signals.emit("SIGTERM");
+        await running;
+        await request;
+        await rm(project, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    });
+  }
+
   it("negotiates SDK HTTP, exposes the real catalog, and preserves structured soft failures", async () => {
     const service = await startStreamableHttp({
       host: "127.0.0.1",
@@ -802,12 +956,109 @@ describe("secured MCP Streamable HTTP", () => {
       const first = service.close();
       assert.equal(first, service.close());
       assert.deepEqual(await first, { unfinishedRequests: 1, outcomeUnknown: true });
+      let drained = false;
+      const draining = service.drain().then(() => {
+        drained = true;
+      });
       await pending;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(drained, false, "socket closure must not stand in for handler completion");
       release.resolve();
-      await eventually(() => service.stats().activeRequests === 0 && service.stats().connections === 0);
+      await draining;
+      assert.equal(service.stats().activeRequests, 0);
     } finally {
       release.resolve();
       await service.close();
+    }
+  });
+
+  it("exposes the actual post-listen fatal error and closes admission", async () => {
+    let listener!: ReturnType<typeof createHttpServer>;
+    const service = await start({ httpServerFactory: (options, handler) => (listener = createHttpServer(options, handler)) });
+    const failure = new Error("listener failed with a credential that must not be logged");
+    try {
+      listener.emit("error", failure);
+      assert.equal(await service.fatalError, failure);
+      assert.equal(service.stats().closing, true);
+      await service.close();
+      await service.drain();
+      assert.equal(service.stats().activeRequests, 0);
+    } finally {
+      await service.close();
+    }
+  });
+
+  for (const timing of ["throw", "bind-error"] as const) {
+    it(`cleans up partial listener startup on ${timing}`, async (context) => {
+      let listener!: ReturnType<typeof createHttpServer>;
+      let initialListeners: ReturnType<typeof listener.listeners>;
+      const occupied = createHttpServer();
+      await new Promise<void>((resolve) => occupied.listen(0, "127.0.0.1", resolve));
+      const address = occupied.address();
+      assert.ok(address && typeof address !== "string");
+      try {
+        await assert.rejects(
+          start({
+            port: address.port,
+            httpServerFactory: (options, handler) => {
+              listener = createHttpServer(options, handler);
+              initialListeners = listener.listeners("listening");
+              if (timing === "throw")
+                context.mock.method(listener, "listen", () => {
+                  throw new Error("secret listen failure");
+                });
+              return listener;
+            }
+          }),
+          /MCP HTTP listener could not bind/
+        );
+        assert.equal(listener.listening, false);
+        assert.deepEqual(listener.listeners("listening"), initialListeners!);
+      } finally {
+        await new Promise<void>((resolve) => occupied.close(() => resolve()));
+      }
+    });
+  }
+
+  it("releases admission and reports protocol cleanup failures without an unhandled rejection", async () => {
+    const failure = new Error("secret protocol cleanup failure");
+    const service = await start({
+      createServer: () => {
+        const protocol = new McpServer({ name: "cleanup-failure", version: "1" });
+        const close = protocol.close.bind(protocol);
+        protocol.close = async () => {
+          await close();
+          throw failure;
+        };
+        return protocol;
+      }
+    });
+    try {
+      await post(service.url).catch(() => undefined);
+      assert.equal(await service.fatalError, failure);
+      await service.close();
+      await assert.rejects(service.drain(), /MCP_HTTP_DRAIN_FAILED/);
+      assert.equal(service.stats().activeRequests, 0);
+      assert.equal(service.stats().connections, 0);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it("preserves a socket-close failure while actual handler admission can still drain", async (context) => {
+    let listener!: ReturnType<typeof createHttpServer>;
+    const service = await start({ httpServerFactory: (options, handler) => (listener = createHttpServer(options, handler)) });
+    const failure = new Error("secret listener close failure");
+    const close = listener.close.bind(listener);
+    context.mock.method(listener, "close", (callback?: (error?: Error) => void) => close(() => callback?.(failure)));
+    try {
+      assert.equal((await post(service.url)).status, 200);
+      await assert.rejects(service.close(), (error) => error === failure);
+      await service.drain();
+      assert.equal(service.stats().activeRequests, 0);
+      await eventually(() => service.stats().connections === 0);
+    } finally {
+      await service.close().catch(() => undefined);
     }
   });
 
@@ -903,6 +1154,108 @@ describe("secured MCP Streamable HTTP", () => {
     }
   });
 });
+
+class ShutdownScenarioUnity {
+  readonly restoring = deferred();
+  readonly allowRestore = deferred();
+  readonly mutated = Buffer.from("public class Changed {}");
+  readonly backupPath: string;
+  readonly originalEditor = { scene: "Assets/Original.unity", selected: ["OriginalObject"], play: "paused" };
+  editor = structuredClone(this.originalEditor);
+  disposed = 0;
+  cancelled = 0;
+  callsAfterDispose = 0;
+  applyCount = 0;
+  restoreCount = 0;
+  generation = 0;
+  constructor(
+    readonly sourcePath: string,
+    readonly original: Buffer
+  ) {
+    this.backupPath = `${sourcePath}.backup`;
+  }
+  dispose(): void {
+    this.disposed++;
+  }
+  async request(method: string, params: unknown = {}, options: { signal?: AbortSignal } = {}): Promise<unknown> {
+    if (this.disposed) {
+      this.callsAfterDispose++;
+      throw new Error("Unity disposed before restoration completed");
+    }
+    const values = params as Record<string, unknown>;
+    const aborted = () => {
+      this.cancelled++;
+    };
+    options.signal?.addEventListener("abort", aborted);
+    try {
+      switch (method) {
+        case "health":
+          return { ok: true, unityVersion: "2022.3.62f1" };
+        case "editor.snapshot":
+          return {
+            ok: true,
+            playMode: { state: this.editor.play, transitionGeneration: this.generation },
+            dirtyScenes: [],
+            fixtureEditor: structuredClone(this.editor)
+          };
+        case "editor.restore_snapshot":
+          this.editor = structuredClone((values.snapshot as { fixtureEditor: ShutdownScenarioUnity["editor"] }).fixtureEditor);
+          return { ok: true, restored: true };
+        case "scene.open":
+          this.editor.scene = String(values.path);
+          this.editor.selected = [];
+          return { ok: true };
+        case "play_mode.set":
+          this.editor.play = String(values.state);
+          this.generation++;
+          return { ok: true, requestedState: this.editor.play, transitionGeneration: this.generation };
+        case "play_mode.get":
+          return { ok: true, state: this.editor.play, transitionGeneration: this.generation };
+        case "console.mark":
+          return { ok: true, boundary: "shutdown-case" };
+        case "scenario.source_apply":
+          this.applyCount++;
+          await writeFile(this.backupPath, await readFile(this.sourcePath));
+          await writeFile(this.sourcePath, this.mutated);
+          return {
+            ok: true,
+            transactionId: values.transactionId,
+            requestedCompileGeneration: ++this.generation,
+            receipts: [{ path: "Assets/Fixture.cs", beforeSha256: hash(this.original), afterSha256: hash(this.mutated), backupPath: this.backupPath }]
+          };
+        case "scenario.source_restore":
+          this.restoreCount++;
+          this.restoring.resolve();
+          await this.allowRestore.promise;
+          if (this.disposed) {
+            this.callsAfterDispose++;
+            throw new Error("Unity disposed during source restoration");
+          }
+          await writeFile(this.sourcePath, await readFile(this.backupPath));
+          return {
+            ok: true,
+            requestedCompileGeneration: ++this.generation,
+            outcomes: [{ ok: true, path: "Assets/Fixture.cs", restoredSha256: hash(this.original) }]
+          };
+        case "scenario.source_complete":
+          await rm(this.backupPath);
+          return { ok: true, completed: true };
+        case "script.read":
+          return { ok: true, sha256: hash(await readFile(this.sourcePath)) };
+        case "compile.status_get":
+          return { ok: true, status: "success", requestedCompileGeneration: this.generation, diagnostics: [] };
+        default:
+          throw new Error(`Unexpected fixture request ${method}`);
+      }
+    } finally {
+      options.signal?.removeEventListener("abort", aborted);
+    }
+  }
+}
+
+function hash(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 function start(overrides: Partial<StreamableHttpOptions> = {}) {
   return startStreamableHttp({

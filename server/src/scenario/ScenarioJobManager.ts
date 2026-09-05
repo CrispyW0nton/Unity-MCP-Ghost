@@ -167,6 +167,10 @@ export class ScenarioJobManager {
   private readonly finalizationFailures = new Map<string, ScenarioFailureShape>();
   private readonly replaceFile = rename;
   private recovery: Promise<void> | undefined;
+  private readonly starts = new Set<Promise<unknown>>();
+  private readonly executions = new Set<Promise<void>>();
+  private closing = false;
+  private closePromise: Promise<{ outcomeUnknown: boolean }> | undefined;
 
   public constructor(private readonly options: ScenarioJobManagerOptions) {
     this.projectPath = options.projectPath ? resolve(options.projectPath) : undefined;
@@ -181,7 +185,31 @@ export class ScenarioJobManager {
     return Boolean(this.projectPath && this.projectId && this.editorInstanceId && this.jobsRoot && this.evidenceRoot);
   }
 
-  public async start(definition: ScenarioMatrixDefinition): Promise<Record<string, unknown>> {
+  public start(definition: ScenarioMatrixDefinition): Promise<Record<string, unknown>> {
+    if (this.closing) return Promise.reject(new ScenarioFailure("SCENARIO_MANAGER_CLOSED", "Scenario admission is closed."));
+    const starting = this.startJob(definition);
+    this.starts.add(starting);
+    void starting.then(
+      () => this.starts.delete(starting),
+      () => this.starts.delete(starting)
+    );
+    return starting;
+  }
+
+  /** Stop new starts, then await admitted starts, recovery, execution and durable finalization. Never cancels jobs. */
+  public close(): Promise<{ outcomeUnknown: boolean }> {
+    this.closing = true;
+    this.closePromise ??= (async () => {
+      // Starts may still be recovering/acquiring a lease and have not launched their execution yet.
+      await Promise.allSettled([...this.starts]);
+      const recovery = await Promise.allSettled(this.recovery ? [this.recovery] : []);
+      while (this.executions.size) await Promise.allSettled([...this.executions]);
+      return { outcomeUnknown: this.finalizationFailures.size > 0 || recovery.some((result) => result.status === "rejected") };
+    })();
+    return this.closePromise;
+  }
+
+  private async startJob(definition: ScenarioMatrixDefinition): Promise<Record<string, unknown>> {
     this.requireAvailable();
     await this.ensureRecovered();
     if (definition.projectId && definition.projectId !== this.projectId) {
@@ -352,7 +380,7 @@ export class ScenarioJobManager {
   private launch(record: ScenarioJobRecord): void {
     const controller = new AbortController();
     this.controllers.set(record.operationId, controller);
-    void this.execute(record, controller.signal)
+    const execution = this.execute(record, controller.signal)
       .catch(async (error: unknown) => {
         const latest = await this.loadRequired(record.operationId).catch(() => record);
         latest.status = "failed";
@@ -379,9 +407,18 @@ export class ScenarioJobManager {
         }
         await this.releaseLease(record.operationId);
       })
+      .catch(() => {
+        // A failure in finalization itself must stay visible and must not become an unhandled rejection.
+        this.finalizationFailures.set(record.operationId, {
+          code: "SCENARIO_FINALIZATION_FAILED",
+          message: "Scenario finalization did not complete; reconcile the durable record and retained recovery material."
+        });
+      })
       .finally(() => {
         this.controllers.delete(record.operationId);
+        this.executions.delete(execution);
       });
+    this.executions.add(execution);
   }
 
   private async execute(record: ScenarioJobRecord, signal: AbortSignal): Promise<void> {
@@ -1001,6 +1038,7 @@ export class ScenarioJobManager {
   }
 
   private async ensureRecovered(): Promise<void> {
+    if (this.closing && !this.recovery) throw new ScenarioFailure("SCENARIO_MANAGER_CLOSED", "Scenario admission is closed.");
     this.recovery ??= this.recoverInterrupted();
     await this.recovery;
   }

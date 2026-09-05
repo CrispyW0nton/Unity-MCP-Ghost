@@ -10,6 +10,99 @@ import { ScenarioJobManager, type ScenarioJobRecord } from "../src/scenario/Scen
 import type { UnityClient } from "../src/unity/UnityClient.js";
 
 describe("durable scenario matrix jobs", () => {
+  it("closes admission immediately but drains a start still acquiring its lease", async (context) => {
+    const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-drain-start-"));
+    const fake = new FakeScenarioUnity();
+    const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+    const acquiring = deferred();
+    const allowAcquire = deferred();
+    const acquire = internals(manager).acquireLease.bind(manager);
+    context.mock.method(internals(manager), "acquireLease", async (id: string) => {
+      acquiring.resolve();
+      await allowAcquire.promise;
+      await acquire(id);
+    });
+    const definition = { name: "drain start", scenePath: "Assets/Fixture.unity", cases: [{ id: "green" }] };
+    const starting = manager.start(definition);
+    let closing: ReturnType<ScenarioJobManager["close"]> | undefined;
+    try {
+      await acquiring.promise;
+      closing = manager.close();
+      assert.equal(manager.close(), closing);
+      let settled = false;
+      void closing.then(() => {
+        settled = true;
+      });
+      await assert.rejects(manager.start(definition), { code: "SCENARIO_MANAGER_CLOSED" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false);
+      allowAcquire.resolve();
+      const receipt = await starting;
+      assert.deepEqual(await closing, { outcomeUnknown: false });
+      assert.equal((await manager.get(String(receipt.operationId))).status, "success");
+      assert.equal(fake.restoreCount, 2);
+      await assert.rejects(access(join(projectPath, "Library", "UnityMcpGhost", "scenario-jobs", "active-scenario-lease.json")), { code: "ENOENT" });
+    } finally {
+      allowAcquire.resolve();
+      await starting;
+      await closing;
+      await removeTestProject(projectPath);
+    }
+  });
+
+  it("drains recovery triggered by a read through terminal persistence and lease release", async (context) => {
+    const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-drain-recovery-"));
+    const fake = new FakeScenarioUnity();
+    const options = { unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" };
+    const first = new ScenarioJobManager(options);
+    const started = await first.start({ name: "interrupted", scenePath: "Assets/Fixture.unity", cases: [{ id: "green" }] });
+    await first.close();
+    const operationId = String(started.operationId);
+    const jobsRoot = join(projectPath, "Library", "UnityMcpGhost", "scenario-jobs");
+    const jobPath = join(jobsRoot, `${operationId}.json`);
+    const previous = JSON.parse(await readFile(jobPath, "utf8")) as ScenarioJobRecord;
+    await writeFile(
+      jobPath,
+      JSON.stringify({ ...previous, status: "running", phase: "restoring-original-state", restorationComplete: false, completedUtc: undefined })
+    );
+    const recovering = deferred();
+    const allowRecovery = deferred();
+    const request = fake.request.bind(fake);
+    context.mock.method(fake, "request", async (method: string, params: unknown) => {
+      if (method === "editor.restore_snapshot") {
+        recovering.resolve();
+        await allowRecovery.promise;
+      }
+      return request(method, params);
+    });
+    const manager = new ScenarioJobManager(options);
+    const reading = manager.get(operationId);
+    let closing: ReturnType<ScenarioJobManager["close"]> | undefined;
+    try {
+      await recovering.promise;
+      let settled = false;
+      closing = manager.close();
+      void closing.then(() => {
+        settled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false);
+      await access(join(jobsRoot, "active-scenario-lease.json"));
+      allowRecovery.resolve();
+      assert.deepEqual(await closing, { outcomeUnknown: false });
+      assert.equal((await reading).phase, "recovered-after-server-restart");
+      const terminal = JSON.parse(await readFile(jobPath, "utf8")) as ScenarioJobRecord;
+      assert.equal(terminal.status, "failed");
+      assert.equal(terminal.restorationComplete, true);
+      await assert.rejects(access(join(jobsRoot, "active-scenario-lease.json")), { code: "ENOENT" });
+    } finally {
+      allowRecovery.resolve();
+      await reading;
+      await closing;
+      await removeTestProject(projectPath);
+    }
+  });
+
   it("runs a case, restores editor state, and writes deterministic evidence files", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-"));
     const fake = new FakeScenarioUnity();
@@ -515,7 +608,15 @@ describe("durable scenario matrix jobs", () => {
           await assert.rejects(reader.readEvidence(operationId, "manifest.json"), { code: "SCENARIO_NOT_COMPLETE" });
         }
         assert.equal(fake.restoreCount, 2);
+        let closed = false;
+        const closing = manager.close().then((receipt) => {
+          closed = true;
+          return receipt;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(closed, false, "close must await the execution's lease cleanup");
         allowRelease.resolve();
+        assert.deepEqual(await closing, { outcomeUnknown: false });
         const completed = await waitForTerminal(manager, operationId);
         assert.equal(completed.status, failedEvidence ? "failed" : "success");
         assert.equal((await contender.get(operationId)).status, completed.status);
@@ -572,8 +673,31 @@ describe("durable scenario matrix jobs", () => {
       assert.equal(durable.phase, "restoring-original-state");
       assert.equal(fake.restoreCount, 2);
       assert.equal(terminalSaveAttempts, 2);
+      assert.deepEqual(await manager.close(), { outcomeUnknown: true });
     } finally {
       if (operationId) await internals(manager).releaseLease(operationId);
+      await removeTestProject(projectPath);
+    }
+  });
+
+  it("reports a failed finalization fallback without releasing its lease or leaking a rejection", async (context) => {
+    const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-drain-finalize-failure-"));
+    const fake = new FakeScenarioUnity();
+    const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+    let releaseAttempts = 0;
+    context.mock.method(internals(manager), "releaseLease", async () => {
+      releaseAttempts++;
+      throw new Error("synthetic lease cleanup failure");
+    });
+    try {
+      const started = await manager.start({ name: "failed finalization", scenePath: "Assets/Fixture.unity", cases: [{ id: "green" }] });
+      assert.deepEqual(await manager.close(), { outcomeUnknown: true });
+      assert.equal(releaseAttempts, 2);
+      assert.equal(fake.restoreCount, 2);
+      assert.equal((await manager.get(String(started.operationId))).phase, "finalization-failed");
+      await access(join(projectPath, "Library", "UnityMcpGhost", "scenario-jobs", "active-scenario-lease.json"));
+    } finally {
+      await manager.close();
       await removeTestProject(projectPath);
     }
   });

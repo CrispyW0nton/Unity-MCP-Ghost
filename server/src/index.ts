@@ -1,39 +1,4 @@
 #!/usr/bin/env node
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { readConfig } from "./config.js";
-import { createMcpServer } from "./mcp/createServer.js";
-import { UnityClient } from "./unity/UnityClient.js";
+import { runMcpCli } from "./mcpCli.js";
 
-async function main(): Promise<void> {
-  const config = readConfig(process.argv.slice(2));
-  const unity = new UnityClient({
-    host: config.unityHost,
-    port: config.unityPort,
-    webSocketPort: config.unityWebSocketPort,
-    queueDir: config.unityQueueDir,
-    requestTimeoutMs: config.requestTimeoutMs,
-    projectId: config.unityProjectId,
-    editorInstanceId: config.unityEditorInstanceId,
-    tokenFile: config.unityTokenFile
-  });
-
-  const server = createMcpServer({
-    unity,
-    projectPath: config.unityProjectPath,
-    projectId: config.unityProjectId,
-    editorInstanceId: config.unityEditorInstanceId,
-    toolProfiles: config.toolProfiles
-  });
-
-  if (config.transport === "stdio") {
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    return;
-  }
-}
-
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exitCode = 1;
-});
+void runMcpCli();

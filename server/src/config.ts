@@ -4,10 +4,12 @@ import { platform } from "node:os";
 import { join, resolve } from "node:path";
 import { parseOperationProfiles, type OperationProfile } from "./mcp/operationCatalog.js";
 
-export type TransportKind = "stdio";
+export type TransportKind = "stdio" | "streamable-http";
 
 export interface ServerConfig {
   transport: TransportKind;
+  mcpHost: "127.0.0.1" | "::1";
+  mcpPort: number;
   unityHost: string;
   unityPort: number;
   unityWebSocketPort: number;
@@ -31,9 +33,12 @@ interface BridgeIdentity {
 export function readConfig(argv: string[]): ServerConfig {
   const args = parseArgs(argv);
   const transport = args.get("transport") ?? "stdio";
-  if (transport !== "stdio") {
-    throw new Error(`Unsupported transport '${transport}'. Only stdio is implemented.`);
+  if (transport !== "stdio" && transport !== "streamable-http") {
+    throw new Error(`Unsupported transport '${transport}'. Choose stdio or streamable-http.`);
   }
+  const mcpHost = args.get("mcp-host") ?? "127.0.0.1";
+  if (mcpHost !== "127.0.0.1" && mcpHost !== "::1") throw new Error("--mcp-host must be a literal loopback address (127.0.0.1 or ::1).");
+  const mcpPort = parseInteger(args.get("mcp-port"), 8080, "mcp-port", 1024, 65535);
 
   const unityHost = args.get("unity-host") ?? "127.0.0.1";
   if (!isLoopbackHost(unityHost)) {
@@ -74,6 +79,8 @@ export function readConfig(argv: string[]): ServerConfig {
 
   return {
     transport,
+    mcpHost,
+    mcpPort,
     unityHost,
     unityPort,
     unityWebSocketPort,

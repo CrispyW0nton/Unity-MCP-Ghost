@@ -6,6 +6,26 @@ import { describe, it } from "node:test";
 import { projectIdForPath, readConfig } from "../src/config.js";
 
 describe("secure Unity project configuration", () => {
+  it("keeps stdio default and explicitly enables only literal-loopback Streamable HTTP", async () => {
+    const project = await createProjectIdentity();
+    try {
+      const args = ["--unity-project-path", project.path];
+      assert.equal(readConfig(args).transport, "stdio");
+      const http = readConfig([...args, "--transport", "streamable-http", "--mcp-port", "8123"]);
+      assert.equal(http.transport, "streamable-http");
+      assert.equal(http.mcpHost, "127.0.0.1");
+      assert.equal(http.mcpPort, 8123);
+      for (const host of ["localhost", "0.0.0.0", "192.0.2.1", "127.1", "[::1]"]) {
+        assert.throws(() => readConfig([...args, "--transport", "streamable-http", "--mcp-host", host]), /literal loopback/i);
+      }
+      for (const port of ["0", "1023", "65536", "1.2", "abc"]) {
+        assert.throws(() => readConfig([...args, "--transport", "streamable-http", "--mcp-port", port]), /mcp-port/);
+      }
+      assert.throws(() => readConfig([...args, "--transport", "sse"]), /Unsupported transport/);
+    } finally {
+      await rm(project.path, { recursive: true, force: true });
+    }
+  });
   it("loads a generated identity and pins its project, editor, token, and port", async () => {
     const project = await createProjectIdentity();
     try {

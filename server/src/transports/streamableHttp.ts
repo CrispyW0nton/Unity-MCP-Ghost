@@ -69,6 +69,10 @@ export interface StreamableHttpService {
   stats(): { connections: number; activeRequests: number; closing: boolean };
   /** Closes HTTP resources, not Unity jobs. In-flight mutations can have unknown outcomes. */
   close(): Promise<{ unfinishedRequests: number; outcomeUnknown: boolean }>;
+  /** After close(), await every admitted handler and transport cleanup, including detached requests. Does not drain background Unity jobs. */
+  drain(): Promise<void>;
+  /** Resolves (never rejects) with the first fatal listener/cleanup cause. Consumers must coordinate their owned jobs' shutdown. */
+  fatalError: Promise<unknown>;
 }
 
 class HttpFailure extends Error {
@@ -101,6 +105,12 @@ export async function startStreamableHttp(options: StreamableHttpOptions): Promi
   const requestedSockets = new WeakSet<object>();
   const headerDeadlines = new WeakMap<Socket, ReturnType<typeof setTimeout>>();
   const active = new Set<{ stop(): void; dispatched: boolean }>();
+  const pending = new Set<Promise<unknown>>();
+  const cleanupErrors: unknown[] = [];
+  let resolveFatal!: (error: unknown) => void;
+  const fatalError = new Promise<unknown>((resolve) => {
+    resolveFatal = resolve;
+  });
   let admittedWork = 0;
   let closing = false;
   let closePromise: ReturnType<StreamableHttpService["close"]> | undefined;
@@ -111,7 +121,7 @@ export async function startStreamableHttp(options: StreamableHttpOptions): Promi
     requestedSockets.add(request.socket);
     clearTimeout(headerDeadlines.get(request.socket));
     headerDeadlines.delete(request.socket);
-    void handle(request, response);
+    track(handle(request, response));
   });
   server.maxHeadersCount = 64;
   server.maxRequestsPerSocket = 1;
@@ -146,25 +156,61 @@ export async function startStreamableHttp(options: StreamableHttpOptions): Promi
   });
   server.on("upgrade", (_request, socket) => socket.destroy());
   server.on("connect", (_request, socket) => socket.destroy());
-  await new Promise<void>((resolve, rejectListen) => {
-    const failed = () => {
-      server.removeListener("listening", ready);
-      rejectListen(new Error("MCP HTTP listener could not bind."));
-    };
-    const ready = () => {
-      server.removeListener("error", failed);
-      resolve();
-    };
-    server.once("error", failed);
-    server.once("listening", ready);
-    server.listen(options.port, options.host);
+  let listening = false;
+  // Install before readiness so an error between 'listening' and the await continuation cannot escape.
+  server.on("error", (error) => {
+    if (listening) fail(error);
   });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("MCP HTTP listener did not bind.");
-  authority = `${options.host === "::1" ? "[::1]" : options.host}:${address.port}`;
-  server.on("error", () => {
-    void close();
-  });
+  try {
+    await new Promise<void>((resolve, rejectListen) => {
+      const cleanup = () => {
+        server.removeListener("listening", ready);
+        server.removeListener("error", failed);
+      };
+      const failed = (error: unknown) => {
+        cleanup();
+        rejectListen(error);
+      };
+      const ready = () => {
+        listening = true;
+        cleanup();
+        resolve();
+      };
+      server.once("error", failed);
+      server.once("listening", ready);
+      try {
+        server.listen(options.port, options.host);
+      } catch (error) {
+        failed(error);
+      }
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("MCP HTTP listener did not bind.");
+    authority = `${options.host === "::1" ? "[::1]" : options.host}:${address.port}`;
+  } catch (cause) {
+    await close().catch(() => undefined);
+    throw new Error("MCP HTTP listener could not bind.", { cause });
+  }
+
+  function fail(error: unknown): void {
+    resolveFatal(error);
+    void close().catch((closeError: unknown) => {
+      cleanupErrors.push(closeError);
+    });
+  }
+
+  function track<T>(work: Promise<T>): Promise<T> {
+    pending.add(work);
+    void work.then(
+      () => pending.delete(work),
+      (error: unknown) => {
+        pending.delete(work);
+        cleanupErrors.push(error);
+        fail(error);
+      }
+    );
+    return work;
+  }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     let id: string | number | null = null;
@@ -176,6 +222,10 @@ export async function startStreamableHttp(options: StreamableHttpOptions): Promi
     let protocolServer: McpServer | undefined;
     let sdk: WebStandardStreamableHTTPServerTransport | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
+    let completeAdmission!: () => void;
+    const admissionDone = new Promise<void>((resolve) => {
+      completeAdmission = resolve;
+    });
     const expiresAt = Date.now() + limits.requestTimeoutMs;
     const stopped = new AbortController();
     const item = {
@@ -202,15 +252,21 @@ export async function startStreamableHttp(options: StreamableHttpOptions): Promi
       }
       stopped.abort();
       // Close only the HTTP transport. Protocol close would implicitly abort the handler's signal.
-      void sdk?.close();
+      if (sdk) track(sdk.close());
       request.destroy();
     }
     function finished(): Promise<void> {
-      finishedPromise ??= (async () => {
-        await protocolServer?.close();
-        active.delete(item);
-        admittedWork -= admission;
-      })();
+      finishedPromise ??= track(
+        (async () => {
+          try {
+            await protocolServer?.close();
+          } finally {
+            active.delete(item);
+            admittedWork -= admission;
+            completeAdmission();
+          }
+        })()
+      );
       return finishedPromise;
     }
     function expired(): boolean {
@@ -227,6 +283,7 @@ export async function startStreamableHttp(options: StreamableHttpOptions): Promi
       if (++windowRequests > limits.requestsPerWindow) throw new HttpFailure(429, "MCP_HTTP_RATE_LIMIT");
       if (admittedWork >= limits.activeRequests) throw new HttpFailure(503, "MCP_HTTP_CONCURRENCY_LIMIT");
       active.add(item);
+      track(admissionDone);
       admittedWork++;
       admission = 1;
       response.once("close", disconnected);
@@ -379,13 +436,25 @@ export async function startStreamableHttp(options: StreamableHttpOptions): Promi
     closing = true;
     const unfinishedRequests = [...active].filter((item) => item.dispatched).length;
     for (const item of active) item.stop();
-    closePromise = new Promise((resolve) => {
-      server.close(() => resolve({ unfinishedRequests, outcomeUnknown: unfinishedRequests > 0 }));
-      for (const socket of sockets) socket.destroy();
+    closePromise = new Promise((resolve, rejectClose) => {
+      try {
+        server.close((error) => (error ? rejectClose(error) : resolve({ unfinishedRequests, outcomeUnknown: unfinishedRequests > 0 })));
+      } catch (error) {
+        rejectClose(error);
+      } finally {
+        for (const socket of sockets) socket.destroy();
+      }
     });
     return closePromise;
   }
-  return { url: `http://${authority}/mcp`, stats: () => ({ connections: sockets.size, activeRequests: admittedWork, closing }), close };
+
+  async function drain(): Promise<void> {
+    if (!closing) throw new Error("MCP_HTTP_DRAIN_REQUIRES_CLOSE");
+    // Detached handlers release admission only when their final actual reply is produced.
+    while (pending.size) await Promise.allSettled([...pending]);
+    if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "MCP_HTTP_DRAIN_FAILED");
+  }
+  return { url: `http://${authority}/mcp`, stats: () => ({ connections: sockets.size, activeRequests: admittedWork, closing }), close, drain, fatalError };
 }
 
 function reject(request: IncomingMessage, response: ServerResponse, error: HttpFailure, id: string | number | null = null, unknown = false): void {
