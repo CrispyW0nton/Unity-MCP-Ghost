@@ -2,7 +2,7 @@
 
 ## Course-Ready Reliability milestone
 
-Status: active; GAM 215-equivalent fixture coverage is complete and real course-project certification remains pending.
+Status: active; the GAM 215-equivalent fixture matrices have passed locally, but final reliability review, complete-series verification, and real course-project certification remain pending. Passing matrices alone do not certify the release candidate.
 
 Milestone source documents:
 
@@ -107,8 +107,45 @@ Commits and verified gates:
   - Final live course evidence passed Module 1 at 23/23 cases with 13 screenshots and Module 2 at 43/43 cases with 42 screenshots. Timeout/cancellation restoration passed, and both suites restored `StudentExercise.cs` to SHA-256 `0ff9034f3593c47b17f158f0538127eab5d84aeaadcb58c5716018ef82a99a89`.
   - GitHub-hosted and self-hosted workflow results remain unobserved because this task does not push. The real Variablekiller and Conditionalkiller assets were unavailable, so the release qualification remains `GAM 215-equivalent fixture complete; real course-project certification pending`.
 
+- `b990da7` — `fix(reliability): preserve scenario receipts and repair editor state`
+  - Applied final review findings 1, 2, 4, and 6: distinguish unavailable Console observations from semantic timeouts; persist completion under the scenario lease; keep public results non-ready through cleanup; bound Play polling by the original deadline; and verify repair-smoke scenes, selection, and Play state before reporting restoration.
+  - Added complete sensitive C# assignment redaction and explicit client disposal. A failed terminal-record write now retains ownership and exposes `SCENARIO_FINALIZATION_PERSIST_FAILED` instead of releasing an unpersisted operation.
+  - Removed the unsafe delete-destination fallback from atomic record writes. A real Windows sharing-lock regression reproduced `EPERM`; bounded replacement retries now preserve the old readable record through 1.95 seconds of backoff and clean only the writer's temporary file on failure.
+  - Passed `npm test` (86/86), `npm run test:protocol` (9/9; 90 tools and 57 direct bridge mappings), `npm run build`, `npm run format:check`, `npm run lint`, and `git diff --check` on the integrated working tree. Complete-series live validation is still required after the separate certification-runner commit.
+  - Review receipt: completed `ce-code-review` run `20260905-114254-4a95bfe0`; three file-grouped fix batches applied findings 1/2/6 (scenario), 3 (collision evidence), and 4 (repair lifecycle), with no finding silently waived. Finding 3 and the runner hardening are verified locally but not yet committed in this slice.
+
+- `4a205ca` — `fix(testing): verify owned Windows process cleanup`
+  - Reproduced Windows `taskkill /T` stalling for 15 seconds in the existing child-cleanup test and for 45 seconds in two concurrent isolated probes. Replaced that test-runner helper with bounded PowerShell 7/.NET tree termination; matching concurrent probes completed in about two seconds.
+  - Added regressions proving that cleanup errors survive root exit and that a real descendant is stopped while an unrelated sentinel remains live. The six focused certification tests pass. PowerShell 7 is a Windows test prerequisite, not an MCP runtime dependency.
+  - Separated the scenario harness's 30-second observation budget from production operation deadlines after a five-second observation timeout abandoned ongoing disk work. All timeout assertions remain intact; failure diagnostics now include the last observed operation state.
+  - Passed a fresh `npm ci`, `npm test` (88/88), `npm run test:protocol` (9/9), formatting, lint, typecheck, build, release layout/package checks, standalone runner-script typecheck, `npm audit --audit-level=high` (zero vulnerabilities), and `git diff --check` on the integrated working tree.
+  - Fresh Unity Windows `2022.3.62f1` results passed EditMode 111/111 (`editmode-85f2e74f-48c8-4771-a43c-f22e2a196683-results.xml`) and PlayMode 1/1 (`playmode-898af9c3-f261-410c-90cf-b00c6429bc6d-results.xml`).
+  - The next real concurrent cancellation attempt did **not** reach cancellation: both cold Editors stalled at the initial ILPP compiler-worker ping and readiness expired after 420 seconds. The new cleanup path successfully stopped both owned Editors and removed the temporary workspace. The failed gate is preserved at `test-project/Logs/concurrent-editors-cancellation-startup-timeout-20260905T194743Z.json`; cleanup success is not cancellation-suite certification.
+
+- `6f32c43` — `fix(certification): prove exact editor routing and collision outcomes`
+  - Committed final review finding 3: a stopped bridge is not a collision receipt. Startup failures now identify the bind stage, exact HTTP/WebSocket transport and configured port, and typed native error without exposing exception messages.
+  - Added the concurrent/cancellation certification runners, exact executable-version checks, unique NUnit results with strict aggregate validation, existing-identity protection, shared owned-process cleanup, explicit supported-version metadata, and CI wiring.
+  - The fresh retry passed `npm run test:unity:concurrent:cancel` (8/8; SIGTERM after both bridges became ready, complete owned-process/registry/workspace cleanup), completed at `2026-09-05T19:52:16.550Z`. A fresh full `npm run test:unity:concurrent` passed all 31 routing, authentication, forced HTTP collision, forced WebSocket collision, and cleanup checks. The earlier cold-start failure remains preserved as diagnostic evidence.
+  - Integrated gates remain Node 88/88, protocol 9/9, EditMode 111/111, PlayMode 1/1, zero dependency advisories, and green format/lint/typecheck/build/release checks. These receipts precede final complete-series course/repair verification and are not a completion certificate.
+
+- `b17b8f4` — `fix(reliability): coordinate scenario reads and atomic replacement`
+  - Diagnosed a Windows persistence race: manager-owned status/evidence reads held the destination open while another manager replaced it. A controlled probe failed 144/200 replacements with concurrent reads and 0/200 without them.
+  - Added a shared canonical-path leaf-I/O interlock for job, lease and evidence files; Windows path aliases share the lock. Retained bounded external-lock retries, prior-record preservation and idle-lock cleanup.
+  - Three held-reader regressions failed before implementation, then passed. Parent verification passed the focused scenario suite at 29/29, integrated `npm test` at 112/112, protocol at 9/9, zero dependency advisories and `git diff --check`. The fix is in-process; external readers remain subject to the bounded retry policy.
+
+- `1e50fca` — `fix(testing): preserve truthful evidence through timeout and cancellation`
+  - Added bounded standalone Unity work, fresh per-invocation XML/log paths, cancellation-aware filesystem observation, required cleanup before acceptance, and structured failure evidence. Historical aggregate reports are neither replaced nor reused.
+  - Completed review `20260905-131222-e0e2a692`; two file-grouped follow-up batches applied all three validated findings. Runner regressions moved from 7/21 green before fixes to 21/21; a CLI partial-registration leak was independently reproduced and fixed, with all 12 CLI cases passing.
+  - Parent gates passed `npm test` 124/124, formatting, lint, typecheck, build and `git diff --check`; immediately preceding protocol/audit checks passed 9/9 and zero vulnerabilities. The actual executable CLI rejected an invalid platform with exit 1 and did not launch Unity.
+  - Real runner evidence passed EditMode 111/111 and PlayMode 1/1 before the CLI-only extraction. Controlled real-Editor timeout/cancellation probes failed with the correct codes and unique evidence paths, preserved historical reports and left no Editor running. Exact paths are in `docs/course-ready-verification.md`.
+  - The separate `-version` subprocess cleanup advisory remains open; suite-child cleanup and injected verification tests do not certify that earlier process boundary.
+
 Next required slice:
 
+- Keep `docs/course-ready-verification.md` current as an incomplete evidence map, not a release certificate.
+- Complete secured MCP-facing Streamable HTTP and broader real PlayMode coverage. Do not treat the existing single driver-contract PlayMode test as the requested full lifecycle/Console/scenario coverage.
+- Strengthen the executable-verification subprocess cleanup boundary and its real-process regression coverage.
+- Run final complete-series gates after the remaining implementation work, including fresh course and repair live smokes. Do not label the release candidate complete from unit counts or partial cleanup proof.
 - Observe the configured remote CI matrices after an authorized push and run the opt-in real-project smoke manifests when the Variablekiller and Conditionalkiller projects are available.
 
 ## Phase 1: Foundation

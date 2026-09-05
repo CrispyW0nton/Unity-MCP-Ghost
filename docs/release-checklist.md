@@ -12,6 +12,8 @@ Do not advertise macOS, Linux, Unity 2021, Unity 6, or another Unity 2022 patch 
 
 From a clean checkout:
 
+On Windows, install PowerShell 7 and ensure `pwsh.exe` is on PATH before running the tests. Owned-process cleanup uses .NET process-tree termination; helper failures remain failed gates even when the root process exits. The Windows regression includes a real descendant and an unrelated sentinel process.
+
 ```text
 npm ci
 npm run format:check
@@ -20,6 +22,8 @@ npm run typecheck
 npm run build
 npm test
 npm run test:protocol
+npm run test:unity:concurrent
+npm run test:unity:concurrent:cancel
 npm run test:unity:editmode
 npm run test:unity:playmode
 npm audit --audit-level=high
@@ -34,17 +38,22 @@ With the repository fixture open in Unity and its authenticated bridge active, a
 npm run smoke:security -- --unity-project-path test-project
 npm run smoke:runtime -- --unity-project-path test-project
 npm run smoke:scenario -- --unity-project-path test-project --request-timeout-ms 60000
+npm run phase3:repair-smoke -- --request-timeout-ms 60000
 npm run test:course
 ```
 
 Confirm success, failure, timeout, cancellation, and reload paths restore the fixture source hash and leave zero retained source transactions. The evidence directories under `test-project/Library/UnityMcpGhost/evidence` are local build evidence and must not be committed.
+
+`npm run test:course:live` starts an owned fixture Editor, runs the course suite, and closes that Editor. Do not run it against a fixture already open in another Editor. It must not remove or adopt another Editor's identity. The standalone Unity test runners check the actual executable's `-version` output and require a fresh, nonempty NUnit result with every test passed; an exit code alone is not certification. Each run keeps its uniquely named XML and log evidence. Historical `editmode-results.xml` and `playmode-results.xml` aliases are no longer updated or used: consumers must use the invocation's printed paths and successful command result. No historical evidence is deleted by this change.
+
+Standalone EditMode/PlayMode runs default to a 20-minute work deadline, including executable verification. Set `UNITY_TEST_TIMEOUT_MS` to a positive integer no greater than `3600000` to adjust it. Cancellation via SIGINT/SIGTERM or deadline expiry fails the command and still waits for bounded cleanup of the owned Editor, so process cleanup can extend the wall-clock duration beyond the work deadline. A cleanup failure remains an error even if the root exits. Inspect the unique log and XML paths reported on success or failure; early failures can occur before those files are created. Do not use an older aggregate XML or a green XML from a command that failed cleanup as certification.
 
 ## Package and secret review
 
 - `npm run check:catalog` reports 90 current tools and the generated C# parity test passes.
 - `dist/index.js`, root legal/security/change files, and the UPM package legal/change files are present.
 - Root npm, TypeScript, Unity C#, and UPM versions agree.
-- The UPM manifest pins Newtonsoft and advertises only Unity 2022.3.
+- The UPM manifest pins Newtonsoft and narrows its advertised Unity baseline to `2022.3.62f1` (`unity: 2022.3`, `unityRelease: 62f1`).
 - No token, identity file, `Library/`, `Logs/`, `Temp/`, `UserSettings/`, course asset, or evidence bundle is tracked.
 - `npm pack --dry-run` contains only the intended server distribution.
 

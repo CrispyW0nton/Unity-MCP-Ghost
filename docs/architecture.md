@@ -11,7 +11,7 @@ Unity MCP Ghost uses a split architecture:
 ```text
 Cursor / MCP client
         |
-        | MCP stdio or Streamable HTTP
+        | MCP stdio
         v
 TypeScript MCP server
         |
@@ -41,9 +41,13 @@ Unity Editor project
 
 Each editor session writes `bridge-identity.json` with a stable project ID, session-stable editor instance ID, heartbeat, version/capability handshake, HTTP/WebSocket ports, and token-file location. Requests must pin both IDs. Ghost never falls back to a different open editor. A local discovery copy is written under the current user's local application-data directory.
 
+A failed startup includes an additive `startupFailure` receipt naming the stage, transport, configured port, and typed native error. Only a verified address-in-use bind failure is `BRIDGE_ENDPOINT_CONFLICT`; `running: false` alone is not proof of a port collision. Heartbeats preserve the failure receipt until a subsequent successful start. Exception messages are excluded from the receipt to avoid publishing credentials or user configuration.
+
+The MCP-facing CLI currently implements stdio only. Streamable HTTP is future work, distinct from the implemented HTTP connection between the Node server and Unity.
+
 ## Durable Queue
 
-The WebSocket path is the hot path for low-latency editor automation. For domain reload resilience, the Unity package also watches:
+The client attempts authenticated HTTP first, then WebSocket and the durable queue when the failure permits fallback. It preserves request identity and never treats an ambiguous mutation outcome as a new mutation. For domain reload resilience, the Unity package watches:
 
 ```text
 Library/UnityMcpGhost/queue/pending/*.json
@@ -78,7 +82,7 @@ Ghost also exposes prompts that encode preferred orchestration patterns:
 
 ## Safety Model
 
-The bridge will classify tools by risk:
+Tools declare their risk classes:
 
 - `read` for state inspection.
 - `safe-write` for undoable scene changes.

@@ -5,10 +5,12 @@ Unity MCP Ghost is a Cursor-first Unity automation bridge inspired by the Unreal
 The `0.2.0-rc.1` release candidate contains:
 
 - `server/` - TypeScript MCP server, tool registry, Unity bridge client, and stdio transport entry point.
-- `Packages/com.crispywonton.unity-mcp-ghost/` - Unity UPM editor bridge package skeleton.
+- `Packages/com.crispywonton.unity-mcp-ghost/` - Unity UPM editor bridge package.
 - `docs/` - architecture and development notes for the Ghost roadmap.
 
-Supported baseline: **Unity 2022.3.62f1 on Windows** and Node.js 20 or newer. Other Unity versions and operating systems are not certified until their CI jobs are observed green.
+Supported baseline: **Unity 2022.3.62f1 on Windows**, with local Node verification on **24.11.1**. The development toolchain requires Node 20.19+, 22.13+, or 24+; CI is configured for the latest 20/22/24 patches, but those remote results are not yet observed. Other Unity versions and operating systems are not certified until their CI jobs are observed green.
+
+Windows tests that launch owned child processes also require **PowerShell 7 (`pwsh.exe` on PATH)** for bounded process-tree cleanup. This is a test-runner prerequisite, not a dependency of the MCP server or Unity package.
 
 See [docs/development-plan.md](docs/development-plan.md) for the full strategic roadmap, including the competitive pattern map, phased tool catalog, semantic-analysis moat, durable transport plan, and mobile/runtime milestones. See [docs/progress.md](docs/progress.md) for implementation progress and [docs/mcp-book-guidance.md](docs/mcp-book-guidance.md) for the MCP-specific design guidance applied from the local protocol reference books.
 
@@ -121,7 +123,7 @@ npm run config:client -- --unity-project-path C:/Path/To/UnityProject --tool-pro
 
 ## Current Status
 
-Course-Ready Reliability is implemented through authenticated transport, truthful bridge results, generation-scoped compilation, transactional script and batch changes, normal Play/Console/input control, durable scenario matrices, and deterministic evidence bundles. The generated catalog is available at `docs/generated/operation-catalog.json`; every public tool has input/output schemas, a valid example, risk metadata, and a stable operation ID.
+Course-Ready Reliability remains **in progress**. Implemented capabilities include authenticated Unity bridge transport, truthful bridge results, generation-scoped compilation, transactional script and batch changes, normal Play/Console/input control, durable scenario matrices, and deterministic evidence bundles. The generated catalog is available at `docs/generated/operation-catalog.json`; every public tool has input/output schemas, a valid example, risk metadata, and a stable operation ID. See [docs/course-ready-verification.md](docs/course-ready-verification.md) for remaining implementation and verification gates; passing fixture matrices alone do not certify the milestone.
 
 The clean-room fixture passes the GAM 215-equivalent Modules 1-2 matrix. The release qualification remains **GAM 215-equivalent fixture complete; real course-project certification pending** until user-supplied Variablekiller and Conditionalkiller projects pass the opt-in non-destructive smoke run.
 
