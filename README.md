@@ -2,11 +2,13 @@
 
 Unity MCP Ghost is a Cursor-first Unity automation bridge inspired by the Unreal MCP Ghost architecture: inspect, mutate, validate, repair, test, and document Unity projects through deterministic MCP tools.
 
-This repository currently contains the initial project scaffold:
+The `0.2.0-rc.1` release candidate contains:
 
 - `server/` - TypeScript MCP server, tool registry, Unity bridge client, and stdio transport entry point.
 - `Packages/com.crispywonton.unity-mcp-ghost/` - Unity UPM editor bridge package skeleton.
 - `docs/` - architecture and development notes for the Ghost roadmap.
+
+Supported baseline: **Unity 2022.3.62f1 on Windows** and Node.js 20 or newer. Other Unity versions and operating systems are not certified until their CI jobs are observed green.
 
 See [docs/development-plan.md](docs/development-plan.md) for the full strategic roadmap, including the competitive pattern map, phased tool catalog, semantic-analysis moat, durable transport plan, and mobile/runtime milestones. See [docs/progress.md](docs/progress.md) for implementation progress and [docs/mcp-book-guidance.md](docs/mcp-book-guidance.md) for the MCP-specific design guidance applied from the local protocol reference books.
 
@@ -31,6 +33,8 @@ node dist/index.js --transport stdio --unity-project-path C:/Path/To/UnityProjec
 ```
 
 `--unity-project-path` reads the generated identity, token-file location, editor instance, HTTP port, and separately advertised WebSocket port, then enables the authenticated durable queue. Ghost refuses unpinned projects, stale editor identities, missing tokens, and non-loopback bridge hosts. Custom `--unity-port` and `--unity-websocket-port` values are only needed for transport-fallback testing or explicitly persisted ports.
+
+The CLI exposes only the compact `core` profile by default. Opt into one or more additional profiles with `--tool-profile authoring,code,runtime,validation`, or use `--tool-profile all` for the complete catalog. `capabilities_search` can inspect disabled profiles without executing them.
 
 Destructive, package/network, arbitrary-code, and reflection capabilities default to disabled per project. Review [SECURITY.md](SECURITY.md) before enabling any of them in the Unity window.
 
@@ -88,15 +92,23 @@ The gate executes 23 Module 1 cases, 43 Module 2 cases, and a separate cancellat
 
 ## Cursor MCP Config
 
+Generate an absolute, token-free client configuration from the live project's ignored identity file:
+
+```bash
+npm run config:client -- --unity-project-path C:/Path/To/UnityProject --tool-profile core,runtime,validation
+```
+
 ```json
 {
   "mcpServers": {
     "unity-mcp-ghost": {
       "command": "node",
       "args": [
-        "C:/Dev/Unity-MCP-Ghost/server/dist/index.js",
+        "C:/Dev/Unity-MCP-Ghost/dist/index.js",
         "--transport",
         "stdio",
+        "--tool-profile",
+        "core,runtime,validation",
         "--unity-project-path",
         "C:/Path/To/UnityProject"
       ]
@@ -107,6 +119,25 @@ The gate executes 23 Module 1 cases, 43 Module 2 cases, and a separate cancellat
 
 ## Current Status
 
-Phase 1 is validated against the live KOTOR Unity project via both direct HTTP JSON-RPC and the durable queue fallback. Phase 2 parity tooling now includes component, prefab, asset, script, package manager, test-runner, ranged-edit, and resource-template support.
+Course-Ready Reliability is implemented through authenticated transport, truthful bridge results, generation-scoped compilation, transactional script and batch changes, normal Play/Console/input control, durable scenario matrices, and deterministic evidence bundles. The generated catalog is available at `docs/generated/operation-catalog.json`; every public tool has input/output schemas, a valid example, risk metadata, and a stable operation ID.
 
-Phase 3 moat work includes generation-scoped compiler diagnostics, truthful test and repair outcomes, transactional script mutations, durable operations, authenticated project-pinned transport, structured Console boundaries, normal Play-mode control, exact frame stepping, verified input simulation, semantic inspection, and visual validation. The clean-room runtime fixture proves PageUp/PageDown and pointer delivery without course assets. The active milestone is adding durable scenario matrices, deterministic evidence bundles, and the complete GAM 215-equivalent matrix.
+The clean-room fixture passes the GAM 215-equivalent Modules 1-2 matrix. The release qualification remains **GAM 215-equivalent fixture complete; real course-project certification pending** until user-supplied Variablekiller and Conditionalkiller projects pass the opt-in non-destructive smoke run.
+
+## Reproducible Verification
+
+```bash
+npm ci
+npm run format:check
+npm run lint
+npm run typecheck
+npm run build
+npm test
+npm run test:protocol
+npm run test:unity:editmode
+npm run test:unity:playmode
+npm audit --audit-level=high
+npm run release:check
+git diff --check
+```
+
+`npm run test:course` additionally requires the repository test project to be open with its authenticated bridge active. See [CHANGELOG.md](CHANGELOG.md), [SECURITY.md](SECURITY.md), and [docs/gam-215-fixture.md](docs/gam-215-fixture.md) before release.

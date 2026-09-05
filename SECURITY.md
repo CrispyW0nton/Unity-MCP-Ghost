@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are applied to the current development branch. Automated and live coverage currently proves Unity `2022.3.62f1` on Windows and the Node versions exercised by CI/local gates. Unity `2021.3`, Unity `6000.x`, macOS, and Linux remain unverified until their matrix gates are green; do not treat them as certified yet.
+Security fixes are applied to the current development branch and `0.2.x` release candidates. Automated and live coverage proves Unity `2022.3.62f1` on Windows; local Node gates currently prove Node `24.11.1`, while CI is configured for supported Node 20, 22, and 24 runners. Unity `2021.3`, Unity `6000.x`, macOS, and Linux remain unverified until their matrix gates are observed green; do not treat them as certified.
 
 ## Threat model and trust boundary
 

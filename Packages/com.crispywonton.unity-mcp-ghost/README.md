@@ -8,13 +8,21 @@ Open the bridge window from:
 Window > Unity MCP Ghost
 ```
 
-The bridge is editor-only and is intended to listen on localhost. It executes Unity API commands on the editor main thread and returns JSON-RPC responses to the external MCP server.
+The bridge is editor-only, binds to loopback, and requires its generated project token plus exact project/editor identity. It executes Unity API commands on the editor main thread and returns JSON-RPC responses to the external MCP server.
 
-By default the bridge starts after editor reload on `http://127.0.0.1:6400/unity-mcp-ghost/`. The window remains the control surface for status, command history, queue status, and manual stop/start.
+By default the bridge starts after editor reload on a deterministic project-specific port. The window remains the control surface for status, enabled risk classes, command history, queue status, and manual stop/start. Runtime identity and credentials stay under the project's ignored `Library/UnityMcpGhost` directory.
 
 ## Status
 
-This package currently includes Phase 1 and Phase 2 bridge tooling:
+Supported baseline: Unity **2022.3.62f1 on Windows**. Other platforms and Unity versions remain uncertified until their CI runs are observed green.
+
+Install the package from a local checkout or a Git URL with the package subdirectory:
+
+```text
+https://github.com/CrispyW0nton/Unity-MCP-Ghost.git?path=/Packages/com.crispywonton.unity-mcp-ghost
+```
+
+The package includes:
 
 - Editor window.
 - Bridge configuration.
@@ -34,3 +42,9 @@ This package currently includes Phase 1 and Phase 2 bridge tooling:
 - Durable queue fallback at `Library/UnityMcpGhost/queue` with `pending` and `results` subfolders.
 - HTTP JSON-RPC hot path with durable queue fallback for reload-prone Unity workflows.
 - Bridge-session console log buffering for game-development diagnostics.
+- Normal Play mode, Console boundary, verified input, durable scenario-source, and runtime assertion controllers.
+- A generated TypeScript/C# operation parity catalog and EditMode/PlayMode test assemblies.
+
+The companion Node server exposes only a compact core profile unless the client opts into authoring, code, runtime, validation, or all tools. Destructive and package/network capability classes remain disabled by default even when their tools are discoverable.
+
+License and release history are in `LICENSE.md` and `CHANGELOG.md` within this package.

@@ -1,5 +1,11 @@
 # Unity MCP Ghost Architecture
 
+## Operation contracts and profiles
+
+Each MCP tool registration is the versioned source for its handler, input schema, stable operation ID, output envelope, risk/execution metadata, related resources, and validated examples. `npm run generate:catalog` materializes the deterministic JSON Schema 2020-12 catalog and the C# direct-operation parity list; `npm run check:catalog`, Node protocol tests, and Unity EditMode tests reject drift.
+
+The production CLI registers the compact `core` profile by default. `authoring`, `code`, `runtime`, and `validation` profiles are explicit opt-ins, while `all` preserves full-surface compatibility for controlled smoke suites. Discovery is bounded and paginated; there is deliberately no generic `operation_call` escape hatch.
+
 Unity MCP Ghost uses a split architecture:
 
 ```text
