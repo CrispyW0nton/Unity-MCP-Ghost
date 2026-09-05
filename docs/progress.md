@@ -95,10 +95,21 @@ Commits and verified gates:
 - `c773cd9` — `test(smoke): remove KOTOR-specific baseline assumptions`
   - Made the repair smoke default to the repository fixture, accept truthful caller-default test scope when no semantic match exists, and require visual baseline selection/diff only when a baseline filter is explicitly supplied.
   - Passed formatting, lint, typecheck, all 32 Node tests, the live fixture script validation/repair inspection/screenshot/dry-run flow, and `git diff --check`.
+- `348c94e` — `fix(validation): recover source restoration across reload`
+  - Made scenario source restoration retry-safe across queue races and Unity domain reload, with durable receipts and byte-identical hash verification.
+  - Passed formatting, lint, typecheck, build, Node/protocol tests, Unity EditMode/PlayMode tests, and live scenario recovery checks.
+- `f29b88d` — `fix(review): close course-ready reliability gaps`
+  - Applied all 23 validated review findings across fail-closed batches, diagnostic/Console truncation, semantic request deduplication, bounded HTTP/WebSocket handshakes, screenshot coverage, live-owner scenario leases, evidence redaction, explicit input backends, generated request contracts, registry/server decomposition, and reproducible live-course CI.
+  - Preserved and cataloged the pre-existing `collider_setup` and `rigidbody_setup` work.
+  - Passed a fresh `npm ci`; `npm run format:check`; `npm run lint`; `npm run typecheck`; `npm run build`; 40/40 `npm test`; 9/9 `npm run test:protocol`; `npm audit --audit-level=high` with zero vulnerabilities; `npm run release:check`; `npm run release:pack`; and `git diff --check`.
+  - Passed 105/105 Unity EditMode tests and 1/1 Unity PlayMode test on Unity `2022.3.62f1` for Windows.
+  - Passed the live security, runtime, scenario, and repair smokes. Security proved 12 HTTP/WebSocket authentication, Origin, pinning, default-deny, fragmentation, and size-limit checks. Runtime proved Play/Pause/Step/Stop plus PageUp/PageDown and pointer delivery through `project-test-driver:gam215-fixture`, with typed unsupported-input failure.
+  - Final live course evidence passed Module 1 at 23/23 cases with 13 screenshots and Module 2 at 43/43 cases with 42 screenshots. Timeout/cancellation restoration passed, and both suites restored `StudentExercise.cs` to SHA-256 `0ff9034f3593c47b17f158f0538127eab5d84aeaadcb58c5716018ef82a99a89`.
+  - GitHub-hosted and self-hosted workflow results remain unobserved because this task does not push. The real Variablekiller and Conditionalkiller assets were unavailable, so the release qualification remains `GAM 215-equivalent fixture complete; real course-project certification pending`.
 
 Next required slice:
 
-- Run the complete fresh-install gate sequence, rerun live bridge/reload/course evidence, audit the final commit series, and record the handoff evidence and any genuinely unavailable external gates.
+- Observe the configured remote CI matrices after an authorized push and run the opt-in real-project smoke manifests when the Variablekiller and Conditionalkiller projects are available.
 
 ## Phase 1: Foundation
 
