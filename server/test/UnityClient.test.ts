@@ -56,6 +56,26 @@ describe("UnityClient durable request semantics", () => {
     }
   });
 
+  it("declares durable scenario restoration replay-safe", async () => {
+    let observed: Record<string, unknown> = {};
+    const server = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      observed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: observed.id, result: { ok: true } }));
+    });
+    const port = await listen(server);
+    try {
+      const client = new UnityClient({ host: "127.0.0.1", port, requestTimeoutMs: 1000, ...secureOptions(tokenFile) });
+      await client.request("scenario.source_restore", { transactionId: "scenario:case" }, { requestId: "restore-request" });
+
+      assert.equal(observed.idempotent, true);
+    } finally {
+      await close(server);
+    }
+  });
+
   it("reports a transport timeout as outcome unknown", async () => {
     const server = createServer(() => {
       // Intentionally leave the response pending past the request deadline.

@@ -118,6 +118,38 @@ describe("durable scenario matrix jobs", () => {
       await rm(projectPath, { recursive: true, force: true });
     }
   });
+
+  it("retries a durable restore when reload loses the first queued invocation", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-lost-restore-"));
+    const sourcePath = "Assets/Fixture.cs";
+    const sourceFullPath = join(projectPath, sourcePath);
+    const original = "public sealed class Fixture {}\n";
+    const mutated = "public sealed class Fixture { /* scenario */ }\n";
+    await mkdir(join(projectPath, "Assets"), { recursive: true });
+    await writeFile(sourceFullPath, original, "utf8");
+    const fake = new LostRestoreScenarioUnity(sourceFullPath, sourcePath, original, mutated);
+    const manager = new ScenarioJobManager({
+      unity: fake as unknown as UnityClient,
+      projectPath,
+      projectId: "project-1",
+      editorInstanceId: "editor-1"
+    });
+
+    try {
+      const started = await manager.start({
+        name: "lost restore retry",
+        scenePath: "Assets/Fixture.unity",
+        cases: [{ id: "retry", sourceMutations: [{ path: sourcePath, content: mutated, expectedSha256: sha256(original) }] }]
+      });
+      const completed = await waitForTerminal(manager, String(started.operationId));
+
+      assert.equal(completed.status, "success");
+      assert.equal(fake.restoreAttempts, 2);
+      assert.equal(await readFile(sourceFullPath, "utf8"), original);
+    } finally {
+      await rm(projectPath, { recursive: true, force: true });
+    }
+  });
 });
 
 class FakeScenarioUnity {
@@ -229,6 +261,20 @@ class ReloadRaceScenarioUnity extends FakeScenarioUnity {
       default:
         return super.request(method, params);
     }
+  }
+}
+
+class LostRestoreScenarioUnity extends ReloadRaceScenarioUnity {
+  public restoreAttempts = 0;
+
+  public override async request(method: string, params: unknown = {}): Promise<unknown> {
+    if (method === "scenario.source_restore") {
+      this.restoreAttempts++;
+      if (this.restoreAttempts === 1) {
+        return { ok: false, error: { code: "EXECUTING", message: "The queued restore was lost during reload." } };
+      }
+    }
+    return super.request(method, params);
   }
 }
 

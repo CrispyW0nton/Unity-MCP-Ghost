@@ -234,6 +234,20 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 ? string.Empty
                 : ValidateTransactionId(root.Value<string>("transactionId"));
             var transaction = string.IsNullOrEmpty(transactionId) ? null : LoadTransaction(transactionId);
+            if (transaction != null && string.Equals(transaction.Value<string>("status"), "restored", StringComparison.Ordinal))
+            {
+                return new JObject
+                {
+                    ["ok"] = true,
+                    ["transactionId"] = transactionId,
+                    ["status"] = "restored",
+                    ["requestedCompileGeneration"] = transaction["restoreCompileGeneration"],
+                    ["receipts"] = transaction["receipts"] ?? new JArray(),
+                    ["outcomes"] = transaction["restoreOutcomes"] ?? new JArray(),
+                    ["refreshCount"] = 0,
+                    ["replayed"] = true
+                }.ToString(Formatting.None);
+            }
             var receiptArray = root["receipts"] as JArray;
             if ((receiptArray == null || receiptArray.Count == 0) && transaction != null)
             {
@@ -245,6 +259,12 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 return Failure("SCENARIO_RECEIPTS_REQUIRED", "scenario.source_restore requires mutation receipts.");
             }
 
+            if (transaction != null)
+            {
+                transaction["status"] = "restoring";
+                transaction["updatedUtc"] = DateTime.UtcNow.ToString("O");
+                SaveTransaction(transactionId, transaction);
+            }
             var outcomes = RestoreReceiptObjects(receipts, false);
             var ok = outcomes.All(item => item.Value<bool?>("ok") == true);
             var generation = 0;
@@ -465,6 +485,22 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 var fullPath = ProjectPathPolicy.FullAssetPath(path);
                 var afterHash = receipt.Value<string>("afterSha256") ?? string.Empty;
                 var current = ScriptFileTransaction.Read(fullPath);
+                var beforeHash = receipt.Value<string>("beforeSha256") ?? string.Empty;
+                var originalExists = receipt.Value<bool?>("created") != true;
+                if (current.Exists == originalExists && string.Equals(current.Sha256, beforeHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    outcomes.Add(new JObject
+                    {
+                        ["ok"] = true,
+                        ["path"] = path,
+                        ["beforeSha256"] = afterHash,
+                        ["afterSha256"] = beforeHash,
+                        ["restoredSha256"] = beforeHash,
+                        ["restored"] = true,
+                        ["alreadyRestored"] = true
+                    });
+                    continue;
+                }
                 if (!string.Equals(current.Sha256, afterHash, StringComparison.OrdinalIgnoreCase))
                 {
                     outcomes.Add(new JObject

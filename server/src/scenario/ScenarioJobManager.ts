@@ -650,6 +650,22 @@ export class ScenarioJobManager {
         if (status === "restoreFailed") {
           throw new ScenarioFailure("SCENARIO_RESTORE_FAILED", "The durable source transaction reports a restoration failure.", transaction);
         }
+        if (status === "applied" || status === "restoring") {
+          try {
+            const retried = await this.request(
+              "scenario.source_restore",
+              { transactionId },
+              undefined,
+              Math.min(5000, Math.max(100, timeoutMs - (Date.now() - started)))
+            );
+            if (retried.ok === true) return { ...retried, recoveredAfterReload: true };
+            if (!requiresDurableTransactionRecovery(retried)) {
+              throw new ScenarioFailure(errorCode(retried, "SCENARIO_RESTORE_FAILED"), errorMessage(retried), retried);
+            }
+          } catch (error) {
+            if (!isAmbiguousExecutionCode(failureShape(error).code)) throw error;
+          }
+        }
       } catch (error) {
         if (error instanceof ScenarioFailure && error.code === "SCENARIO_RESTORE_FAILED") throw error;
       }

@@ -89,6 +89,20 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
         }
 
         [Test]
+        public void StaleScenarioRestoreCanBeReclaimedAfterDomainReload()
+        {
+            var request = Request("scenario.source_restore", "restore-key", "{\"transactionId\":\"scenario:case\"}");
+            var raw = Raw(request, request.RawJson);
+            RequestExecutionStore.Begin(request, raw, "owner-a");
+            now = now.AddMinutes(3);
+
+            var reclaimed = RequestExecutionStore.Begin(request, raw, "owner-b");
+
+            Assert.That(reclaimed.Disposition, Is.EqualTo(RequestClaimDisposition.Claimed));
+            Assert.That(reclaimed.Owner, Is.EqualTo("owner-b"));
+        }
+
+        [Test]
         public void UnsafeIdempotencyKeyNeverBecomesAPath()
         {
             var request = Request("health", "../../outside", "{}");
