@@ -10,8 +10,8 @@ export function assertCertifiedUnityVersion(version: string): void {
   }
 }
 
-export async function assertCertifiedUnityEditor(path: string): Promise<void> {
-  const { stdout } = await promisify(execFile)(path, ["-version"], { windowsHide: true, timeout: 15000, maxBuffer: 4096 });
+export async function assertCertifiedUnityEditor(path: string, signal?: AbortSignal): Promise<void> {
+  const { stdout } = await promisify(execFile)(path, ["-version"], { windowsHide: true, timeout: 15000, maxBuffer: 4096, signal });
   assertCertifiedUnityVersion(stdout);
 }
 
