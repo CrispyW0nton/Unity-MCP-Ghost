@@ -116,6 +116,10 @@ describe("GAM 215-equivalent declarative matrices", () => {
       navigation?.inputs?.map((item) => item.key),
       ["PageUp", "PageDown"]
     );
+    assert.deepEqual(
+      navigation?.inputs?.map((item) => item.backend),
+      ["project-test-driver", "project-test-driver"]
+    );
     verifyRestorableRuntimeEvidence(matrix.cases);
   });
 });

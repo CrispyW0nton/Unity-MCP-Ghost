@@ -46,7 +46,7 @@ async function main(): Promise<void> {
         id: "green-page-up",
         expectedResult: "pass",
         sourceMutations: [{ path: FixtureScript, content: `${originalContent}\n// scenario smoke: green\n`, expectedSha256: originalHash }],
-        inputs: [{ device: "keyboard", action: "tap", key: "PageUp" }],
+        inputs: [{ backend: "project-test-driver", device: "keyboard", action: "tap", key: "PageUp" }],
         consoleAssertions: [{ severity: "log", exact: "GAM215_PAGE:1", count: 1, timeoutMs: 10000 }],
         objectAssertions: [{ name: "GAM215 Runtime Driver", component: "Gam215InputDriver" }]
       },

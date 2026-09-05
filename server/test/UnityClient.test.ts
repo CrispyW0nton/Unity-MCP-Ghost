@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
+import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -96,6 +97,34 @@ describe("UnityClient durable request semantics", () => {
     }
   });
 
+  it("bounds a stalled WebSocket opening handshake", async () => {
+    const sockets = new Set<import("node:net").Socket>();
+    const stalled = createTcpServer((socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+      // Accept TCP and intentionally never answer the WebSocket upgrade.
+    });
+    const webSocketPort = await listenTcp(stalled);
+    const closedHttpPort = await closedPort();
+    try {
+      const client = new UnityClient({ host: "127.0.0.1", port: closedHttpPort, webSocketPort, requestTimeoutMs: 75, ...secureOptions(tokenFile) });
+      const started = Date.now();
+      await assert.rejects(client.request("health", {}, { requestId: "stalled-handshake" }));
+      assert.ok(Date.now() - started < 1000, "WebSocket opening handshake must honor the request timeout");
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await closeTcp(stalled);
+    }
+  });
+
+  it("treats a malformed token as disconnected", async () => {
+    const malformed = join(tokenDirectory, "malformed-token.txt");
+    await writeFile(malformed, "not-a-token", "utf8");
+    const client = new UnityClient({ host: "127.0.0.1", port: 1, requestTimeoutMs: 50, ...secureOptions(malformed) });
+
+    assert.equal(await client.isConnected(), false);
+  });
+
   it("removes an unclaimed queue item on timeout and reports a known non-execution", async () => {
     const queueDir = await mkdtemp(join(tmpdir(), "unity-mcp-client-"));
     try {
@@ -136,4 +165,26 @@ async function listen(server: Server): Promise<number> {
 async function close(server: Server): Promise<void> {
   if (!server.listening) return;
   await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+}
+
+async function listenTcp(server: ReturnType<typeof createTcpServer>): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("TCP test server did not bind.");
+  return address.port;
+}
+
+async function closeTcp(server: ReturnType<typeof createTcpServer>): Promise<void> {
+  if (!server.listening) return;
+  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+}
+
+async function closedPort(): Promise<number> {
+  const server = createTcpServer();
+  const port = await listenTcp(server);
+  await closeTcp(server);
+  return port;
 }

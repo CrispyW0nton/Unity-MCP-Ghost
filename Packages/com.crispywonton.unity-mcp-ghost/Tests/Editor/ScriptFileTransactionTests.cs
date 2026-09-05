@@ -118,5 +118,33 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
             Assert.That(receipt.Diff.Length, Is.EqualTo(64 * 1024));
             Assert.That(File.Exists(path), Is.True);
         }
+
+        [Test]
+        public void ActiveBatchLeaseProtectsMoreThanGlobalBackupRetentionLimit()
+        {
+            var receipts = new System.Collections.Generic.List<ScriptMutationReceipt>();
+            try
+            {
+                using (ScriptFileTransaction.BeginBackupRetentionLease())
+                {
+                    for (var index = 0; index < 51; index++)
+                    {
+                        var itemPath = Path.Combine(directory, "CourseScript" + index + ".cs");
+                        File.WriteAllText(itemPath, "before", new UTF8Encoding(false));
+                        receipts.Add(ScriptFileTransaction.Write(itemPath, "Assets/CourseScript" + index + ".cs", "after", string.Empty, false));
+                    }
+
+                    Assert.That(receipts.All(receipt => receipt.Ok && File.Exists(receipt.BackupPath)), Is.True);
+                }
+            }
+            finally
+            {
+                foreach (var receipt in receipts)
+                {
+                    ScriptFileTransaction.DiscardBackup(receipt.BackupPath);
+                    ScriptFileTransaction.DiscardBackup(receipt.BackupMetaPath);
+                }
+            }
+        }
     }
 }

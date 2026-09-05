@@ -62,6 +62,18 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
         }
 
         [Test]
+        public void EvictedPostBoundaryErrorMakesAssertionIncomplete()
+        {
+            var mark = JObject.Parse(ConsoleLogBuffer.MarkBoundary("before-noise"));
+            ConsoleLogBuffer.AddNoisyEntriesForTests(1000);
+
+            var result = JObject.Parse(ConsoleLogBuffer.Query("{\"boundary\":\"" + mark["boundary"] + "\",\"severity\":\"log\",\"contains\":\"noise\",\"minimumCount\":1,\"failOnUnexpectedErrors\":true}", true));
+
+            Assert.That(result["ok"]?.Value<bool>(), Is.False);
+            Assert.That(result["error"]?["code"]?.Value<string>(), Is.EqualTo("CONSOLE_BOUNDARY_TRUNCATED"));
+        }
+
+        [Test]
         public void ConsoleLocationFilterUnderstandsUnityStackTraceLocations()
         {
             var mark = JObject.Parse(ConsoleLogBuffer.MarkBoundary("before-location"));

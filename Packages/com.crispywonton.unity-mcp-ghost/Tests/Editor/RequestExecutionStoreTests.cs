@@ -61,6 +61,24 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
         }
 
         [Test]
+        public void SemanticRetryIgnoresDeadlineAndAuthenticationProofChanges()
+        {
+            var request = Request("health", "semantic-retry", "{\"b\":2,\"a\":1}");
+            var first = RequestExecutionStore.Begin(request, Raw(request, request.RawJson, 1000, "proof-one"), "owner-a");
+            var completed = RequestExecutionStore.Complete(request, "owner-a", JsonRpcUtil.Success(request, "{\"ok\":true}"));
+            var retryRequest = Request("health", "semantic-retry", "{\"a\":1,\"b\":2}");
+            retryRequest.Id = "retry-request";
+            retryRequest.IdJson = "\"retry-request\"";
+
+            var retry = RequestExecutionStore.Begin(retryRequest, Raw(retryRequest, retryRequest.RawJson, 2000, "proof-two"), "owner-b");
+
+            Assert.That(first.Disposition, Is.EqualTo(RequestClaimDisposition.Claimed));
+            Assert.That(retry.Disposition, Is.EqualTo(RequestClaimDisposition.Cached));
+            Assert.That(JObject.Parse(completed)["id"].Value<string>(), Is.EqualTo("semantic-retry"));
+            Assert.That(JObject.Parse(retry.ResponseJson)["id"].Value<string>(), Is.EqualTo("retry-request"));
+        }
+
+        [Test]
         public void StaleNonIdempotentRequestBecomesOutcomeUnknownInsteadOfReplaying()
         {
             var request = Request("script.write", "mutation-key", "{\"content\":\"one\"}");
@@ -137,11 +155,13 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
                 IdJson = "\"" + JsonRpcUtil.Escape(key) + "\"",
                 IdempotencyKey = key,
                 Method = method,
-                RawJson = parameters
+                RawJson = parameters,
+                ProjectId = "project-test",
+                EditorInstanceId = "editor-test"
             };
         }
 
-        private static string Raw(UnityMcpRequest request, string parameters)
+        private static string Raw(UnityMcpRequest request, string parameters, long deadlineUnixMs = 0, string authProof = "")
         {
             return new JObject
             {
@@ -149,7 +169,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
                 ["id"] = request.Id,
                 ["idempotencyKey"] = request.IdempotencyKey,
                 ["method"] = request.Method,
-                ["params"] = JObject.Parse(parameters)
+                ["params"] = JObject.Parse(parameters),
+                ["deadlineUnixMs"] = deadlineUnixMs,
+                ["authProof"] = authProof
             }.ToString(Newtonsoft.Json.Formatting.None);
         }
     }

@@ -70,6 +70,7 @@ async function main(): Promise<void> {
     );
     const pointerMark = await checkedCall(client, checks, "pointer boundary", "console_mark", { label: "before-pointer" });
     await checkedCall(client, checks, "pointer click delivery", "input_simulate", {
+      backend: "project-test-driver",
       device: "pointer",
       action: "click",
       button: "left",
@@ -133,6 +134,7 @@ async function setupFixture(client: Client, projectPath: string, checks: SmokeCh
 async function inputCase(client: Client, checks: SmokeCheck[], key: "PageUp" | "PageDown", expectedLog: string): Promise<void> {
   const mark = await checkedCall(client, checks, `${key} boundary`, "console_mark", { label: `before-${key}` });
   const input = await checkedCall(client, checks, `${key} delivery`, "input_simulate", {
+    backend: "project-test-driver",
     device: "keyboard",
     action: "tap",
     key,

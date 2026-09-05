@@ -42,3 +42,28 @@ jobs:
           name: unity-2022.3.62f1-${{ matrix.testMode }}
           path: artifacts
           if-no-files-found: warn
+
+  live-course:
+    name: Unity 2022.3.62f1 / live MCP course loop / Windows
+    runs-on: [self-hosted, windows, unity-2022.3]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Run authenticated live GAM 215-equivalent course loop
+        run: npm run test:course:live
+      - name: Upload live course evidence and Unity logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unity-2022.3.62f1-live-course
+          path: |
+            test-project/Library/UnityMcpGhost/evidence
+            test-project/Logs/unity-live-course.log
+          if-no-files-found: warn

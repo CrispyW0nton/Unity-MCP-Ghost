@@ -148,6 +148,67 @@ describe("MCP catalog and protocol conformance", () => {
       fakeUnity
     );
   });
+
+  it("envelopes connection-check failures for ping and health", async () => {
+    const fake = {
+      endpoint: "ws://127.0.0.1:6400/unity-mcp-ghost/",
+      queueEndpoint: undefined,
+      isConnected: async () => {
+        throw new Error("token unavailable");
+      }
+    } as unknown as UnityClient;
+    await withClient(
+      ["core"],
+      async (client) => {
+        for (const name of ["ping", "health"]) {
+          const result = await client.callTool({ name, arguments: {} });
+          assert.equal(result.isError, true);
+          assert.equal(errorRecord(result.structuredContent).code, "UNITY_CONNECTION_CHECK_FAILED");
+          assert.equal(typeof (result.structuredContent as { requestId?: unknown }).requestId, "string");
+        }
+      },
+      fake
+    );
+  });
+
+  it("publishes request identity for mutations and truthful repair inspection risk", async () => {
+    let options: Record<string, unknown> = {};
+    const fake = {
+      endpoint: "ws://127.0.0.1:6400/unity-mcp-ghost/",
+      queueEndpoint: undefined,
+      isConnected: async () => true,
+      request: async (_method: string, _params: unknown, requestOptions: Record<string, unknown>) => {
+        options = requestOptions;
+        return { ok: true };
+      }
+    } as unknown as UnityClient;
+    await withClient(
+      ["all"],
+      async (client) => {
+        const tools = (await client.listTools()).tools;
+        const inspect = tools.find((tool) => tool.name === "repair_inspect");
+        assert.equal(inspect?.annotations?.readOnlyHint, false);
+        assert.equal(inspect?._meta?.["unity-mcp-ghost/mutates"], true);
+
+        const write = tools.find((tool) => tool.name === "script_write");
+        assert.ok((write?.inputSchema.properties as Record<string, unknown>).requestId);
+        assert.ok((write?.inputSchema.properties as Record<string, unknown>).idempotencyKey);
+        const result = await client.callTool({
+          name: "script_write",
+          arguments: {
+            path: "Assets/RequestIdentity.cs",
+            content: "public sealed class RequestIdentity {}",
+            requestId: "public-request-id",
+            idempotencyKey: "public-idempotency-key"
+          }
+        });
+        assert.equal((result.structuredContent as { requestId: string }).requestId, "public-request-id");
+        assert.equal(options.requestId, "public-request-id");
+        assert.equal(options.idempotencyKey, "public-idempotency-key");
+      },
+      fake
+    );
+  });
 });
 
 describe("Unity WebSocket protocol adapter", () => {

@@ -245,10 +245,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         public static string AddBoolProperty(string objectJson, string key, bool value)
         {
             var root = ParseObject(objectJson);
-            if (root.Property(key, StringComparison.Ordinal) == null)
-            {
-                root.Add(key, value);
-            }
+            root[key] = value;
 
             return root.ToString(Formatting.None);
         }

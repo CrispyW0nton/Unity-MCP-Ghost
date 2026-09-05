@@ -1,0 +1,32 @@
+{
+  "name": "CrispyWonton.UnityMcpGhost.InputSystem.Tests",
+  "rootNamespace": "CrispyWonton.UnityMcpGhost.Editor.Tests",
+  "references": [
+    "CrispyWonton.UnityMcpGhost.Editor",
+    "CrispyWonton.UnityMcpGhost.Runtime",
+    "Unity.InputSystem"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS",
+    "GHOST_INPUT_SYSTEM_TESTS"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.inputsystem",
+      "expression": "1.0.0",
+      "define": "GHOST_INPUT_SYSTEM_TESTS"
+    }
+  ],
+  "noEngineReferences": false,
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

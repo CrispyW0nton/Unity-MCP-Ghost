@@ -78,6 +78,42 @@ describe("durable scenario matrix jobs", () => {
     }
   });
 
+  it("rejects a second scenario while the project/editor lease is active", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-lease-"));
+    const fake = new FakeScenarioUnity();
+    fake.consoleMatches = false;
+    const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+
+    try {
+      const first = await manager.start({
+        name: "lease owner",
+        scenePath: "Assets/Fixture.unity",
+        cases: [{ id: "waiting", consoleAssertions: [{ exact: "never", timeoutMs: 30000 }] }]
+      });
+      await waitUntil(() => fake.consoleQueries > 0);
+      const leasePath = join(projectPath, "Library", "UnityMcpGhost", "scenario-jobs", "active-scenario-lease.json");
+      const lease = JSON.parse(await readFile(leasePath, "utf8")) as Record<string, unknown>;
+      await writeFile(leasePath, JSON.stringify({ ...lease, expiresUnixMs: 0 }), "utf8");
+      const contender = new ScenarioJobManager({
+        unity: fake as unknown as UnityClient,
+        projectPath,
+        projectId: "project-1",
+        editorInstanceId: "editor-1"
+      });
+
+      await assert.rejects(
+        contender.start({ name: "overlap", scenePath: "Assets/Fixture.unity", cases: [{ id: "overlap" }] }),
+        (error: unknown) => (error as { code?: string }).code === "SCENARIO_ALREADY_RUNNING"
+      );
+
+      await manager.cancel(String(first.operationId));
+      const completed = await waitForTerminal(manager, String(first.operationId));
+      assert.equal(completed.restorationComplete, true);
+    } finally {
+      await rm(projectPath, { recursive: true, force: true });
+    }
+  });
+
   it("recovers durable source apply and restore receipts when reload retries report EXECUTING", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-reload-"));
     const sourcePath = "Assets/Fixture.cs";
@@ -146,6 +182,38 @@ describe("durable scenario matrix jobs", () => {
       assert.equal(completed.status, "success");
       assert.equal(fake.restoreAttempts, 2);
       assert.equal(await readFile(sourceFullPath, "utf8"), original);
+    } finally {
+      await rm(projectPath, { recursive: true, force: true });
+    }
+  });
+
+  it("removes source credentials from durable records and every evidence document", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-redaction-"));
+    const sourcePath = "Assets/Fixture.cs";
+    const sourceFullPath = join(projectPath, sourcePath);
+    const original = "public sealed class Fixture {}\n";
+    const mutated = 'public sealed class Fixture { const string token = "super-secret"; }\n';
+    await mkdir(join(projectPath, "Assets"), { recursive: true });
+    await writeFile(sourceFullPath, original, "utf8");
+    const fake = new ReloadRaceScenarioUnity(sourceFullPath, sourcePath, original, mutated);
+    const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+
+    try {
+      const started = await manager.start({
+        name: "redaction",
+        scenePath: "Assets/Fixture.unity",
+        cases: [{ id: "secret", sourceMutations: [{ path: sourcePath, content: mutated, expectedSha256: sha256(original) }] }]
+      });
+      const operationId = String(started.operationId);
+      const completed = await waitForTerminal(manager, operationId);
+      assert.equal(completed.status, "success");
+      await manager.createEvidence(operationId);
+
+      const evidenceDirectory = join(projectPath, "Library", "UnityMcpGhost", "evidence", operationId);
+      for (const name of ["manifest.json", "scenario-results.json", "compiler.json", "console.json", "summary.md"]) {
+        assert.doesNotMatch(await readFile(join(evidenceDirectory, name), "utf8"), /super-secret/);
+      }
+      assert.doesNotMatch(await readFile(join(projectPath, "Library", "UnityMcpGhost", "scenario-jobs", `${operationId}.json`), "utf8"), /super-secret/);
     } finally {
       await rm(projectPath, { recursive: true, force: true });
     }
@@ -225,7 +293,7 @@ class ReloadRaceScenarioUnity extends FakeScenarioUnity {
       created: false,
       beforeSha256: sha256(original),
       afterSha256: sha256(mutated),
-      diff: "--- before\n+++ after\n"
+      diff: `--- before\n+++ after\n-${original}+${mutated}`
     };
   }
 

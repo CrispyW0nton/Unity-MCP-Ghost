@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -14,6 +15,13 @@ namespace CrispyWonton.UnityMcpGhost.Editor
     {
         private const int MaxBackups = 50;
         private const int MaxDiffCharacters = 64 * 1024;
+        private static int activeBackupRetentionLeases;
+
+        internal static IDisposable BeginBackupRetentionLease()
+        {
+            Interlocked.Increment(ref activeBackupRetentionLeases);
+            return new BackupRetentionLease();
+        }
 
         public static ScriptSnapshot Read(string fullPath)
         {
@@ -311,6 +319,11 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static void TrimBackups()
         {
+            if (Volatile.Read(ref activeBackupRetentionLeases) > 0)
+            {
+                return;
+            }
+
             var backupRoot = BackupRoot();
             if (!Directory.Exists(backupRoot))
             {
@@ -321,6 +334,24 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             foreach (var file in files.Skip(MaxBackups))
             {
                 file.Delete();
+            }
+        }
+
+        private sealed class BackupRetentionLease : IDisposable
+        {
+            private int disposed;
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref disposed, 1) != 0)
+                {
+                    return;
+                }
+
+                if (Interlocked.Decrement(ref activeBackupRetentionLeases) == 0)
+                {
+                    TrimBackups();
+                }
             }
         }
 

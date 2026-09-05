@@ -67,7 +67,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 var key = SafeKey(request.IdempotencyKey);
                 var statePath = StatePath(key);
                 var resultPath = ResultPath(key);
-                var payloadSha256 = Hash(rawRequest ?? string.Empty);
+                var payloadSha256 = SemanticRequestHash(request);
                 var existing = ReadState(statePath);
                 if (File.Exists(statePath) && existing == null)
                 {
@@ -91,7 +91,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     return new RequestClaim
                     {
                         Disposition = RequestClaimDisposition.Cached,
-                        ResponseJson = File.ReadAllText(resultPath)
+                        ResponseJson = RebindResponseId(File.ReadAllText(resultPath), request)
                     };
                 }
 
@@ -243,6 +243,43 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return bytes <= MaxResponseBytes
                 ? responseJson
                 : JsonRpcUtil.Error(request, -32007, "Unity response exceeded the durable transport limit.", new JObject { ["code"] = "RESULT_TOO_LARGE", ["bytes"] = bytes, ["limitBytes"] = MaxResponseBytes });
+        }
+
+        private static string SemanticRequestHash(UnityMcpRequest request)
+        {
+            var payload = new JObject
+            {
+                ["method"] = request.Method,
+                ["params"] = Canonicalize(JToken.Parse(request.RawJson ?? "{}")),
+                ["projectId"] = request.ProjectId,
+                ["editorInstanceId"] = request.EditorInstanceId
+            };
+            return Hash(payload.ToString(Formatting.None));
+        }
+
+        private static string RebindResponseId(string responseJson, UnityMcpRequest request)
+        {
+            var response = JObject.Parse(responseJson);
+            response["id"] = JToken.Parse(request?.IdJson ?? "null");
+            return response.ToString(Formatting.None);
+        }
+
+        private static JToken Canonicalize(JToken token)
+        {
+            if (token is JObject value)
+            {
+                var ordered = new JObject();
+                foreach (var property in value.Properties().OrderBy(item => item.Name, StringComparer.Ordinal))
+                {
+                    ordered.Add(property.Name, Canonicalize(property.Value));
+                }
+                return ordered;
+            }
+            if (token is JArray array)
+            {
+                return new JArray(array.Select(Canonicalize));
+            }
+            return token.DeepClone();
         }
 
         private static JObject OutcomeData(UnityMcpRequest request, string status, bool outcomeUnknown)

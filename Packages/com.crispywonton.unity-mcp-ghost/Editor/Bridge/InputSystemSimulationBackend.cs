@@ -79,13 +79,14 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     failureReason = "The active Input System mouse does not expose position and leftButton controls.";
                     return false;
                 }
-                api.QueueDelta(position, new Vector2(request.X, request.Y));
+                api.QueueValue(position, new Vector2(request.X, request.Y));
+                api.Update();
             }
 
             var displayName = device.GetType().GetProperty("displayName", BindingFlags.Instance | BindingFlags.Public)?.GetValue(device) as string
                 ?? device.GetType().Name;
             var releaseOnly = request.Action == "release";
-            api.QueueDelta(button, releaseOnly ? 0f : 1f);
+            api.QueueValue(button, releaseOnly ? 0f : 1f);
             api.Update();
             var pressed = ReadPressed(button);
             receipt = new UnityMcpInputReceipt
@@ -149,7 +150,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
                 try
                 {
-                    pending.Api.QueueDelta(pending.Button, 0f);
+                    pending.Api.QueueValue(pending.Button, 0f);
                     pending.Api.Update();
                     pending.Receipt.ReleaseFrame = Time.frameCount;
                     pending.Receipt.ReleaseObserved = !ReadPressed(pending.Button);
@@ -207,29 +208,30 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 return false;
             }
 
-            var queueDelta = inputSystem.GetMethods(BindingFlags.Static | BindingFlags.Public)
-                .FirstOrDefault(method => method.Name == "QueueDeltaStateEvent" && method.IsGenericMethodDefinition && method.GetParameters().Length >= 2);
+            var inputControlExtensions = Type.GetType("UnityEngine.InputSystem.InputControlExtensions, Unity.InputSystem", false);
+            var queueValue = inputControlExtensions?.GetMethods(BindingFlags.Static | BindingFlags.Public)
+                .FirstOrDefault(method => method.Name == "QueueValueChange" && method.IsGenericMethodDefinition && method.GetParameters().Length >= 2);
             var update = inputSystem.GetMethods(BindingFlags.Static | BindingFlags.Public)
                 .FirstOrDefault(method => method.Name == "Update" && method.GetParameters().Length == 0);
             var keyboardCurrent = keyboard.GetProperty("current", BindingFlags.Static | BindingFlags.Public);
             var mouseCurrent = mouse.GetProperty("current", BindingFlags.Static | BindingFlags.Public);
-            if (queueDelta == null || update == null || keyboardCurrent == null || mouseCurrent == null)
+            if (queueValue == null || update == null || keyboardCurrent == null || mouseCurrent == null)
             {
                 failureReason = "The loaded Input System API is incompatible with Ghost's verified injection adapter.";
                 return false;
             }
-            api = new InputSystemApi(queueDelta, update, keyboardCurrent, mouseCurrent);
+            api = new InputSystemApi(queueValue, update, keyboardCurrent, mouseCurrent);
             return true;
         }
 
         private sealed class InputSystemApi
         {
-            private readonly MethodInfo queueDelta;
+            private readonly MethodInfo queueValue;
             private readonly MethodInfo update;
 
-            public InputSystemApi(MethodInfo queueDelta, MethodInfo update, PropertyInfo keyboardCurrent, PropertyInfo mouseCurrent)
+            public InputSystemApi(MethodInfo queueValue, MethodInfo update, PropertyInfo keyboardCurrent, PropertyInfo mouseCurrent)
             {
-                this.queueDelta = queueDelta;
+                this.queueValue = queueValue;
                 this.update = update;
                 KeyboardCurrent = keyboardCurrent;
                 MouseCurrent = mouseCurrent;
@@ -238,9 +240,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             public PropertyInfo KeyboardCurrent { get; }
             public PropertyInfo MouseCurrent { get; }
 
-            public void QueueDelta(object control, object value)
+            public void QueueValue(object control, object value)
             {
-                var method = queueDelta.MakeGenericMethod(value.GetType());
+                var method = queueValue.MakeGenericMethod(value.GetType());
                 var parameters = method.GetParameters().Length == 2
                     ? new[] { control, value }
                     : new[] { control, value, (object)-1d };

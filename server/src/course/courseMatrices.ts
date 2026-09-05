@@ -363,8 +363,8 @@ export function buildModule2Matrix(originalContent: string, originalSha256: stri
         { name: "GAM215 Runtime Driver", component: "Gam215InputDriver", propertyPath: "PageIndex", equals: 0 }
       ],
       inputs: [
-        { device: "keyboard", action: "tap", key: "PageUp" },
-        { device: "keyboard", action: "tap", key: "PageDown" }
+        { backend: "project-test-driver", device: "keyboard", action: "tap", key: "PageUp" },
+        { backend: "project-test-driver", device: "keyboard", action: "tap", key: "PageDown" }
       ]
     })
   );

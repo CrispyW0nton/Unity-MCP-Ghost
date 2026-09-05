@@ -68,15 +68,17 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             lock (Gate)
             {
-                var diagnostics = state.Generations
+                var matching = state.Generations
                     .Where(entry => generation <= 0 || entry.Generation == generation)
                     .SelectMany(entry => entry.Diagnostics)
                     .Where(entry => MatchesSeverity(entry, normalizedSeverity))
                     .Where(entry => string.IsNullOrEmpty(normalizedPath) || NormalizePath(entry.File).IndexOf(normalizedPath, StringComparison.OrdinalIgnoreCase) >= 0)
                     .OrderByDescending(entry => entry.Sequence)
-                    .Take(max)
+                    .Take(max + 1)
                     .Select(ToDiagnosticJson)
                     .ToArray();
+                var truncated = matching.Length > max;
+                var diagnostics = matching.Take(max).ToArray();
 
                 return new JObject
                 {
@@ -84,7 +86,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     ["source"] = "compilation-pipeline",
                     ["generation"] = generation > 0 ? generation : (int?)null,
                     ["diagnostics"] = new JArray(diagnostics),
-                    ["truncated"] = diagnostics.Length == max,
+                    ["truncated"] = truncated,
                     ["note"] = "Diagnostics are scoped to persisted compile/import generations."
                 }.ToString(Formatting.None);
             }
@@ -115,7 +117,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     ["observedAtUtc"] = NullOrString(record.ObservedAtUtc),
                     ["completedAtUtc"] = NullOrString(record.CompletedAtUtc),
                     ["sourcePath"] = record.SourcePath,
-                    ["diagnostics"] = new JArray(record.Diagnostics.Select(ToDiagnosticJson))
+                    ["diagnostics"] = new JArray(record.Diagnostics.Select(ToDiagnosticJson)),
+                    ["diagnosticsTruncated"] = record.DiagnosticsTruncated,
+                    ["errorCount"] = record.ErrorCount
                 };
 
                 if (record.Status == "failed")
@@ -157,6 +161,20 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 var record = state.Generations.First(entry => entry.Generation == generation);
                 AddDiagnostic(record, assembly, type, file, line, column, message);
                 Save();
+            }
+        }
+
+        internal static void AddNoisyDiagnosticsForTests(int generation, int warningCount)
+        {
+            lock (Gate)
+            {
+                var record = state.Generations.First(entry => entry.Generation == generation);
+                AddDiagnostic(record, "Assembly-CSharp.dll", CompilerMessageType.Error, "Assets/Noisy.cs", 1, 1, "error CS1002: ; expected");
+                for (var index = 0; index < warningCount; index++)
+                {
+                    AddDiagnostic(record, "Assembly-CSharp.dll", CompilerMessageType.Warning, "Assets/Noisy.cs", index + 2, 1, "warning CS0168: unused");
+                }
+                TrimAndSave();
             }
         }
 
@@ -233,7 +251,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 foreach (var record in state.Generations.Where(entry => entry.Status == "running"))
                 {
                     record.CompletedAtUtc = completedAt;
-                    record.Status = record.Diagnostics.Any(entry => entry.Severity == "error") ? "failed" : "success";
+                    record.Status = record.ErrorCount > 0 ? "failed" : "success";
                 }
 
                 TrimAndSave();
@@ -250,6 +268,10 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static void AddDiagnostic(GenerationRecord record, string assembly, CompilerMessageType type, string file, int line, int column, string message)
         {
+            if (type != CompilerMessageType.Warning)
+            {
+                record.ErrorCount++;
+            }
             record.Diagnostics.Add(new DiagnosticRecord
             {
                 Sequence = state.NextDiagnosticSequence++,
@@ -357,6 +379,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 }
 
                 oldest.Diagnostics.RemoveAt(0);
+                oldest.DiagnosticsTruncated = true;
                 totalDiagnostics--;
             }
 
@@ -404,6 +427,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             public string RequestedAtUtc = string.Empty;
             public string ObservedAtUtc = string.Empty;
             public string CompletedAtUtc = string.Empty;
+            public int ErrorCount;
+            public bool DiagnosticsTruncated;
             public List<DiagnosticRecord> Diagnostics = new List<DiagnosticRecord>();
         }
 

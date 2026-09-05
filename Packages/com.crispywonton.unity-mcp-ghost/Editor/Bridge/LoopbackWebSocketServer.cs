@@ -14,6 +14,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
     {
         private const int MaxHeaderBytes = 16 * 1024;
         private const int MaxClients = 8;
+        private const int MaxPendingHandshakes = 16;
+        private const int GracefulOversizeDrainBytes = 64 * 1024;
+        private static readonly TimeSpan DefaultHandshakeTimeout = TimeSpan.FromSeconds(5);
         private static readonly byte[] HeaderTerminator = { 13, 10, 13, 10 };
         private static readonly UTF8Encoding StrictUtf8 = new UTF8Encoding(false, true);
         private readonly int port;
@@ -21,25 +24,31 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private readonly Func<string, bool> authenticateBearer;
         private readonly Func<string, Task<string>> dispatch;
         private readonly Action<Exception> reportError;
+        private readonly TimeSpan handshakeTimeout;
         private TcpListener listener;
         private CancellationTokenSource cancellation;
         private int clientCount;
+        private int pendingHandshakeCount;
 
         public LoopbackWebSocketServer(
             int port,
             int maximumMessageBytes,
             Func<string, bool> authenticateBearer,
             Func<string, Task<string>> dispatch,
-            Action<Exception> reportError)
+            Action<Exception> reportError,
+            TimeSpan? handshakeTimeout = null)
         {
             this.port = port;
             this.maximumMessageBytes = maximumMessageBytes;
             this.authenticateBearer = authenticateBearer ?? throw new ArgumentNullException("authenticateBearer");
             this.dispatch = dispatch ?? throw new ArgumentNullException("dispatch");
             this.reportError = reportError ?? throw new ArgumentNullException("reportError");
+            this.handshakeTimeout = handshakeTimeout ?? DefaultHandshakeTimeout;
         }
 
         public int ClientCount => clientCount;
+        public int PendingHandshakeCount => pendingHandshakeCount;
+        public int BoundPort { get; private set; }
 
         public void Start()
         {
@@ -51,6 +60,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             cancellation = new CancellationTokenSource();
             listener = new TcpListener(IPAddress.Loopback, port);
             listener.Start(MaxClients);
+            BoundPort = ((IPEndPoint)listener.LocalEndpoint).Port;
             _ = Task.Run(() => AcceptLoop(cancellation.Token), cancellation.Token);
         }
 
@@ -75,9 +85,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 try
                 {
                     var client = await listener.AcceptTcpClientAsync();
-                    if (Interlocked.Increment(ref clientCount) > MaxClients)
+                    if (Interlocked.Increment(ref pendingHandshakeCount) > MaxPendingHandshakes)
                     {
-                        Interlocked.Decrement(ref clientCount);
+                        Interlocked.Decrement(ref pendingHandshakeCount);
                         client.Close();
                         continue;
                     }
@@ -103,13 +113,23 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private async Task HandleClient(TcpClient client, CancellationToken token)
         {
+            var handshakePending = true;
+            var authenticatedClient = false;
             try
             {
                 client.NoDelay = true;
                 using (client)
                 using (var stream = client.GetStream())
                 {
-                    var reader = await ReadHandshake(stream, token);
+                    HandshakeReader reader;
+                    using (var handshakeCancellation = CancellationTokenSource.CreateLinkedTokenSource(token))
+                    using (handshakeCancellation.Token.Register(client.Close))
+                    {
+                        handshakeCancellation.CancelAfter(handshakeTimeout);
+                        reader = await ReadHandshake(stream, handshakeCancellation.Token);
+                    }
+                    Interlocked.Decrement(ref pendingHandshakeCount);
+                    handshakePending = false;
                     var request = reader.Handshake;
                     if (!string.Equals(request.Method, "GET", StringComparison.OrdinalIgnoreCase)
                         || !string.Equals(request.Path.TrimEnd('/'), UnityMcpGhostConfig.WebSocketPath.TrimEnd('/'), StringComparison.Ordinal))
@@ -142,17 +162,29 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                         return;
                     }
 
+                    if (Interlocked.Increment(ref clientCount) > MaxClients)
+                    {
+                        Interlocked.Decrement(ref clientCount);
+                        await WriteHttpStatus(stream, 503, "WebSocket client limit reached.", token);
+                        return;
+                    }
+                    authenticatedClient = true;
+
                     var accept = ComputeAcceptKey(key);
                     var response = "HTTP/1.1 101 Switching Protocols\r\n"
                         + "Upgrade: websocket\r\n"
                         + "Connection: Upgrade\r\n"
                         + "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
                     await WriteBytes(stream, Encoding.ASCII.GetBytes(response), token);
-                    await ReceiveLoop(reader, stream, token);
+                    await ReceiveLoop(reader, stream, client, token);
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
+            }
+            catch (OperationCanceledException)
+            {
+                // Incomplete pre-authentication handshakes expire without changing bridge health.
             }
             catch (IOException)
             {
@@ -168,11 +200,18 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
             finally
             {
-                Interlocked.Decrement(ref clientCount);
+                if (handshakePending)
+                {
+                    Interlocked.Decrement(ref pendingHandshakeCount);
+                }
+                if (authenticatedClient)
+                {
+                    Interlocked.Decrement(ref clientCount);
+                }
             }
         }
 
-        private async Task ReceiveLoop(HandshakeReader reader, Stream stream, CancellationToken token)
+        private async Task ReceiveLoop(HandshakeReader reader, Stream stream, TcpClient client, CancellationToken token)
         {
             MemoryStream message = null;
             try
@@ -209,6 +248,15 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     }
                     if (payloadLength > (ulong)maximumMessageBytes)
                     {
+                        if (payloadLength <= GracefulOversizeDrainBytes)
+                        {
+                            using (var drainCancellation = CancellationTokenSource.CreateLinkedTokenSource(token))
+                            using (drainCancellation.Token.Register(client.Close))
+                            {
+                                drainCancellation.CancelAfter(TimeSpan.FromSeconds(1));
+                                await reader.DiscardExact(4 + (int)payloadLength, drainCancellation.Token);
+                            }
+                        }
                         await SendClose(stream, 1009, "Message too large", token);
                         return;
                     }
@@ -505,6 +553,25 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     offset += read;
                 }
                 return result;
+            }
+
+            public async Task DiscardExact(int count, CancellationToken token)
+            {
+                while (count > 0 && bufferedOffset < bufferedEnd)
+                {
+                    bufferedOffset++;
+                    count--;
+                }
+                var scratch = new byte[Math.Min(8192, Math.Max(1, count))];
+                while (count > 0)
+                {
+                    var read = await stream.ReadAsync(scratch, 0, Math.Min(scratch.Length, count), token);
+                    if (read == 0)
+                    {
+                        throw new IOException("WebSocket peer disconnected.");
+                    }
+                    count -= read;
+                }
             }
         }
     }

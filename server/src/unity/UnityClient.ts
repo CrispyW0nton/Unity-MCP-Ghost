@@ -74,9 +74,9 @@ export class UnityClient {
   }
 
   public async isConnected(): Promise<boolean> {
-    const token = await this.readToken();
-    const payload = createPayload("health", {}, randomUUID(), this.options.requestTimeoutMs, this.options.projectId, this.options.editorInstanceId, token);
     try {
+      const token = await this.readToken();
+      const payload = createPayload("health", {}, randomUUID(), this.options.requestTimeoutMs, this.options.projectId, this.options.editorInstanceId, token);
       await this.requestViaHttp("health", payload, this.options.requestTimeoutMs, token);
       return true;
     } catch {
@@ -103,7 +103,7 @@ export class UnityClient {
       }
 
       try {
-        const socket = await this.connect(token);
+        const socket = await this.connect(token, timeoutMs, options.signal);
         return withRequestMetadata(
           await this.requestViaSocket<T>(socket, payload, method, timeoutMs, options.signal),
           id,
@@ -304,7 +304,7 @@ export class UnityClient {
     }
   }
 
-  private async connect(token: string): Promise<WebSocket> {
+  private async connect(token: string, timeoutMs: number, signal?: AbortSignal): Promise<WebSocket> {
     if (this.socket?.readyState === WebSocket.OPEN) {
       return this.socket;
     }
@@ -313,7 +313,10 @@ export class UnityClient {
     }
 
     this.socket?.terminate();
-    const socket = new WebSocket(this.endpoint, { headers: { authorization: `Bearer ${token}` } });
+    const socket = new WebSocket(this.endpoint, {
+      headers: { authorization: `Bearer ${token}` },
+      handshakeTimeout: timeoutMs
+    });
     this.socket = socket;
     socket.on("message", (data) => this.handleMessage(data.toString()));
     socket.on("close", () => {
@@ -325,8 +328,31 @@ export class UnityClient {
     socket.on("error", (error) => this.rejectPending(error));
 
     this.connecting = new Promise<WebSocket>((resolve, reject) => {
-      socket.once("open", () => resolve(socket));
-      socket.once("error", reject);
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", abort);
+        socket.removeListener("open", opened);
+        socket.removeListener("error", failed);
+        if (error) reject(error);
+        else resolve(socket);
+      };
+      const opened = () => finish();
+      const failed = (error: Error) => finish(error);
+      const abort = () => {
+        socket.terminate();
+        finish(Object.assign(new Error("Unity WebSocket connection was cancelled."), { code: "UNITY_WEBSOCKET_CONNECTION_CANCELLED" }));
+      };
+      const timeout = setTimeout(() => {
+        socket.terminate();
+        finish(Object.assign(new Error("Unity WebSocket opening handshake timed out."), { code: "UNITY_WEBSOCKET_HANDSHAKE_TIMEOUT" }));
+      }, timeoutMs);
+      socket.once("open", opened);
+      socket.once("error", failed);
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
     });
     try {
       return await this.connecting;

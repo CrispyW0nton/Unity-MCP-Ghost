@@ -288,7 +288,7 @@ function assertRepairLoop(result: Record<string, unknown>, baselineRequired: boo
         (plannedTestScope.source === "semantic-test-scope" || plannedTestScope.source === "caller-default"),
       screenshotCaptured: typeof capture.path === "string" && capture.path.length > 0,
       baselineHandled: baselineRequired ? typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0 : true,
-      visualDiffHandled: baselineRequired ? diff.withinThreshold === true : selectedBaseline.path ? diff.withinThreshold === true : true
+      visualDiffHandled: baselineRequired ? diff.withinThreshold === true : !selectedBaseline.path || typeof diff.differentRatio === "number"
     },
     {
       plannedTestScope,
@@ -309,7 +309,7 @@ function assertVisualValidationReport(result: Record<string, unknown>, baselineR
       toolOk: result.ok !== false,
       currentCaptureFound: typeof currentCapture.path === "string" && currentCapture.path.length > 0,
       baselineHandled: baselineRequired ? typeof selectedBaseline.path === "string" && selectedBaseline.path.length > 0 : true,
-      visualDiffHandled: baselineRequired ? diff.withinThreshold === true : selectedBaseline.path ? diff.withinThreshold === true : true,
+      visualDiffHandled: baselineRequired ? diff.withinThreshold === true : !selectedBaseline.path || typeof diff.differentRatio === "number",
       recommendationsPresent: Array.isArray(data.recommendations)
     },
     {

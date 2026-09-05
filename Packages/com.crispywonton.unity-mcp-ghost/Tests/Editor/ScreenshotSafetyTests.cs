@@ -43,8 +43,31 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
                 var stats = CommandRegistry.CompareScreenshots(baseline, current, 100, true);
                 Assert.That(stats.ComparisonWidth, Is.EqualTo(4));
                 Assert.That(stats.ComparisonHeight, Is.EqualTo(4));
-                Assert.That(stats.ComparisonMethod, Is.EqualTo("sampled-rgba-bilinear-current-to-baseline"));
+                Assert.That(stats.ComparisonMethod, Is.EqualTo("exact-rgba-bilinear-current-to-baseline"));
                 Assert.That(stats.DifferentPixels, Is.Zero);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(baseline);
+                UnityEngine.Object.DestroyImmediate(current);
+            }
+        }
+
+        [Test]
+        public void ExactComparisonFindsSparseBottomRightDifference()
+        {
+            var baseline = SolidTexture(64, 1, Color.black);
+            var current = SolidTexture(64, 1, Color.black);
+            try
+            {
+                current.SetPixel(63, 0, Color.white);
+                current.Apply();
+
+                var stats = CommandRegistry.CompareScreenshots(baseline, current, 64, false);
+
+                Assert.That(stats.ComparisonMethod, Is.EqualTo("exact-rgba-exact-dimensions"));
+                Assert.That(stats.SampledPixels, Is.EqualTo(64));
+                Assert.That(stats.DifferentPixels, Is.EqualTo(1));
             }
             finally
             {

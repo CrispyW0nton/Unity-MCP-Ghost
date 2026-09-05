@@ -13,6 +13,7 @@ export interface ScenarioSourceMutation {
 }
 
 export interface ScenarioInput {
+  backend?: "auto" | "unity-input-system" | "project-test-driver";
   device: "keyboard" | "pointer";
   action: "tap" | "press" | "release" | "click";
   key?: string;
@@ -60,6 +61,7 @@ export interface ScenarioScreenshotAssertion {
   dimensionMode?: "reject" | "resample-current";
   threshold?: number;
   maxSamples?: number;
+  allowApproximate?: boolean;
 }
 
 export interface ScenarioCaseDefinition {
@@ -151,6 +153,7 @@ interface ScenarioJobManagerOptions {
 
 const terminalStatuses = new Set(["success", "failed", "cancelled", "outcomeUnknown"]);
 const evidenceFiles = new Set(["manifest.json", "scenario-results.json", "compiler.json", "console.json", "summary.md"]);
+const scenarioLeaseDurationMs = 2 * 60 * 1000;
 
 export class ScenarioJobManager {
   private readonly projectPath?: string;
@@ -158,6 +161,7 @@ export class ScenarioJobManager {
   private readonly editorInstanceId: string;
   private readonly jobsRoot?: string;
   private readonly evidenceRoot?: string;
+  private readonly leasePath?: string;
   private readonly controllers = new Map<string, AbortController>();
   private recovery: Promise<void> | undefined;
 
@@ -167,6 +171,7 @@ export class ScenarioJobManager {
     this.editorInstanceId = options.editorInstanceId ?? "";
     this.jobsRoot = this.projectPath ? join(this.projectPath, "Library", "UnityMcpGhost", "scenario-jobs") : undefined;
     this.evidenceRoot = this.projectPath ? join(this.projectPath, "Library", "UnityMcpGhost", "evidence") : undefined;
+    this.leasePath = this.jobsRoot ? join(this.jobsRoot, "active-scenario-lease.json") : undefined;
   }
 
   public get available(): boolean {
@@ -215,9 +220,15 @@ export class ScenarioJobManager {
       restorationComplete: false,
       evidenceDirectory
     };
-    await mkdir(evidenceDirectory, { recursive: true });
-    await this.save(record);
-    this.launch(record);
+    await this.acquireLease(operationId);
+    try {
+      await mkdir(evidenceDirectory, { recursive: true });
+      await this.save(record);
+      this.launch(record);
+    } catch (error) {
+      await this.releaseLease(operationId);
+      throw error;
+    }
     return this.summary(record);
   }
 
@@ -230,7 +241,7 @@ export class ScenarioJobManager {
   public async list(limit = 50): Promise<Record<string, unknown>> {
     this.requireAvailable();
     await this.ensureRecovered();
-    const files = (await readdir(this.jobsRoot!)).filter((name) => name.endsWith(".json"));
+    const files = (await readdir(this.jobsRoot!)).filter((name) => /^[0-9a-f-]{36}\.json$/i.test(name));
     const records = (await Promise.all(files.map((name) => this.loadPath(join(this.jobsRoot!, name)))))
       .filter((record): record is ScenarioJobRecord => record !== undefined)
       .sort((left, right) => right.updatedUtc.localeCompare(left.updatedUtc))
@@ -338,7 +349,10 @@ export class ScenarioJobManager {
         await this.writeEvidence(latest).catch(() => undefined);
         await this.save(latest).catch(() => undefined);
       })
-      .finally(() => this.controllers.delete(record.operationId));
+      .finally(() => {
+        this.controllers.delete(record.operationId);
+        void this.releaseLease(record.operationId);
+      });
   }
 
   private async execute(record: ScenarioJobRecord, signal: AbortSignal): Promise<void> {
@@ -500,8 +514,9 @@ export class ScenarioJobManager {
         const observed = await this.waitForConsole({ ...assertion, boundary: assertion.boundary ?? result.consoleBoundary }, signal, deadline);
         result.consoleAssertions.push(observed);
       }
-      for (const screenshot of definition.screenshotAssertions ?? []) {
-        result.screenshots.push(await this.captureScreenshot(record, definition.id, screenshot, signal, deadline));
+      for (let screenshotIndex = 0; screenshotIndex < (definition.screenshotAssertions ?? []).length; screenshotIndex += 1) {
+        const screenshot = definition.screenshotAssertions![screenshotIndex];
+        result.screenshots.push(await this.captureScreenshot(record, definition.id, screenshotIndex, screenshot, signal, deadline));
       }
       for (const assertion of definition.objectAssertions ?? []) {
         const observed = await this.request("runtime.assert", assertion, signal, this.remaining(deadline));
@@ -774,6 +789,7 @@ export class ScenarioJobManager {
   private async captureScreenshot(
     record: ScenarioJobRecord,
     caseId: string,
+    assertionIndex: number,
     assertion: ScenarioScreenshotAssertion,
     signal: AbortSignal,
     deadline: number
@@ -794,7 +810,7 @@ export class ScenarioJobManager {
     if (capture.ok === false) throw new ScenarioFailure(errorCode(capture, "SCREENSHOT_CAPTURE_FAILED"), errorMessage(capture), capture);
     const sourcePath = stringValue(capture.path);
     const extension = sourcePath.toLowerCase().endsWith(".png") ? ".png" : ".bin";
-    const fileName = `${safeSegment(caseId)}-${safeSegment(assertion.label)}${extension}`;
+    const fileName = `${safeSegment(caseId)}-${assertionIndex + 1}-${safeSegment(assertion.label)}${extension}`;
     const destination = this.safeEvidencePath(record, join("screenshots", fileName));
     await mkdir(dirname(destination), { recursive: true });
     await copyFile(sourcePath, destination);
@@ -811,12 +827,19 @@ export class ScenarioJobManager {
           currentPath: sourcePath,
           dimensionMode: assertion.dimensionMode ?? "reject",
           threshold: assertion.threshold ?? 0.02,
-          maxSamples: assertion.maxSamples ?? 20000
+          maxSamples: assertion.maxSamples ?? 16_777_216
         },
         signal,
         this.remaining(deadline)
       );
       result.diff = diff;
+      if (diff.approximate === true && assertion.allowApproximate !== true) {
+        throw new ScenarioFailure(
+          "SCREENSHOT_ASSERTION_APPROXIMATE",
+          "Scenario screenshot assertions require exhaustive pixel coverage unless allowApproximate=true is explicit.",
+          diff
+        );
+      }
       if (diff.ok === false || diff.withinThreshold === false) {
         throw new ScenarioFailure(errorCode(diff, "SCREENSHOT_ASSERTION_FAILED"), errorMessage(diff, "Screenshot exceeded the declared tolerance."), diff);
       }
@@ -887,10 +910,7 @@ export class ScenarioJobManager {
     const compiler = record.cases.map((item) => ({ caseId: item.id, compile: item.compile, restorationCompile: objectValue(item.restoration).compile }));
     const console = record.cases.map((item) => ({ caseId: item.id, boundary: item.consoleBoundary, assertions: item.consoleAssertions }));
     await this.atomicWrite(this.safeEvidencePath(record, "manifest.json"), JSON.stringify(manifest, null, 2));
-    await this.atomicWrite(
-      this.safeEvidencePath(record, "scenario-results.json"),
-      JSON.stringify({ ...record, definition: redactDefinition(record.definition) }, null, 2)
-    );
+    await this.atomicWrite(this.safeEvidencePath(record, "scenario-results.json"), JSON.stringify(sanitizeScenarioRecord(record), null, 2));
     await this.atomicWrite(this.safeEvidencePath(record, "compiler.json"), JSON.stringify(compiler, null, 2));
     await this.atomicWrite(this.safeEvidencePath(record, "console.json"), JSON.stringify(console, null, 2));
     const rows = record.cases.map(
@@ -928,11 +948,16 @@ export class ScenarioJobManager {
     if (!this.available) return;
     await mkdir(this.jobsRoot!, { recursive: true });
     await mkdir(this.evidenceRoot!, { recursive: true });
-    const files = (await readdir(this.jobsRoot!)).filter((name) => name.endsWith(".json"));
+    const files = (await readdir(this.jobsRoot!)).filter((name) => /^[0-9a-f-]{36}\.json$/i.test(name));
     for (const file of files) {
       const record = await this.loadPath(join(this.jobsRoot!, file));
       if (!record || terminalStatuses.has(record.status)) continue;
-      await this.recoverInterruptedJob(record);
+      await this.acquireLease(record.operationId);
+      try {
+        await this.recoverInterruptedJob(record);
+      } finally {
+        await this.releaseLease(record.operationId);
+      }
     }
   }
 
@@ -1058,7 +1083,71 @@ export class ScenarioJobManager {
   private async save(record: ScenarioJobRecord): Promise<void> {
     record.updatedUtc = new Date().toISOString();
     await mkdir(this.jobsRoot!, { recursive: true });
-    await this.atomicWrite(this.jobPath(record.operationId), JSON.stringify(record, null, 2));
+    await this.atomicWrite(this.jobPath(record.operationId), JSON.stringify(sanitizeScenarioRecord(record), null, 2));
+    if (!terminalStatuses.has(record.status)) {
+      await this.renewLease(record.operationId);
+    }
+  }
+
+  private async acquireLease(operationId: string): Promise<void> {
+    const path = this.leasePath!;
+    await mkdir(this.jobsRoot!, { recursive: true });
+    const claim = async () =>
+      writeFile(
+        path,
+        JSON.stringify({ operationId, processId: process.pid, acquiredUtc: new Date().toISOString(), expiresUnixMs: Date.now() + scenarioLeaseDurationMs }),
+        { encoding: "utf8", flag: "wx" }
+      );
+    try {
+      await claim();
+      return;
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw error;
+    }
+
+    const current = objectValue(await readJson(path));
+    const owner = stringValue(current.operationId);
+    const processId = numberValue(current.processId);
+    if (processId === process.pid || processIsAlive(processId)) {
+      throw new ScenarioFailure("SCENARIO_ALREADY_RUNNING", `Scenario operation ${owner || "unknown"} already owns this project/editor lease.`, {
+        operationId: owner || null,
+        projectId: this.projectId,
+        editorInstanceId: this.editorInstanceId
+      });
+    }
+
+    const stalePath = `${path}.${randomUUID()}.stale`;
+    try {
+      await rename(path, stalePath);
+      await rm(stalePath, { force: true });
+      await claim();
+    } catch (error) {
+      await rm(stalePath, { force: true });
+      throw new ScenarioFailure("SCENARIO_ALREADY_RUNNING", "Another scenario acquired the project/editor lease concurrently.", error);
+    }
+  }
+
+  private async renewLease(operationId: string): Promise<void> {
+    const current = objectValue(await readJson(this.leasePath!));
+    if (stringValue(current.operationId) !== operationId || numberValue(current.processId) !== process.pid) {
+      throw new ScenarioFailure("SCENARIO_LEASE_LOST", "The active scenario no longer owns the project/editor lease.", current);
+    }
+    await this.atomicWrite(
+      this.leasePath!,
+      JSON.stringify({ ...current, renewedUtc: new Date().toISOString(), expiresUnixMs: Date.now() + scenarioLeaseDurationMs })
+    );
+  }
+
+  private async releaseLease(operationId: string): Promise<void> {
+    const current = objectValue(await readJson(this.leasePath!));
+    if (stringValue(current.operationId) !== operationId) return;
+    const releasePath = `${this.leasePath!}.${operationId}.release`;
+    try {
+      await rename(this.leasePath!, releasePath);
+      await rm(releasePath, { force: true });
+    } catch {
+      // A concurrent stale-lease recovery or prior release already owns cleanup.
+    }
   }
 
   private async atomicWrite(path: string, contents: string): Promise<void> {
@@ -1227,14 +1316,55 @@ function redactDefinition(definition: ScenarioMatrixDefinition): unknown {
     ...definition,
     cases: definition.cases.map((item) => ({
       ...item,
-      sourceMutations: item.sourceMutations?.map((mutation) => ({
-        path: mutation.path,
-        expectedSha256: mutation.expectedSha256,
-        contentSha256: createHash("sha256").update(mutation.content, "utf8").digest("hex"),
-        contentBytes: Buffer.byteLength(mutation.content, "utf8")
-      }))
+      sourceMutations: item.sourceMutations?.map((mutation) => {
+        if (typeof mutation.content !== "string") return mutation;
+        return {
+          path: mutation.path,
+          expectedSha256: mutation.expectedSha256,
+          contentSha256: createHash("sha256").update(mutation.content, "utf8").digest("hex"),
+          contentBytes: Buffer.byteLength(mutation.content, "utf8")
+        };
+      })
     }))
   };
+}
+
+function sanitizeScenarioRecord(record: ScenarioJobRecord): unknown {
+  const projected = sanitizeEvidenceValue(record) as Record<string, unknown>;
+  projected.definition = redactDefinition(record.definition);
+  return projected;
+}
+
+function sanitizeEvidenceValue(value: unknown, key = ""): unknown {
+  if (Array.isArray(value)) return value.map((item) => sanitizeEvidenceValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([childKey, child]) => [childKey, sanitizeEvidenceValue(child, childKey)]));
+  }
+  if (typeof value !== "string") return value;
+  if (key.toLowerCase() === "diff") return redactSecrets(value);
+  return redactSecrets(value);
+}
+
+async function readJson(path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return objectValue(error).code === "EEXIST";
+}
+
+function processIsAlive(processId: number): boolean {
+  if (!Number.isInteger(processId) || processId <= 0) return false;
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function readGitCommit(projectPath: string): Promise<string> {

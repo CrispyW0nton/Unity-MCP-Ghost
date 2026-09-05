@@ -7,6 +7,8 @@ import type { UnityClient } from "../unity/UnityClient.js";
 import { PackageVersion } from "../version.js";
 import { listOperationCatalog, operationEnabled, recordOperation, searchOperationCatalog, type OperationProfile, type ToolSchema } from "./operationCatalog.js";
 import { asObject, failureResponse, GhostToolResponseSchema, type GhostToolMeta, successResponse, type ToolDiagnostic } from "./toolResponse.js";
+import { registerAuthoringTools } from "./registerAuthoringTools.js";
+import { registerCodeTools } from "./registerCodeTools.js";
 
 export interface ToolContext {
   unity: UnityClient;
@@ -19,10 +21,14 @@ export interface ToolContext {
 type ToolHandler<TArgs> = (args: TArgs) => Promise<CallToolResult>;
 
 const EmptySchema = {};
-const ParamsSchema = z.record(z.string(), z.unknown()).default({});
-const DryRunSchema = z.boolean().default(false);
+export const ParamsSchema = z.record(z.string(), z.unknown()).default({});
+export const DryRunSchema = z.boolean().default(false);
+const MutationRequestSchema = {
+  requestId: z.string().min(1).max(128).optional(),
+  idempotencyKey: z.string().min(1).max(128).optional()
+};
 
-const TransformSchema = {
+export const TransformSchema = {
   instanceId: z.number().int(),
   x: z.number().optional(),
   y: z.number().optional(),
@@ -36,10 +42,10 @@ const TransformSchema = {
   dryRun: DryRunSchema
 };
 
-const ComponentValueSchema = z.union([z.string(), z.number(), z.boolean()]);
+export const ComponentValueSchema = z.union([z.string(), z.number(), z.boolean()]);
 const ColliderTypeSchema = z.enum(["BoxCollider", "SphereCollider", "CapsuleCollider"]);
 const CapsuleDirectionSchema = z.enum(["x", "y", "z"]);
-const ScriptEditSchema = z.object({
+export const ScriptEditSchema = z.object({
   startLine: z.number().int().nonnegative(),
   startColumn: z.number().int().nonnegative(),
   endLine: z.number().int().nonnegative(),
@@ -68,6 +74,7 @@ const ScenarioSourceMutationSchema = z.object({
   expectedSha256: z.string().regex(/^[0-9a-f]{64}$/i)
 });
 const ScenarioInputSchema = z.object({
+  backend: z.enum(["auto", "unity-input-system", "project-test-driver"]).default("auto"),
   device: z.enum(["keyboard", "pointer"]),
   action: z.enum(["tap", "press", "release", "click"]),
   key: z.string().min(1).optional(),
@@ -111,7 +118,8 @@ const ScenarioScreenshotAssertionSchema = z.object({
   baselinePath: z.string().min(1).optional(),
   dimensionMode: z.enum(["reject", "resample-current"]).optional(),
   threshold: z.number().nonnegative().max(1).optional(),
-  maxSamples: z.number().int().positive().max(200000).optional()
+  maxSamples: z.number().int().positive().max(16_777_216).optional(),
+  allowApproximate: z.boolean().optional()
 });
 const ScenarioCaseSchema = z.object({
   id: z.string().min(1).max(100),
@@ -143,14 +151,15 @@ function registerTool<TSchema extends ToolSchema>(
   meta: GhostToolMeta,
   handler: ToolHandler<z.output<z.ZodObject<TSchema>>>
 ): void {
-  const catalogEntry = recordOperation(server, name, description, inputSchema, GhostToolResponseSchema, meta);
+  const effectiveInputSchema = (meta.mutates ? { ...MutationRequestSchema, ...inputSchema } : inputSchema) as TSchema;
+  const catalogEntry = recordOperation(server, name, description, effectiveInputSchema, GhostToolResponseSchema, meta);
   if (!operationEnabled(catalogEntry, contextProfiles(server))) return;
 
   server.registerTool(
     name,
     {
       description,
-      inputSchema,
+      inputSchema: effectiveInputSchema,
       outputSchema: GhostToolResponseSchema,
       annotations: annotationsFor(meta),
       _meta: {
@@ -170,7 +179,14 @@ function registerTool<TSchema extends ToolSchema>(
         "unity-mcp-ghost/bridgeOperations": catalogEntry.bridgeOperations ?? []
       }
     },
-    handler as never
+    (async (args: z.output<z.ZodObject<TSchema>>) => {
+      const result = await handler(args);
+      const requestId = stringValue(asObject(args).requestId);
+      if (meta.mutates && requestId && result.structuredContent && typeof result.structuredContent === "object") {
+        (result.structuredContent as Record<string, unknown>).requestId = requestId;
+      }
+      return result;
+    }) as never
   );
 }
 
@@ -1201,7 +1217,7 @@ function registerCorePrompts(server: McpServer): void {
   );
 }
 
-function registerUnityRequestTool<TSchema extends ToolSchema>(
+export function registerUnityRequestTool<TSchema extends ToolSchema>(
   server: McpServer,
   context: ToolContext,
   name: string,
@@ -1222,7 +1238,11 @@ function registerUnityRequestTool<TSchema extends ToolSchema>(
       const unityMethod = typeof method === "function" ? method(args) : method;
 
       try {
-        const data = await context.unity.request(unityMethod, params(args));
+        const request = asObject(args);
+        const data = await context.unity.request(unityMethod, params(args), {
+          requestId: stringValue(request.requestId) || undefined,
+          idempotencyKey: stringValue(request.idempotencyKey) || undefined
+        });
         return successResponse(`${name} completed.`, asObject(data), startedAt);
       } catch (error) {
         return failureResponse(`${name} failed`, error, startedAt);
@@ -1252,7 +1272,12 @@ export function createMcpServer(context: ToolContext): McpServer {
     { risk: "read", mutates: false, supportsDryRun: false, phase: 1 },
     async () => {
       const startedAt = Date.now();
-      const unityConnected = await context.unity.isConnected();
+      let unityConnected: boolean;
+      try {
+        unityConnected = await context.unity.isConnected();
+      } catch (error) {
+        return failureResponse("ping connection check failed", error, startedAt, [], { code: "UNITY_CONNECTION_CHECK_FAILED" });
+      }
 
       return successResponse(
         `Unity MCP Ghost is running. Unity connected: ${unityConnected}.`,
@@ -1276,7 +1301,12 @@ export function createMcpServer(context: ToolContext): McpServer {
     { risk: "read", mutates: false, supportsDryRun: false, phase: 1 },
     async () => {
       const startedAt = Date.now();
-      const unityConnected = await context.unity.isConnected();
+      let unityConnected: boolean;
+      try {
+        unityConnected = await context.unity.isConnected();
+      } catch (error) {
+        return failureResponse("health connection check failed", error, startedAt, [], { code: "UNITY_CONNECTION_CHECK_FAILED" });
+      }
 
       if (!unityConnected) {
         return successResponse(
@@ -1560,6 +1590,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     "input_simulate",
     "Inject verified keyboard or UI pointer input through the active Input System or a project-scoped deterministic test driver.",
     {
+      backend: z.enum(["auto", "unity-input-system", "project-test-driver"]).default("auto"),
       device: z.enum(["keyboard", "pointer"]).default("keyboard"),
       action: z.enum(["tap", "press", "release", "click"]).default("tap"),
       key: z.string().min(1).optional(),
@@ -1575,8 +1606,8 @@ export function createMcpServer(context: ToolContext): McpServer {
       phase: 4,
       idempotent: false,
       examples: [
-        { device: "keyboard", action: "tap", key: "PageUp" },
-        { device: "keyboard", action: "tap", key: "PageDown" },
+        { backend: "auto", device: "keyboard", action: "tap", key: "PageUp" },
+        { backend: "project-test-driver", device: "keyboard", action: "tap", key: "PageDown" },
         { device: "pointer", action: "click", button: "left", x: 320, y: 180 }
       ]
     },
@@ -1717,13 +1748,13 @@ export function createMcpServer(context: ToolContext): McpServer {
     server,
     context,
     "screenshot_diff",
-    "Compare two Unity PNG screenshots with a sampled pixel diff for visual regression checks.",
+    "Compare two Unity PNG screenshots with explicit exact or bounded full-domain pixel coverage.",
     {
       baselinePath: z.string().min(1),
       currentPath: z.string().min(1),
       dimensionMode: z.enum(["reject", "resample-current"]).default("reject"),
       threshold: z.number().nonnegative().max(1).default(0.02),
-      maxSamples: z.number().int().positive().max(200000).default(20000)
+      maxSamples: z.number().int().positive().max(16_777_216).default(20000)
     },
     {
       risk: "read",
@@ -1824,149 +1855,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     }
   );
 
-  registerUnityRequestTool(
-    server,
-    context,
-    "scene_create",
-    "Create a new Unity scene for level, menu, or gameplay prototyping work.",
-    {
-      setup: z.enum(["empty", "default"]).default("default"),
-      mode: z.enum(["single", "additive"]).default("single"),
-      dryRun: DryRunSchema
-    },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "scene.create"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "scene_open",
-    "Open a Unity scene asset by path.",
-    {
-      path: z.string().min(1),
-      mode: z.enum(["single", "additive"]).default("single"),
-      dryRun: DryRunSchema
-    },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "scene.open"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "scene_set_active",
-    "Set the active Unity scene by path or name.",
-    {
-      path: z.string().optional(),
-      name: z.string().optional(),
-      dryRun: DryRunSchema
-    },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "scene.set_active"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "scene_unload",
-    "Unload an open additive Unity scene by path or name.",
-    {
-      path: z.string().optional(),
-      name: z.string().optional(),
-      removeScene: z.boolean().default(true),
-      dryRun: DryRunSchema
-    },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "scene.unload"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "manage_scene",
-    "Compatibility tool for scene actions.",
-    {
-      action: z.enum(["create", "open", "save", "save_all", "list_open", "get_setup", "set_active", "unload"]),
-      params: ParamsSchema
-    },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
-    (args) => `scene.${args.action}`,
-    (args) => args.params
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "component_add",
-    "Add a Unity component to a GameObject by type name, such as BoxCollider, Rigidbody, AudioSource, or a project MonoBehaviour.",
-    {
-      instanceId: z.number().int(),
-      type: z.string().min(1),
-      dryRun: DryRunSchema
-    },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "component.add"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "component_get",
-    "Read components on a GameObject, or read one component by component instance ID.",
-    {
-      instanceId: z.number().int().optional(),
-      componentInstanceId: z.number().int().optional(),
-      type: z.string().optional(),
-      maxProperties: z.number().int().positive().max(200).default(80)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 2 },
-    "component.get"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "component_modify",
-    "Modify a serialized component property through Unity SerializedObject, with dry-run support.",
-    {
-      componentInstanceId: z.number().int().optional(),
-      instanceId: z.number().int().optional(),
-      type: z.string().optional(),
-      propertyPath: z.string().min(1),
-      value: ComponentValueSchema,
-      dryRun: DryRunSchema
-    },
-    { risk: "safe-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "component.modify"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "component_remove",
-    "Remove a Unity component by component instance ID.",
-    {
-      componentInstanceId: z.number().int(),
-      dryRun: DryRunSchema
-    },
-    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2 },
-    "component.remove"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "manage_component",
-    "Compatibility tool for component add/get/modify/remove actions.",
-    {
-      action: z.enum(["add", "get", "modify", "remove"]),
-      params: ParamsSchema
-    },
-    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2, destructive: true },
-    (args) => `component.${args.action}`,
-    (args) => args.params
-  );
+  registerAuthoringTools(server, context);
 
   registerTool(
     server,
@@ -2119,389 +2008,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     }
   );
 
-  registerUnityRequestTool(
-    server,
-    context,
-    "asset_find",
-    "Find Unity assets through AssetDatabase filters by query, type, or label.",
-    {
-      query: z.string().default(""),
-      type: z.string().optional(),
-      label: z.string().optional(),
-      limit: z.number().int().positive().max(500).default(100)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 2, relatedResources: ["unity://assets/{filter}"] },
-    "asset.find"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "asset_references_trace",
-    "Trace Unity asset, scene, prefab, material, animator, and ScriptableObject files that reference a target asset GUID.",
-    {
-      path: z.string().optional(),
-      guid: z.string().optional(),
-      extensions: z.string().default(""),
-      includeSelf: z.boolean().default(false),
-      limit: z.number().int().positive().max(5000).default(500)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
-    "semantic.asset_references_trace"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "prefab_references_trace",
-    "Trace prefab and scene back-references to a Unity asset or script before refactors, deletes, or prefab changes.",
-    {
-      path: z.string().optional(),
-      guid: z.string().optional(),
-      extensions: z.string().default(".prefab,.unity"),
-      includeSelf: z.boolean().default(false),
-      limit: z.number().int().positive().max(5000).default(500)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
-    "prefab.references_trace"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "unity_event_bindings_find",
-    "Find Inspector-wired UnityEvent persistent callbacks in serialized scenes, prefabs, and assets.",
-    {
-      methodName: z.string().default(""),
-      targetType: z.string().default(""),
-      assetPath: z.string().default(""),
-      extensions: z.string().default(".prefab,.unity,.asset"),
-      limit: z.number().int().positive().max(5000).default(500)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
-    "semantic.unity_event_bindings_find"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "animator_analyze",
-    "Analyze a Unity Animator Controller YAML graph: parameters, state machines, states, transitions, and transition conditions.",
-    {
-      path: z.string().min(1),
-      limit: z.number().int().positive().max(5000).default(500)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
-    "semantic.animator_analyze"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "meta_integrity_check",
-    "Scan Unity Assets for missing .meta files, missing GUIDs, duplicate GUIDs, and orphan .meta files.",
-    {
-      includeMetaOnly: z.boolean().default(true),
-      limit: z.number().int().positive().max(5000).default(500)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
-    "semantic.meta_integrity_check"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "unused_assets_find",
-    "Find conservative unused Unity asset candidates by scanning serialized GUID references across the project.",
-    {
-      extensions: z
-        .string()
-        .default(".prefab,.unity,.asset,.controller,.overrideController,.mat,.anim,.playable,.renderTexture,.lighting,.shadergraph,.asmdef,.uxml,.uss"),
-      candidateExtensions: z
-        .string()
-        .default(
-          ".prefab,.mat,.asset,.controller,.overrideController,.anim,.png,.jpg,.jpeg,.tga,.psd,.fbx,.obj,.wav,.mp3,.ogg,.shadergraph,.renderTexture,.uxml,.uss"
-        ),
-      includeScripts: z.boolean().default(false),
-      limit: z.number().int().positive().max(5000).default(500)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
-    "semantic.unused_assets_find"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "class_impact_analyze",
-    "Analyze Unity C# class impact across scripts plus serialized asset/prefab references before refactors.",
-    {
-      path: z.string().default(""),
-      className: z.string().default(""),
-      methodName: z.string().default(""),
-      limit: z.number().int().positive().max(2000).default(200)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
-    "semantic.class_impact_analyze"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "call_path_find",
-    "Find a lightweight C# method call path across Unity scripts using a deterministic source scan.",
-    {
-      fromMethod: z.string().min(1),
-      toMethod: z.string().min(1),
-      maxDepth: z.number().int().positive().max(12).default(6),
-      limit: z.number().int().positive().max(100).default(20)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
-    "semantic.call_path_find"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "lint_unity_run",
-    "Run Unity-specific lint rules for gameplay performance, fragile APIs, asset metadata, and unused asset candidates.",
-    {
-      path: z.string().default(""),
-      rules: z.string().default(""),
-      includeAssetRules: z.boolean().default(true),
-      limit: z.number().int().positive().max(5000).default(500)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
-    "semantic.lint_unity_run"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "project_index_summary",
-    "Summarize the Unity project as a semantic game-development index: asset domains, script patterns, serialized references, risks, and recommended next tools.",
-    {
-      includeDiagnostics: z.boolean().default(true),
-      limit: z.number().int().positive().max(2000).default(200)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://semantic/index"] },
-    "semantic.project_index_summary"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "test_scope_suggest",
-    "Suggest the smallest useful Unity validation scope for a script/class/method change using semantic impact and test asset scans.",
-    {
-      path: z.string().default(""),
-      className: z.string().default(""),
-      methodName: z.string().default(""),
-      includePlayMode: z.boolean().default(true),
-      limit: z.number().int().positive().max(200).default(20)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 3, relatedResources: ["unity://semantic/index", "unity://tests/{mode}"] },
-    "semantic.test_scope_suggest"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "asset_create_folder",
-    "Create a folder under Assets for organizing game content.",
-    {
-      parentPath: z.string().default("Assets"),
-      folderName: z.string().min(1),
-      dryRun: DryRunSchema
-    },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "asset.create_folder"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "asset_refresh",
-    "Refresh Unity's AssetDatabase after generated or imported game assets change.",
-    {
-      dryRun: DryRunSchema
-    },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "asset.refresh"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "asset_move",
-    "Move a Unity asset through AssetDatabase, constrained to Assets/ and dry-run previewable.",
-    {
-      fromPath: z.string().min(1),
-      toPath: z.string().min(1),
-      dryRun: DryRunSchema
-    },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "asset.move"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "asset_copy",
-    "Copy a Unity asset through AssetDatabase, constrained to Assets/ and dry-run previewable.",
-    {
-      fromPath: z.string().min(1),
-      toPath: z.string().min(1),
-      dryRun: DryRunSchema
-    },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "asset.copy"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "asset_delete",
-    "Delete or trash a Unity asset through AssetDatabase, constrained to Assets/ and dry-run previewable.",
-    {
-      path: z.string().min(1),
-      moveToTrash: z.boolean().default(true),
-      dryRun: DryRunSchema
-    },
-    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2 },
-    "asset.delete"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "manage_asset",
-    "Compatibility tool for AssetDatabase actions.",
-    {
-      action: z.enum(["find", "create_folder", "move", "copy", "delete", "refresh"]),
-      params: ParamsSchema
-    },
-    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2, destructive: true },
-    (args) => `asset.${args.action}`,
-    (args) => args.params
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "script_read",
-    "Read a Unity C# script asset under Assets/.",
-    {
-      path: z.string().min(1)
-    },
-    { risk: "read", mutates: false, supportsDryRun: false, phase: 2 },
-    "script.read"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "script_create",
-    "Create a Unity C# MonoBehaviour script asset with optional template content.",
-    {
-      path: z.string().min(1),
-      className: z.string().optional(),
-      namespace: z.string().optional(),
-      content: z.string().optional(),
-      overwrite: z.boolean().default(false),
-      expectedSha256: z
-        .string()
-        .regex(/^[a-f0-9]{64}$/i)
-        .optional(),
-      dryRun: DryRunSchema
-    },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "script.create"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "script_write",
-    "Replace the contents of a Unity C# script asset under Assets/.",
-    {
-      path: z.string().min(1),
-      content: z.string(),
-      overwrite: z.boolean().default(true),
-      expectedSha256: z
-        .string()
-        .regex(/^[a-f0-9]{64}$/i)
-        .optional(),
-      dryRun: DryRunSchema
-    },
-    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "script.write"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "script_apply_edits",
-    "Apply atomic LSP-style ranged edits to a Unity C# script asset under Assets/.",
-    {
-      path: z.string().min(1),
-      edits: z.array(ScriptEditSchema).min(1),
-      expectedSha256: z
-        .string()
-        .regex(/^[a-f0-9]{64}$/i)
-        .optional(),
-      dryRun: DryRunSchema
-    },
-    { risk: "code-write", mutates: true, supportsDryRun: true, phase: 2 },
-    "script.apply_edits"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "script_delete",
-    "Move a Unity C# script asset to trash through AssetDatabase.",
-    {
-      path: z.string().min(1),
-      expectedSha256: z
-        .string()
-        .regex(/^[a-f0-9]{64}$/i)
-        .optional(),
-      dryRun: DryRunSchema
-    },
-    { risk: "destructive", mutates: true, supportsDryRun: true, phase: 2 },
-    "script.delete"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "script_restore",
-    "Restore a byte-identical C# script from a Ghost transaction backup.",
-    {
-      path: z.string().min(1),
-      backupPath: z.string().min(1),
-      backupMetaPath: z.string().default(""),
-      expectedSha256: z
-        .string()
-        .regex(/^[a-f0-9]{64}$/i)
-        .optional()
-    },
-    { risk: "code-write", mutates: true, supportsDryRun: false, phase: 3 },
-    "script.restore"
-  );
-
-  registerUnityRequestTool(
-    server,
-    context,
-    "script_transaction_complete",
-    "Discard bounded Ghost recovery backups only after compile and required tests pass.",
-    {
-      backupPath: z.string().default(""),
-      backupMetaPath: z.string().default("")
-    },
-    { risk: "safe-write", mutates: true, supportsDryRun: false, phase: 3 },
-    "script.transaction_complete"
-  );
+  registerCodeTools(server, context);
 
   registerTool(
     server,
@@ -3142,7 +2649,7 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerTool(
     server,
     "repair_inspect",
-    "Inspect one script/compiler/test/visual state and propose repairs without applying them.",
+    "Inspect one script/compiler/test/visual state and propose source repairs; optional screenshots create bounded evidence artifacts.",
     {
       objective: z.string().min(1),
       scriptPath: z.string().optional(),
@@ -3163,7 +2670,7 @@ export function createMcpServer(context: ToolContext): McpServer {
     },
     {
       risk: "test-execution",
-      mutates: false,
+      mutates: true,
       supportsDryRun: false,
       phase: 3,
       relatedResources: ["unity://console/errors", "unity://tests/{mode}", "unity://semantic/index", "unity://screenshots/baselines"]

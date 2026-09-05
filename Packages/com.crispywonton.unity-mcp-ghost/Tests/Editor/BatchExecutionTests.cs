@@ -27,6 +27,34 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
         }
 
         [Test]
+        public void DryRunOverridesNestedFalseBeforePreflight()
+        {
+            var name = "GhostBatchNestedDryRun-" + Guid.NewGuid().ToString("N");
+
+            var result = ExecuteBatch(new JObject
+            {
+                ["dryRun"] = true,
+                ["operations"] = new JArray { Operation("gameobject.create", new JObject { ["name"] = name, ["dryRun"] = false }) }
+            });
+
+            Assert.That(result.Value<bool>("ok"), Is.True, result.ToString());
+            Assert.That(result.Value<bool>("dryRun"), Is.True);
+            Assert.That(GameObject.Find(name), Is.Null);
+        }
+
+        [Test]
+        public void RejectsRegisteredOperationWithoutExplicitBatchPolicy()
+        {
+            var result = ExecuteBatch(new JObject
+            {
+                ["operations"] = new JArray { Operation("editor.restore_snapshot", new JObject()) }
+            });
+
+            Assert.That(result.Value<bool>("ok"), Is.False);
+            Assert.That(result["error"]["code"].Value<string>(), Is.EqualTo("BATCH_POLICY_MISSING"));
+        }
+
+        [Test]
         public void RollsBackUndoableMutationAfterExecutionFailure()
         {
             var gameObject = new GameObject("GhostBatchUndo-" + Guid.NewGuid().ToString("N"));

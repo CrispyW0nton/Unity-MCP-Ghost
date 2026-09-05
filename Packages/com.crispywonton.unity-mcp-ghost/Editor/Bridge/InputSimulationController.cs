@@ -29,6 +29,11 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 X = JsonRpcUtil.ReadFloat(json, "x", 0f),
                 Y = JsonRpcUtil.ReadFloat(json, "y", 0f)
             };
+            var backendPreference = JsonRpcUtil.ReadString(json, "backend", "auto").ToLowerInvariant();
+            if (backendPreference != "auto" && backendPreference != "unity-input-system" && backendPreference != "project-test-driver")
+            {
+                return Failure("INVALID_INPUT_REQUEST", "Backend must be auto, unity-input-system, or project-test-driver.", request.OperationId);
+            }
             var validation = Validate(request);
             if (!string.IsNullOrEmpty(validation))
             {
@@ -37,7 +42,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             var failures = new List<string>();
             var backend = UnityMcpInputBackendRegistry.Backend;
-            if (backend != null)
+            if (backend != null && backendPreference != "project-test-driver")
             {
                 try
                 {
@@ -58,7 +63,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 }
             }
 
-            var drivers = Resources.FindObjectsOfTypeAll<MonoBehaviour>()
+            var drivers = backendPreference == "unity-input-system"
+                ? Array.Empty<IUnityMcpInputDriver>()
+                : Resources.FindObjectsOfTypeAll<MonoBehaviour>()
                 .OfType<IUnityMcpInputDriver>()
                 .Where(driver => !(driver is Behaviour behaviour) || behaviour.isActiveAndEnabled)
                 .OrderBy(driver => driver.DriverName, StringComparer.Ordinal)
@@ -90,7 +97,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 }
             }
 
-            var detail = failures.Count == 0 ? "No verified project driver or active Input System device accepted the request." : string.Join("; ", failures);
+            var detail = failures.Count == 0
+                ? "No verified backend matching '" + backendPreference + "' accepted the request."
+                : string.Join("; ", failures);
             return Failure("UNSUPPORTED_INPUT_BACKEND", detail, request.OperationId);
         }
 

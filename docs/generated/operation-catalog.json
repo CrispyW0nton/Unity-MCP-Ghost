@@ -189,6 +189,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "fromPath": {
             "type": "string",
             "minLength": 1
@@ -370,6 +380,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "parentPath": {
             "default": "Assets",
             "type": "string"
@@ -551,6 +571,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string",
             "minLength": 1
@@ -917,6 +947,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "fromPath": {
             "type": "string",
             "minLength": 1
@@ -1287,6 +1327,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "dryRun": {
             "default": false,
             "type": "boolean"
@@ -1456,6 +1506,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "operations": {
             "minItems": 1,
             "maxItems": 100,
@@ -2331,6 +2391,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "instanceId": {
             "type": "integer",
             "minimum": -9007199254740991,
@@ -2955,6 +3025,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "instanceId": {
             "type": "integer",
             "minimum": -9007199254740991,
@@ -3321,6 +3401,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "componentInstanceId": {
             "type": "integer",
             "minimum": -9007199254740991,
@@ -3518,6 +3608,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "componentInstanceId": {
             "type": "integer",
             "minimum": -9007199254740991,
@@ -3928,7 +4028,18 @@
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
-        "properties": {},
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
         "additionalProperties": false
       },
       "outputSchema": {
@@ -4283,6 +4394,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "label": {
             "default": "",
             "type": "string",
@@ -5048,6 +5169,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "operationId": {
             "type": "string",
             "format": "uuid",
@@ -5218,6 +5349,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "name": {
             "default": "GameObject",
             "type": "string",
@@ -5432,6 +5573,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "instanceId": {
             "type": "integer",
             "minimum": -9007199254740991,
@@ -5611,6 +5762,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "instanceId": {
             "type": "integer",
             "minimum": -9007199254740991,
@@ -5955,6 +6116,25 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "backend": {
+            "default": "auto",
+            "type": "string",
+            "enum": [
+              "auto",
+              "unity-input-system",
+              "project-test-driver"
+            ]
+          },
           "device": {
             "default": "keyboard",
             "type": "string",
@@ -5998,6 +6178,7 @@
           }
         },
         "required": [
+          "backend",
           "device",
           "action",
           "button",
@@ -6132,6 +6313,7 @@
       },
       "examples": [
         {
+          "backend": "auto",
           "device": "keyboard",
           "action": "tap",
           "key": "PageUp",
@@ -6139,6 +6321,7 @@
           "timeoutMs": 5000
         },
         {
+          "backend": "project-test-driver",
           "device": "keyboard",
           "action": "tap",
           "key": "PageDown",
@@ -6146,6 +6329,7 @@
           "timeoutMs": 5000
         },
         {
+          "backend": "auto",
           "device": "pointer",
           "action": "click",
           "button": "left",
@@ -6370,6 +6554,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "action": {
             "type": "string",
             "enum": [
@@ -6554,6 +6748,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "action": {
             "type": "string",
             "enum": [
@@ -6736,6 +6940,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "action": {
             "type": "string",
             "enum": [
@@ -6922,6 +7136,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "action": {
             "type": "string",
             "enum": [
@@ -7104,6 +7328,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "action": {
             "type": "string",
             "enum": [
@@ -7284,6 +7518,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "action": {
             "type": "string",
             "enum": [
@@ -7470,6 +7714,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "action": {
             "type": "string",
             "enum": [
@@ -7831,6 +8085,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "operationId": {
             "type": "string",
             "minLength": 1
@@ -8501,6 +8765,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "packageId": {
             "type": "string",
             "minLength": 1
@@ -8853,6 +9127,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "packageName": {
             "type": "string",
             "minLength": 1
@@ -9720,6 +10004,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "state": {
             "type": "string",
             "enum": [
@@ -9911,6 +10205,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "timeoutMs": {
             "default": 5000,
             "type": "integer",
@@ -10080,6 +10384,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "instanceId": {
             "type": "integer",
             "minimum": -9007199254740991,
@@ -10268,6 +10582,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string",
             "minLength": 1
@@ -10841,6 +11165,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "objective": {
             "default": "Apply an explicit Unity C# repair safely.",
             "type": "string"
@@ -11103,12 +11437,22 @@
       "operationId": "ghost.tool.repair_inspect.v1",
       "version": 1,
       "name": "repair_inspect",
-      "description": "Inspect one script/compiler/test/visual state and propose repairs without applying them.",
+      "description": "Inspect one script/compiler/test/visual state and propose source repairs; optional screenshots create bounded evidence artifacts.",
       "profile": "validation",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "objective": {
             "type": "string",
             "minLength": 1
@@ -11360,7 +11704,7 @@
         }
       ],
       "risk": "test-execution",
-      "mutates": false,
+      "mutates": true,
       "supportsDryRun": false,
       "phase": 3,
       "relatedResources": [
@@ -11370,10 +11714,10 @@
         "unity://screenshots/baselines"
       ],
       "destructive": false,
-      "idempotent": true,
+      "idempotent": false,
       "openWorld": false,
       "permissionClass": "project-write",
-      "mainThread": false,
+      "mainThread": true,
       "undoable": false,
       "expectedDurationMs": {
         "minimum": 100,
@@ -11391,6 +11735,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "objective": {
             "type": "string",
             "minLength": 1
@@ -11613,6 +11967,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "instanceId": {
             "type": "integer",
             "minimum": -9007199254740991,
@@ -11823,6 +12187,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "name": {
             "type": "string",
             "minLength": 1,
@@ -11927,6 +12301,15 @@
                   "items": {
                     "type": "object",
                     "properties": {
+                      "backend": {
+                        "default": "auto",
+                        "type": "string",
+                        "enum": [
+                          "auto",
+                          "unity-input-system",
+                          "project-test-driver"
+                        ]
+                      },
                       "device": {
                         "type": "string",
                         "enum": [
@@ -11966,6 +12349,7 @@
                       }
                     },
                     "required": [
+                      "backend",
                       "device",
                       "action"
                     ],
@@ -12136,7 +12520,10 @@
                       "maxSamples": {
                         "type": "integer",
                         "exclusiveMinimum": 0,
-                        "maximum": 200000
+                        "maximum": 16777216
+                      },
+                      "allowApproximate": {
+                        "type": "boolean"
                       }
                     },
                     "required": [
@@ -12304,6 +12691,7 @@
               "expectedResult": "pass",
               "inputs": [
                 {
+                  "backend": "auto",
                   "device": "keyboard",
                   "action": "tap",
                   "key": "PageUp"
@@ -12349,6 +12737,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "setup": {
             "default": "default",
             "type": "string",
@@ -12717,6 +13115,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string",
             "minLength": 1
@@ -12902,6 +13310,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string",
             "minLength": 1
@@ -13075,6 +13493,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string"
           },
@@ -13250,6 +13678,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string"
           },
@@ -13431,6 +13869,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "filter": {
             "default": "",
             "type": "string"
@@ -13845,6 +14293,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "label": {
             "default": "ghost",
             "type": "string"
@@ -14051,7 +14509,7 @@
       "operationId": "ghost.tool.screenshot_diff.v1",
       "version": 1,
       "name": "screenshot_diff",
-      "description": "Compare two Unity PNG screenshots with a sampled pixel diff for visual regression checks.",
+      "description": "Compare two Unity PNG screenshots with explicit exact or bounded full-domain pixel coverage.",
       "profile": "runtime",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -14083,7 +14541,7 @@
             "default": 20000,
             "type": "integer",
             "exclusiveMinimum": 0,
-            "maximum": 200000
+            "maximum": 16777216
           }
         },
         "required": [
@@ -14261,6 +14719,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string",
             "minLength": 1
@@ -14490,6 +14958,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string",
             "minLength": 1
@@ -14684,6 +15162,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string",
             "minLength": 1
@@ -15032,6 +15520,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string",
             "minLength": 1
@@ -15217,6 +15715,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "backupPath": {
             "default": "",
             "type": "string"
@@ -15588,6 +16096,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "path": {
             "type": "string",
             "minLength": 1
@@ -16163,6 +16681,16 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "instanceId": {
             "type": "integer",
             "minimum": -9007199254740991,

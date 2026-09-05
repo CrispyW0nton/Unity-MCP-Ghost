@@ -77,5 +77,36 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
             Assert.That(diagnostic["column"].Value<int>(), Is.EqualTo(4));
             Assert.That(diagnostic["timestampUtc"].Value<string>(), Is.Not.Empty);
         }
+
+        [Test]
+        public void EvictedErrorStillKeepsGenerationFailed()
+        {
+            var generation = CompileDiagnosticBuffer.RequestGeneration("Assets/Noisy.cs");
+            CompileDiagnosticBuffer.BeginCompilationForTests();
+            CompileDiagnosticBuffer.AddNoisyDiagnosticsForTests(generation, 1000);
+            CompileDiagnosticBuffer.CompleteCompilationForTests();
+
+            var state = JObject.Parse(CompileDiagnosticBuffer.WaitState(generation, false));
+
+            Assert.That(state["status"].Value<string>(), Is.EqualTo("failed"));
+            Assert.That(state["errorCount"].Value<int>(), Is.EqualTo(1));
+            Assert.That(state["diagnosticsTruncated"].Value<bool>(), Is.True);
+        }
+
+        [Test]
+        public void DiagnosticsOnlyReportsTruncationWhenAnExtraMatchExists()
+        {
+            var generation = CompileDiagnosticBuffer.RequestGeneration("Assets/Limit.cs");
+            CompileDiagnosticBuffer.BeginCompilationForTests();
+            CompileDiagnosticBuffer.AddDiagnosticForTests(generation, "Assembly-CSharp.dll", CompilerMessageType.Warning, "Assets/Limit.cs", 1, 1, "warning one");
+            CompileDiagnosticBuffer.AddDiagnosticForTests(generation, "Assembly-CSharp.dll", CompilerMessageType.Warning, "Assets/Limit.cs", 2, 1, "warning two");
+
+            var exact = JObject.Parse(CompileDiagnosticBuffer.Diagnostics("warning", 2, "", generation));
+            CompileDiagnosticBuffer.AddDiagnosticForTests(generation, "Assembly-CSharp.dll", CompilerMessageType.Warning, "Assets/Limit.cs", 3, 1, "warning three");
+            var overflow = JObject.Parse(CompileDiagnosticBuffer.Diagnostics("warning", 2, "", generation));
+
+            Assert.That(exact["truncated"].Value<bool>(), Is.False);
+            Assert.That(overflow["truncated"].Value<bool>(), Is.True);
+        }
     }
 }

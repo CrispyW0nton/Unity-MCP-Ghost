@@ -11,6 +11,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 {
     internal sealed class UnityMcpGhostServer
     {
+        private static readonly TimeSpan RequestBodyTimeout = TimeSpan.FromSeconds(10);
         public static readonly UnityMcpGhostServer Shared = new UnityMcpGhostServer();
 
         private readonly CommandRegistry commands = new CommandRegistry();
@@ -84,7 +85,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 webSocketServer = null;
                 cancellation?.Cancel();
                 cancellation = null;
-                WriteIdentitySafely(port, BridgeSecurity.Settings.WebSocketPort, false);
+                WriteIdentitySafely(port, 0, false);
                 return false;
             }
         }
@@ -166,7 +167,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 string requestJson;
                 try
                 {
-                    requestJson = await ReadBoundedRequest(context.Request.InputStream, context.Request.ContentEncoding);
+                    using (var bodyCancellation = CancellationTokenSource.CreateLinkedTokenSource(token))
+                    {
+                        bodyCancellation.CancelAfter(RequestBodyTimeout);
+                        requestJson = await ReadBoundedRequest(context.Request.InputStream, context.Request.ContentEncoding, bodyCancellation.Token);
+                    }
+                }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                {
+                    await WriteStatusResponse(context, 408, "Request body read timed out.", token);
+                    return;
                 }
                 catch (JsonRpcProtocolException exception)
                 {
@@ -320,14 +330,14 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     && (request.Headers["Connection"] ?? string.Empty).IndexOf("Upgrade", StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
-        private static async Task<string> ReadBoundedRequest(Stream stream, Encoding encoding)
+        internal static async Task<string> ReadBoundedRequest(Stream stream, Encoding encoding, CancellationToken token)
         {
             using (var message = new MemoryStream())
             {
                 var buffer = new byte[8192];
                 while (true)
                 {
-                    var read = await stream.ReadAsync(buffer, 0, buffer.Length);
+                    var read = await stream.ReadAsync(buffer, 0, buffer.Length, token);
                     if (read == 0)
                     {
                         return (encoding ?? Encoding.UTF8).GetString(message.ToArray());

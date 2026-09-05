@@ -23,6 +23,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static readonly List<Mark> Marks = new List<Mark>();
         private static int nextSequence = 1;
         private static int generation = 1;
+        private static int droppedThroughSequence;
 
         static ConsoleLogBuffer()
         {
@@ -59,6 +60,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             {
                 Entries.Clear();
                 Marks.Clear();
+                droppedThroughSequence = nextSequence - 1;
                 generation++;
                 SaveLocked();
             }
@@ -141,6 +143,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 Marks.Clear();
                 nextSequence = 1;
                 generation = 1;
+                droppedThroughSequence = 0;
                 SaveLocked();
             }
         }
@@ -148,6 +151,41 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         internal static void AddForTests(string message, LogType type, string stackTrace = "")
         {
             HandleLogMessage(message, stackTrace, type);
+        }
+
+        internal static void AddNoisyEntriesForTests(int benignCount)
+        {
+            lock (Sync)
+            {
+                Entries.Add(new Entry
+                {
+                    Sequence = nextSequence++,
+                    Generation = generation,
+                    TimestampUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                    Type = LogType.Error,
+                    Message = "evicted failure",
+                    StackTrace = string.Empty
+                });
+                for (var index = 0; index < benignCount; index++)
+                {
+                    Entries.Add(new Entry
+                    {
+                        Sequence = nextSequence++,
+                        Generation = generation,
+                        TimestampUtc = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                        Type = LogType.Log,
+                        Message = "noise-" + index,
+                        StackTrace = string.Empty
+                    });
+                }
+                if (Entries.Count > MaxEntries)
+                {
+                    var removeCount = Entries.Count - MaxEntries;
+                    droppedThroughSequence = Math.Max(droppedThroughSequence, Entries[removeCount - 1].Sequence);
+                    Entries.RemoveRange(0, removeCount);
+                }
+                SaveLocked();
+            }
         }
 
         private static Mark CreateMark(string label)
@@ -189,6 +227,13 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     boundaryGeneration = mark.Generation;
                 }
 
+                if (query.FailOnUnexpectedErrors && boundarySequence < droppedThroughSequence)
+                {
+                    throw new ConsoleQueryException(
+                        "CONSOLE_BOUNDARY_TRUNCATED",
+                        "Console entries after the requested boundary were evicted; the assertion cannot be evaluated truthfully.");
+                }
+
                 Regex messageRegex = null;
                 if (!string.IsNullOrWhiteSpace(query.Regex))
                 {
@@ -226,7 +271,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     ["entries"] = new JArray(matching.Take(limit).Select(ToJson)),
                     ["unexpectedErrors"] = new JArray(unexpectedErrors.Take(limit).Select(ToJson)),
                     ["truncated"] = matching.Length > limit || unexpectedErrors.Length > limit,
-                    ["retainedEntryCount"] = Entries.Count
+                    ["retainedEntryCount"] = Entries.Count,
+                    ["droppedThroughSequence"] = droppedThroughSequence
                 };
             }
         }
@@ -296,7 +342,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 });
                 if (Entries.Count > MaxEntries)
                 {
-                    Entries.RemoveRange(0, Entries.Count - MaxEntries);
+                    var removeCount = Entries.Count - MaxEntries;
+                    droppedThroughSequence = Math.Max(droppedThroughSequence, Entries[removeCount - 1].Sequence);
+                    Entries.RemoveRange(0, removeCount);
                 }
                 try
                 {
@@ -378,6 +426,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     Marks.AddRange((state.Marks ?? new List<Mark>()).Skip(Math.Max(0, (state.Marks ?? new List<Mark>()).Count - MaxMarks)));
                     nextSequence = Math.Max(state.NextSequence, Entries.Count == 0 ? 1 : Entries.Max(entry => entry.Sequence) + 1);
                     generation = Math.Max(1, state.Generation);
+                    droppedThroughSequence = Math.Max(0, state.DroppedThroughSequence);
                 }
                 catch
                 {
@@ -385,6 +434,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     Marks.Clear();
                     nextSequence = 1;
                     generation = 1;
+                    droppedThroughSequence = 0;
                 }
             }
         }
@@ -397,6 +447,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             {
                 NextSequence = nextSequence,
                 Generation = generation,
+                DroppedThroughSequence = droppedThroughSequence,
                 Entries = Entries,
                 Marks = Marks
             }));
@@ -412,6 +463,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         {
             public int NextSequence = 1;
             public int Generation = 1;
+            public int DroppedThroughSequence;
             public List<Entry> Entries = new List<Entry>();
             public List<Mark> Marks = new List<Mark>();
         }
