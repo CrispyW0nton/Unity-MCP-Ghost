@@ -1,5 +1,6 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { z } from "zod";
 import { ScenarioJobManager, type ScenarioMatrixDefinition } from "../scenario/ScenarioJobManager.js";
@@ -2870,9 +2871,59 @@ export function createMcpServer(context: ToolContext): McpServer {
       const iterations: Record<string, unknown>[] = [];
       let originalContent = "";
       let originalSha256 = "";
+      let originalCaptured = false;
+      let currentSha256: string | null = null;
       let sourceChanged = false;
+      let unconfirmedApply: { requestId: string; iteration: number; outcomeUnknown: true } | null = null;
+      let repairVerified = false;
+      let restorationAttempted = false;
       let restored: Record<string, unknown> | null = null;
       const transactionBackups: Array<{ backupPath: string; backupMetaPath: string }> = [];
+      const transactionCleanup: Record<string, unknown>[] = [];
+      let cleanupAttempted = false;
+
+      const retainBackup = (receipt: Record<string, unknown>): void => {
+        if (stringValue(receipt.backupPath)) {
+          transactionBackups.push({ backupPath: stringValue(receipt.backupPath), backupMetaPath: stringValue(receipt.backupMetaPath) });
+        }
+      };
+
+      const recoveryEvidence = (): Record<string, unknown> => {
+        const recoveryPathsUnverified = transactionCleanup.some((cleanup) => cleanup.ok !== true);
+        const hints: string[] = [];
+        if (transactionBackups.length > 0) {
+          hints.push(
+            recoveryPathsUnverified
+              ? "Preserve the listed recovery backups. After failed cleanup their existence is unverified."
+              : "The listed recovery backups are retained; cleanup was not attempted."
+          );
+        }
+        if (unconfirmedApply) {
+          hints.push(
+            `Apply outcome is unknown for request ${unconfirmedApply.requestId}. Reconcile this request with Unity before any apply, restore, or cleanup; a source read alone cannot rule out a late write. The missing apply receipt may contain additional backup paths.`
+          );
+        } else if (transactionBackups.length > 0) {
+          hints.push(
+            "Inspect the current source hash and backup bytes before manual recovery or cleanup; do not blindly replay a mutation whose outcome is unverified."
+          );
+        }
+        return {
+          currentSha256,
+          unconfirmedApply,
+          retainedBackups: [...transactionBackups],
+          recoveryPathsUnverified,
+          recoveryHint: hints.length > 0 ? hints.join(" ") : null
+        };
+      };
+
+      const verifyFinalSource = async (): Promise<void> => {
+        currentSha256 = null;
+        const finalRead = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+        if (finalRead.ok !== true || !stringValue(finalRead.sha256)) {
+          throw new Error("Cannot release repair backups without a verified final source hash.");
+        }
+        currentSha256 = stringValue(finalRead.sha256);
+      };
 
       const compileAndDiagnose = async (requestedCompileGeneration?: number): Promise<Record<string, unknown>> => {
         const validationStart = asObject(
@@ -2917,67 +2968,146 @@ export function createMcpServer(context: ToolContext): McpServer {
       };
 
       const restoreOriginal = async (): Promise<Record<string, unknown>> => {
-        const current = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
-        const originalBackup = transactionBackups[0];
-        const write = originalBackup?.backupPath
-          ? asObject(
-              await context.unity.request("script.restore", {
-                path: args.scriptPath,
-                backupPath: originalBackup.backupPath,
-                backupMetaPath: originalBackup.backupMetaPath,
-                expectedSha256: stringValue(current.sha256)
-              })
-            )
-          : asObject(
-              await context.unity.request("script.write", {
-                path: args.scriptPath,
-                content: originalContent,
-                overwrite: true,
-                expectedSha256: stringValue(current.sha256),
-                dryRun: false
-              })
-            );
-        const generation = numberValue(write.requestedCompileGeneration);
-        if (generation <= 0) {
-          return { ok: false, error: { code: "ROLLBACK_GENERATION_MISSING", message: "Rollback write returned no compile generation." }, write };
+        restorationAttempted = true;
+        const receipt: Record<string, unknown> = { ok: false, expectedSha256: originalSha256 };
+        let write: Record<string, unknown> = {};
+        let compile: Record<string, unknown> = {};
+        try {
+          const current = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+          if (current.ok !== true || !stringValue(current.sha256)) {
+            throw new Error("Cannot restore without a verified current source hash.");
+          }
+          receipt.beforeSha256 = stringValue(current.sha256);
+          const originalBackup = transactionBackups[0];
+          write = originalBackup?.backupPath
+            ? asObject(
+                await context.unity.request("script.restore", {
+                  path: args.scriptPath,
+                  backupPath: originalBackup.backupPath,
+                  backupMetaPath: originalBackup.backupMetaPath,
+                  expectedSha256: stringValue(current.sha256)
+                })
+              )
+            : asObject(
+                await context.unity.request("script.write", {
+                  path: args.scriptPath,
+                  content: originalContent,
+                  overwrite: true,
+                  expectedSha256: stringValue(current.sha256),
+                  dryRun: false
+                })
+              );
+          receipt.write = write;
+          // The rollback mutation may itself create recovery material, even if
+          // its compile generation or subsequent verification is unavailable.
+          retainBackup(write);
+          const generation = numberValue(write.requestedCompileGeneration);
+          if (write.ok !== true) {
+            receipt.error = write.error ?? { code: "ROLLBACK_WRITE_FAILED", message: "Rollback write was not confirmed successful." };
+          } else if (generation <= 0) {
+            receipt.error = { code: "ROLLBACK_GENERATION_MISSING", message: "Rollback write returned no compile generation." };
+          } else {
+            compile = await waitForUnityCompile(context, generation, args.compileTimeoutMs);
+            receipt.compile = compile;
+            if (compile.ok !== true) {
+              receipt.error = compile.error ?? { code: "ROLLBACK_COMPILE_FAILED", message: "Rollback compilation was not verified." };
+            }
+          }
+        } catch (error) {
+          receipt.error = {
+            code: stringValue(asObject(error).code) || "ROLLBACK_REQUEST_FAILED",
+            message: error instanceof Error ? error.message : String(error)
+          };
         }
-        const compile = await waitForUnityCompile(context, generation, args.compileTimeoutMs);
-        const readBack = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
-        const restoredHash = stringValue(readBack.sha256);
-        if (stringValue(write.backupPath)) {
-          transactionBackups.push({
-            backupPath: stringValue(write.backupPath),
-            backupMetaPath: stringValue(write.backupMetaPath)
-          });
+
+        // This is evidence collection only: a timed-out restoration must not be
+        // retried by the outer catch, and an unreadable hash must stay unknown.
+        currentSha256 = null;
+        try {
+          const readBack = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+          if (readBack.ok !== true || !stringValue(readBack.sha256)) {
+            throw new Error("Rollback source hash could not be read back.");
+          }
+          currentSha256 = stringValue(readBack.sha256);
+          receipt.restoredSha256 = currentSha256;
+          if (currentSha256 !== originalSha256 && !receipt.error) {
+            receipt.error = { code: "ROLLBACK_HASH_MISMATCH", message: "Restored source hash does not match the original." };
+          }
+        } catch (error) {
+          receipt.readBackError = error instanceof Error ? error.message : String(error);
         }
         return {
-          ok: compile.ok === true && restoredHash === originalSha256,
-          write,
-          compile,
-          expectedSha256: originalSha256,
-          restoredSha256: restoredHash
+          ...receipt,
+          currentSha256,
+          ok: write.ok === true && compile.ok === true && currentSha256 === originalSha256
         };
       };
 
       const completeTransactions = async (): Promise<Record<string, unknown>[]> => {
-        const completed: Record<string, unknown>[] = [];
-        for (const backup of transactionBackups) {
-          completed.push(
-            asObject(
-              await context.unity.request("script.transaction_complete", {
-                backupPath: backup.backupPath,
-                backupMetaPath: backup.backupMetaPath
-              })
-            )
-          );
+        if (cleanupAttempted) {
+          return transactionCleanup;
         }
-        return completed;
+        cleanupAttempted = true;
+        while (transactionBackups.length > 0) {
+          const backup = transactionBackups[0]!;
+          let cleanup: Record<string, unknown>;
+          try {
+            cleanup = asObject(await context.unity.request("script.transaction_complete", backup));
+          } catch (error) {
+            cleanup = {
+              ok: false,
+              outcomeUnknown: true,
+              error: {
+                code: stringValue(asObject(error).code) || "TRANSACTION_CLEANUP_FAILED",
+                message: error instanceof Error ? error.message : String(error)
+              }
+            };
+          }
+          transactionCleanup.push({ ...cleanup, ...backup, ok: cleanup.ok === true });
+          if (cleanup.ok !== true) {
+            // Keep unconfirmed and unattempted paths; a partial deletion or lost
+            // response is not authorization to retry cleanup or restore source.
+            break;
+          }
+          transactionBackups.shift();
+        }
+        return transactionCleanup;
+      };
+
+      const finalizeVerifiedRepair = async (successMessage: string) => {
+        await verifyFinalSource();
+        repairVerified = true;
+        const cleanupResults = await completeTransactions();
+        const cleanupOk = cleanupResults.every((cleanup) => cleanup.ok === true);
+        return successResponse(
+          cleanupOk ? successMessage : "repair_loop_run verified the repair, but backup cleanup was incomplete.",
+          {
+            ok: cleanupOk,
+            ...(cleanupOk ? {} : { error: { code: "REPAIR_CLEANUP_FAILED", message: "Repair passed required checks, but backup cleanup was not confirmed." } }),
+            repairVerified,
+            objective: args.objective,
+            scriptPath: args.scriptPath,
+            iterations,
+            iterationCount: iterations.length,
+            originalSha256,
+            finalSha256: currentSha256,
+            restored: null,
+            transactionCleanup: cleanupResults,
+            ...recoveryEvidence()
+          },
+          startedAt
+        );
       };
 
       try {
         const original = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
         originalContent = stringValue(original.content);
         originalSha256 = stringValue(original.sha256);
+        originalCaptured = original.ok === true && originalSha256.length > 0 && typeof original.content === "string";
+        currentSha256 = originalCaptured ? originalSha256 : null;
+        if (!originalCaptured) {
+          throw new Error("Cannot begin repair without verified original source content and hash.");
+        }
 
         let current = await compileAndDiagnose();
         for (let iteration = 1; iteration <= args.maxIterations; iteration += 1) {
@@ -2995,22 +3125,7 @@ export function createMcpServer(context: ToolContext): McpServer {
             iterationReceipt.ok = testsOk;
             iterations.push(iterationReceipt);
             if (testsOk) {
-              const transactionCleanup = await completeTransactions();
-              return successResponse(
-                "repair_loop_run completed with a verified green result.",
-                {
-                  ok: true,
-                  objective: args.objective,
-                  scriptPath: args.scriptPath,
-                  iterations,
-                  iterationCount: iterations.length,
-                  originalSha256,
-                  finalSha256: stringValue(asObject(await context.unity.request("script.read", { path: args.scriptPath })).sha256),
-                  restored: null,
-                  transactionCleanup
-                },
-                startedAt
-              );
+              return await finalizeVerifiedRepair("repair_loop_run completed with a verified green result.");
             }
 
             iterationReceipt.terminalReason = "required-tests-failed";
@@ -3049,21 +3164,28 @@ export function createMcpServer(context: ToolContext): McpServer {
             break;
           }
 
+          const applyRequestId = randomUUID();
+          iterationReceipt.applyRequestId = applyRequestId;
+          iterations.push(iterationReceipt);
+          // Dispatch invalidates earlier source evidence. Until a receipt arrives,
+          // neither an earlier confirmed edit nor a read-back permits rollback.
+          currentSha256 = null;
+          unconfirmedApply = { requestId: applyRequestId, iteration, outcomeUnknown: true };
           const applied = asObject(
-            await context.unity.request("script.apply_edits", {
-              path: args.scriptPath,
-              edits,
-              expectedSha256: stringValue(currentScript.sha256),
-              dryRun: false
-            })
+            await context.unity.request(
+              "script.apply_edits",
+              {
+                path: args.scriptPath,
+                edits,
+                expectedSha256: stringValue(currentScript.sha256),
+                dryRun: false
+              },
+              { requestId: applyRequestId }
+            )
           );
+          unconfirmedApply = null;
           sourceChanged = true;
-          if (stringValue(applied.backupPath)) {
-            transactionBackups.push({
-              backupPath: stringValue(applied.backupPath),
-              backupMetaPath: stringValue(applied.backupMetaPath)
-            });
-          }
+          retainBackup(applied);
           const appliedGeneration = numberValue(applied.requestedCompileGeneration);
           current = await compileAndDiagnose(appliedGeneration);
           const tests = current.ok === true ? await runRequiredTests() : null;
@@ -3074,33 +3196,18 @@ export function createMcpServer(context: ToolContext): McpServer {
           iterationReceipt.after = current;
           iterationReceipt.tests = tests;
           iterationReceipt.ok = iterationOk;
-          iterations.push(iterationReceipt);
 
           if (iterationOk) {
-            const finalRead = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
-            const transactionCleanup = await completeTransactions();
-            return successResponse(
-              "repair_loop_run applied and verified a repair.",
-              {
-                ok: true,
-                objective: args.objective,
-                scriptPath: args.scriptPath,
-                iterations,
-                iterationCount: iterations.length,
-                originalSha256,
-                finalSha256: stringValue(finalRead.sha256),
-                restored: null,
-                transactionCleanup
-              },
-              startedAt
-            );
+            return await finalizeVerifiedRepair("repair_loop_run applied and verified a repair.");
           }
         }
 
         if (sourceChanged) {
           restored = await restoreOriginal();
         }
-        const transactionCleanup = await completeTransactions();
+        if (!sourceChanged || restored?.ok === true) {
+          await completeTransactions();
+        }
         return successResponse(
           "repair_loop_run exhausted without a green result.",
           {
@@ -3118,30 +3225,26 @@ export function createMcpServer(context: ToolContext): McpServer {
             iterationCount: iterations.length,
             originalSha256,
             restored,
-            transactionCleanup
+            transactionCleanup,
+            ...recoveryEvidence()
           },
           startedAt,
           { confidence: 0 }
         );
       } catch (error) {
-        if (sourceChanged && originalContent) {
-          try {
-            restored = await restoreOriginal();
-          } catch (rollbackError) {
-            restored = { ok: false, error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError) };
-          }
+        if (!unconfirmedApply && sourceChanged && originalCaptured && !repairVerified && !restorationAttempted) {
+          restored = await restoreOriginal();
         }
-        let transactionCleanup: Record<string, unknown>[] = [];
-        if (!sourceChanged || restored?.ok === true) {
-          try {
-            transactionCleanup = await completeTransactions();
-          } catch {
-            // Preserve backups when cleanup fails so a caller can still recover manually.
-          }
+        if (!unconfirmedApply && (!sourceChanged || restored?.ok === true || repairVerified)) {
+          await completeTransactions();
         }
         return failureResponse("repair_loop_run failed", error, startedAt, [], {
           code: restored && restored.ok === false ? "REPAIR_ROLLBACK_FAILED" : "REPAIR_LOOP_FAILED",
-          data: { objective: args.objective, scriptPath: args.scriptPath, iterations, originalSha256, restored, transactionCleanup }
+          requestId: unconfirmedApply?.requestId,
+          warnings: unconfirmedApply
+            ? ["The apply outcome is unknown. Reconcile the recorded request with Unity before any apply, restore, or cleanup."]
+            : undefined,
+          data: { objective: args.objective, scriptPath: args.scriptPath, iterations, originalSha256, restored, transactionCleanup, ...recoveryEvidence() }
         });
       }
     }

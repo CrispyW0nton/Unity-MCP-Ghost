@@ -11,6 +11,10 @@ Milestone source documents:
 
 Commits and verified gates:
 
+- `6443719` — `docs(reliability): document HTTP lifecycle and remaining proof`
+  - Documented the authenticated HTTP endpoint and graceful shutdown boundary; recorded the completed transport/lifecycle review fixes and outstanding P0/live gates.
+  - Corrected fixture-complete wording so historical course passes cannot waive remaining milestone requirements. No runtime behavior changed.
+  - Parent verification at the unchanged `f553e69` code baseline passed `npm test` 181/181, `npm run test:protocol` 9/9, `npm run release:check` and `git diff --check`. The commit contains only the five reviewed documentation paths; no secrets, course assets, Unity generated files or unrelated changes were staged.
 - `f553e69` — `fix(runtime): drain scenario restoration before HTTP shutdown`
   - Applied remaining completed-review findings #1/#2/#7 through an injectable CLI coordinator, actual HTTP handler drains and tracked scenario start/recovery/execution/finalization. SIGINT/SIGTERM remain handled through restoration; no cancellation/replay or arbitrary grace expiry is introduced.
   - Added visible sanitized listener/cleanup failures, retained nonterminal finalization records/leases, and startup/output/partial-registration cleanup. Opt-in HTTP is wired through the CLI; stdio remains default.

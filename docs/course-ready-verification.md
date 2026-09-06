@@ -15,7 +15,7 @@ These are source-observed gaps. Additional requirements must still undergo a com
 
 The subsequent read-only implementation/test audit did **not** close all 16 original P0 findings. The following are traced source paths, not fault-injection reproductions unless an execution receipt below explicitly says otherwise:
 
-- **Repair recovery material — reproduced:** ordinary `repair_loop_run` exhaustion calls transaction completion even when restoration returns `ok:false`; this can remove backups that are still needed. A parent-run, read-only in-memory MCP probe against `0556c94` injected a failed `script.restore` after an applied edit with a backup. The result correctly reported `REPAIR_ROLLBACK_FAILED` but then called `script.transaction_complete` once; the assertion requiring zero cleanup calls failed. This confirms the orchestration defect with a fake bridge, not an actual deletion in a course project. The exception branch already preserves backups. Add the regression to the owned integration suite and retain recovery paths in the failure receipt.
+- **Repair recovery material — reviewed local fix:** the reproduced failed-restoration cleanup defect now has disk-backed MCP regression coverage. `repair_loop_run` retains known backups until repair or restoration is verified, attempts restoration/cleanup at most once, and reports partial cleanup rather than retrying it. Each real apply receives a pre-dispatch request ID; a lost response clears stale current-hash evidence and stops further apply/restore/cleanup pending explicit reconciliation. See the repair receipt below. This does not yet prove live Unity backup retention: the global backup-pruning policy, partial C# transactions and durable request reconciliation still need work.
 - **Durable replacement — repaired in `23718cb`:** request, operation, compile, queue, scenario-transaction, security, Console and Play state now use a flushed atomic writer without delete-destination fallback. Fresh EditMode evidence passes 121/121, including real Windows sharing/cleanup failures and operation/request persistence regressions. The bounded writer fix does not establish all higher-level job/transaction recovery semantics or cross-platform certification.
 - **Queue crash window:** a non-idempotent claim recovered before its execution-store claim exists can receive `Claimed` with empty `ResponseJson`, publish an empty result and discard its payload. Recovery needs an explicit non-replayed terminal receipt. Cancellation/dead-letter retention and pre-read byte limits also need coverage.
 - **Partial script transactions:** source replacement followed by failed backup retention, source deletion followed by failed metadata movement, and restoration followed by failed metadata copying lack compensation. Backup-path containment also needs reparse-point coverage.
@@ -51,6 +51,25 @@ Earlier pre-review evidence, retained for chronology:
 - Normal runs then passed EditMode 111/111 (`editmode-8f6dda9b-ce57-494f-831c-8971286de44e-results.xml`) and PlayMode 1/1 (`playmode-ac82cda6-ce65-468a-a572-84bf5882831e-results.xml`). These validate the runner, not expanded PlayMode coverage.
 
 ## Current verification receipts
+
+### Repair recovery unit
+
+Completed review `20260905-190113-1f67b101` retained two independently validated findings: misleading recovery-path wording after an unattempted cleanup, and stale source-hash evidence after a lost apply response. Both were applied in the owned repair implementation/test files. The three simplification checks resulted in one shared green-result finalizer; no unrelated extraction or feature expansion was included. A review suggestion to extract the handler was not a demonstrated correctness defect and remains outside this bounded fix.
+
+The tests use the real MCP server/client route and real temporary source, metadata and backup files, with a controlled Unity bridge. They cover failed/throwing restoration, missing compile generation, compile timeout, hash mismatch, missing read-back, failed/cancelled/timed-out/aborted required tests, byte-identical empty/BOM/CRLF restoration, partial cleanup, cleanup response loss after deletion, and initially green verification. Four lost-apply cases cover the first and second iteration, with and without request identity on the thrown transport error; they prove no subsequent read/write/cleanup request, retained original bytes and metadata, and explicit unknown state tied to the pre-dispatch request ID.
+
+Worker red evidence for the two retained review findings was 24/37 repair tests passing and 13 failing; after the fixes, parent verification passed:
+
+- `node --import tsx --test server/test/createServer.integration.test.ts`: 45/45, including 37 repair recovery cases; zero skips.
+- `npm test`: 218/218; zero skips.
+- `npm run test:protocol`: 9/9; catalog current at 90 tools and 57 direct bridge mappings.
+- `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm run build` and `git diff --check`: passed.
+- `npx tsc --ignoreConfig --noEmit --strict --module nodenext --target ES2022 --esModuleInterop --skipLibCheck --types node server/test/createServer.integration.test.ts`: passed.
+- `npm audit --audit-level=high`: zero vulnerabilities.
+
+No new live Unity repair certification is claimed by these Node tests. A missing apply receipt may contain backup paths not yet known to the caller; the response says so instead of inventing them. Manual reconciliation is still required for an unknown apply. These checks do not certify global backup-pruning safety, partial C# transaction compensation, real Test Runner callbacks or final complete-series course execution. `npm ci` was not rerun for this dependency-unchanged unit.
+
+### Earlier transport and runner receipts
 
 The post-commit read-only status check at `f553e69` reran `npm test` (181/181, zero skips), `npm run test:protocol` (9/9), `npm run release:check` and `git diff --check` successfully. No Unity Editor or Account project was launched. These checks reconfirm the Node/catalog/layout baseline, not the outstanding live-Unity gates.
 
