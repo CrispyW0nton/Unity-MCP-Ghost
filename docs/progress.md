@@ -14,6 +14,11 @@ Milestone source documents:
 
 Commits and verified gates:
 
+- `81bf257` — `fix(reliability): preserve paired script recovery across callers`
+  - Prepared and compensated paired source/metadata changes, retained unverified displaced bytes, preserved later metadata edits, and carried failed recovery receipts through batch/scenario boundaries. Incomplete/unknown scenario recovery now refuses automatic restore/cleanup.
+  - Completed eight-lens review `20260905-225422-d12a5216`; three file-grouped follow-ups applied all four independently validated P1 findings. Red/green regressions and fixture-path correction chronology are recorded in `course-ready-verification.md`; no finding was silently waived.
+  - Final Windows Unity 2022.3.62f1 EditMode passed 230/230 (40 transaction cases plus six new caller cases), Node 24.11.1 passed 230/230, and protocol passed 9/9. Build, typecheck, lint, format, release-layout and diff checks passed; audit found zero vulnerabilities. No Unity process or owned caller fixture remained.
+  - Committed exactly eight owned implementation/test/evidence files; no generated Unity data, credentials, course assets or external publication. Cross-reload ownership, global retention/admission bounds and final integrated course gates remain required. This post-commit ledger entry travels with the next progress update.
 - `868c8b4` — `fix(reliability): retain uncertain queue recovery without replay`
   - Added observation-only recovery admission, correlated `OUTCOME_UNKNOWN` receipts, retained non-cached payloads, and protection of unresolved request records from result eviction. Cached outcomes survive expired recovery deadlines; a different transport's live execution owner remains intact.
   - Original crash cases reproduced five failures before the fix. Review finding #2 then reproduced replay after 1,001 newer completions (190/191 tests passed); cleanup was restricted to completed records. Final Windows Unity 2022.3.62f1 EditMode passed 191/191, Node 24.11.1 passed 230/230, and protocol passed 9/9. Typecheck, build, lint, format and diff checks passed; no Unity process remained.

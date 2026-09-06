@@ -129,6 +129,18 @@ const ScenarioCaseSchema = z.object({
   description: z.string().max(500).optional(),
   expectedResult: z.enum(["pass", "compile-failure", "assertion-failure", "timeout", "cancelled"]).default("pass"),
   expectedFailureCode: z.string().min(1).optional(),
+  expectedCompilerDiagnostics: z
+    .array(
+      z.object({
+        file: z.string().min(1).max(1024),
+        severity: z.enum(["error", "warning"]),
+        code: z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/),
+        minimumCount: z.number().int().min(1).max(1000).optional()
+      })
+    )
+    .min(1)
+    .max(100)
+    .optional(),
   timeoutMs: z.number().int().positive().max(900000).optional(),
   sourceMutations: z.array(ScenarioSourceMutationSchema).max(20).optional(),
   inputs: z.array(ScenarioInputSchema).max(100).optional(),

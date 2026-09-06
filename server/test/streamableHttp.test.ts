@@ -1243,7 +1243,16 @@ class ShutdownScenarioUnity {
         case "script.read":
           return { ok: true, sha256: hash(await readFile(this.sourcePath)) };
         case "compile.status_get":
-          return { ok: true, status: "success", requestedCompileGeneration: this.generation, diagnostics: [] };
+          return {
+            ok: true,
+            status: "success",
+            generation: values.requestedCompileGeneration,
+            observed: true,
+            completedAtUtc: "2026-09-05T01:00:00.000Z",
+            diagnostics: [],
+            diagnosticsTruncated: false,
+            errorCount: 0
+          };
         default:
           throw new Error(`Unexpected fixture request ${method}`);
       }

@@ -6,6 +6,39 @@ const baseline = "using UnityEngine; public sealed class StudentExercise : MonoB
 const sha256 = "a".repeat(64);
 
 describe("GAM 215-equivalent declarative matrices", () => {
+  it("independently asserts each Marvin Write overload output", () => {
+    const exercise = buildModule1Matrix(baseline, sha256).cases.find((item) => item.id === "m1-marvin-write-overloads")!;
+    for (const message of ["MARVIN|Write|Module1|String|hello|true", "MARVIN|Write|Module1|Int|7|true", "MARVIN|Write|Module1|Float|2.5|true"]) {
+      assert.ok(
+        exercise.consoleAssertions?.some((item) => item.exact === message && item.count === 1),
+        `missing exact output ${message}`
+      );
+    }
+  });
+
+  it("declares file-specific diagnostic codes for every seeded compiler defect", () => {
+    const expectedCodes: Record<string, string[]> = {
+      "m1-syntax-malformed-comment": ["CS1513", "CS1035"],
+      "m1-syntax-malformed-brace": ["CS1513"],
+      "m1-syntax-malformed-quote": ["CS1010", "CS1026", "CS1002"],
+      "m1-syntax-missing-semicolon": ["CS1002"],
+      "m1-identifier-undeclared": ["CS0103"],
+      "m1-identifier-unassigned": ["CS0165"],
+      "m1-identifier-redeclared": ["CS0128"],
+      "m1-identifier-use-before-declaration": ["CS0841"],
+      "m1-identifier-case-mismatch": ["CS0103"]
+    };
+    const exercises = buildModule1Matrix(baseline, sha256).cases.filter((item) => item.expectedResult === "compile-failure");
+    assert.equal(exercises.length, Object.keys(expectedCodes).length);
+    for (const exercise of exercises) {
+      assert.deepEqual(
+        exercise.expectedCompilerDiagnostics,
+        expectedCodes[exercise.id].map((code) => ({ file: CourseFixtureScript, severity: "error", code })),
+        exercise.id
+      );
+    }
+  });
+
   it("covers every required Module 1 construct and seeded defect", () => {
     const matrix = buildModule1Matrix(baseline, sha256);
     const ids = matrix.cases.map((item) => item.id);

@@ -28,10 +28,13 @@ describe("MCP catalog and protocol conformance", () => {
         capabilities: {},
         clientInfo: { name: "legacy-protocol-fixture", version: "1.0.0" }
       });
-      assert.equal((initialized as { result: { protocolVersion: string } }).result.protocolVersion, "2024-10-07");
+      assert.ok("result" in initialized);
+      assert.equal(initialized.result.protocolVersion, "2024-10-07");
       await legacyTransport.send({ jsonrpc: "2.0", method: "notifications/initialized" });
       const listed = await rawRequest(legacyTransport, pending, 2, "tools/list", {});
-      assert.equal(((listed as { result: { tools: unknown[] } }).result.tools as unknown[]).length, 7);
+      assert.ok("result" in listed);
+      assert.ok(Array.isArray(listed.result.tools));
+      assert.equal(listed.result.tools.length, 7);
     } finally {
       await legacyTransport.close();
       await server.close();
@@ -106,6 +109,26 @@ describe("MCP catalog and protocol conformance", () => {
         }
       }
     });
+  });
+
+  it("publishes bounded file-specific compiler diagnostic expectations for scenarios", async () => {
+    const schema = (value: unknown): Record<string, unknown> => {
+      assert.ok(value && typeof value === "object" && !Array.isArray(value), "Expected a JSON Schema object.");
+      return value as Record<string, unknown>;
+    };
+    const tool = (await listTools(["all"])).find((item) => item.name === "scenario_matrix_run")!;
+    const cases = schema(tool.inputSchema.properties?.cases);
+    const fields = schema(schema(cases.items).properties);
+    const expectations = schema(fields.expectedCompilerDiagnostics);
+    assert.equal(expectations.type, "array");
+    assert.equal(expectations.minItems, 1);
+    assert.equal(expectations.maxItems, 100);
+    const expectation = schema(expectations.items);
+    assert.deepEqual((expectation.required as string[]).slice().sort(), ["code", "file", "severity"]);
+    const properties = schema(expectation.properties);
+    assert.deepEqual(schema(properties.severity).enum, ["error", "warning"]);
+    assert.equal(schema(properties.minimumCount).minimum, 1);
+    assert.equal(schema(properties.minimumCount).maximum, 1000);
   });
 
   it("keeps every directly mapped TypeScript operation aligned with the split C# command registry", async () => {

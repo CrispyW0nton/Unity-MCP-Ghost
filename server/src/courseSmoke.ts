@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { readConfig } from "./config.js";
 import { buildModule1Matrix, buildModule2Matrix, cancellationCase, CourseFixtureScene, CourseFixtureScript } from "./course/courseMatrices.js";
+import { invalidCompilerReceiptCaseIds } from "./course/compilerReceiptValidation.js";
 import type { ScenarioMatrixDefinition } from "./scenario/ScenarioJobManager.js";
 
 interface ModuleReceipt {
@@ -125,6 +126,7 @@ async function verifyModule(
   const cases = arrayValue(terminal.cases).map(objectValue);
   const failures = cases.filter((item) => item.status !== "passed");
   const incompleteRestorations = cases.filter((item) => objectValue(item.restoration).ok !== true);
+  const missingCompilerAssertions = invalidCompilerReceiptCaseIds(definition.cases, cases);
   const source = await successfulTool(client, "script_read", { path: CourseFixtureScript });
   if (
     terminal.status !== "success" ||
@@ -132,9 +134,10 @@ async function verifyModule(
     cases.length !== definition.cases.length ||
     failures.length > 0 ||
     incompleteRestorations.length > 0 ||
+    missingCompilerAssertions.length > 0 ||
     source.sha256 !== originalSha256
   ) {
-    throw new Error(`${module} verification failed: ${JSON.stringify({ terminal, failures, incompleteRestorations, source })}`);
+    throw new Error(`${module} verification failed: ${JSON.stringify({ terminal, failures, incompleteRestorations, missingCompilerAssertions, source })}`);
   }
 
   const bundle = await successfulTool(client, "evidence_bundle_create", { operationId });

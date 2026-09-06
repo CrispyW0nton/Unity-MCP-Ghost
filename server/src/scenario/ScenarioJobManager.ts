@@ -64,11 +64,19 @@ export interface ScenarioScreenshotAssertion {
   allowApproximate?: boolean;
 }
 
+export interface ScenarioCompilerDiagnosticExpectation {
+  file: string;
+  severity: "error" | "warning";
+  code: string;
+  minimumCount?: number;
+}
+
 export interface ScenarioCaseDefinition {
   id: string;
   description?: string;
   expectedResult?: ScenarioExpectedResult;
   expectedFailureCode?: string;
+  expectedCompilerDiagnostics?: ScenarioCompilerDiagnosticExpectation[];
   timeoutMs?: number;
   sourceMutations?: ScenarioSourceMutation[];
   inputs?: ScenarioInput[];
@@ -109,6 +117,7 @@ interface ScenarioCaseRecord {
   consoleBoundary?: string;
   sourceApply?: Record<string, unknown>;
   compile?: Record<string, unknown>;
+  compilerAssertions?: Record<string, unknown>;
   inputs: Record<string, unknown>[];
   consoleAssertions: Record<string, unknown>[];
   objectAssertions: Record<string, unknown>[];
@@ -226,7 +235,9 @@ export class ScenarioJobManager {
     }
     const ids = new Set<string>();
     for (const item of definition.cases) {
-      if (!ids.add(item.id)) throw new ScenarioFailure("DUPLICATE_SCENARIO_CASE", `Duplicate scenario case id: ${item.id}`);
+      if (ids.has(item.id)) throw new ScenarioFailure("DUPLICATE_SCENARIO_CASE", `Duplicate scenario case id: ${item.id}`);
+      ids.add(item.id);
+      validateCompilerExpectations(item);
     }
 
     const operationId = randomUUID();
@@ -522,6 +533,7 @@ export class ScenarioJobManager {
     let transactionId = "";
     let observedResult: ScenarioExpectedResult = "pass";
     let observedFailure: ScenarioFailureShape | undefined;
+    let compilerObservationFailed = false;
 
     try {
       caseState = await this.request("editor.snapshot", {}, signal, this.remaining(deadline));
@@ -559,8 +571,24 @@ export class ScenarioJobManager {
         await this.writeDiffs(record, definition.id, applyReceipts);
         this.checkCancellation(record, signal);
         const generation = numberValue(applied.requestedCompileGeneration);
-        const compile = await this.waitForCompile(generation, record.definition.compileTimeoutMs ?? 60000, signal, deadline);
+        let compile: Record<string, unknown>;
+        try {
+          compile = await this.waitForCompile(generation, record.definition.compileTimeoutMs ?? 60000, signal, deadline);
+        } catch (error) {
+          compilerObservationFailed = true;
+          throw error;
+        }
         result.compile = compile;
+        if (definition.expectedCompilerDiagnostics) {
+          result.compilerAssertions = matchCompilerDiagnostics(compile, definition.expectedCompilerDiagnostics);
+          if (result.compilerAssertions.ok !== true) {
+            throw new ScenarioFailure(
+              "SCENARIO_COMPILER_ASSERTION_FAILED",
+              "Compiler diagnostics did not match the declared file, severity, code and count expectations.",
+              result.compilerAssertions
+            );
+          }
+        }
         if (compile.ok === false) {
           throw new ScenarioFailure("SCENARIO_COMPILE_FAILED", `Compile generation ${generation} failed.`, compile);
         }
@@ -654,7 +682,10 @@ export class ScenarioJobManager {
       }
     }
 
-    const expectedMatched = failureMatchesExpected(expectedResult, definition.expectedFailureCode, observedResult, observedFailure);
+    // Compiler observation errors retain producer codes, but do not prove an expected assertion or compiler failure.
+    const expectedMatched =
+      (!compilerObservationFailed || observedResult === "timeout" || observedResult === "cancelled") &&
+      failureMatchesExpected(expectedResult, definition.expectedFailureCode, observedResult, observedFailure);
     result.observedResult = observedFailure ? observedResult : "pass";
     result.observedFailure = observedFailure;
     result.failure = expectedMatched && expectedResult !== "pass" ? undefined : observedFailure;
@@ -835,20 +866,27 @@ export class ScenarioJobManager {
   }
 
   private async waitForCompile(generation: number, timeoutMs: number, signal?: AbortSignal, caseDeadline?: number): Promise<Record<string, unknown>> {
-    if (generation <= 0) throw new ScenarioFailure("COMPILE_GENERATION_REQUIRED", "Unity did not return an exact compile generation.");
-    const started = Date.now();
+    if (!Number.isSafeInteger(generation) || generation <= 0)
+      throw new ScenarioFailure("COMPILE_GENERATION_REQUIRED", "Unity did not return an exact compile generation.");
+    const deadline = Math.min(Date.now() + timeoutMs, caseDeadline ?? Infinity);
     let last: Record<string, unknown> = {};
-    while (Date.now() - started < timeoutMs && (!caseDeadline || Date.now() < caseDeadline)) {
+    while (Date.now() < deadline) {
       throwIfAborted(signal);
       try {
-        last = await this.request("compile.status_get", { requestedCompileGeneration: generation }, signal, Math.min(5000, timeoutMs));
+        last = await this.request("compile.status_get", { requestedCompileGeneration: generation }, signal, this.remaining(deadline, 5000));
       } catch (error) {
         if (failureShape(error).code === "OPERATION_CANCELLED") throw error;
-        await delay(250, signal);
+        await delay(Math.max(0, Math.min(250, deadline - Date.now())), signal);
         continue;
       }
-      if (last.status === "success" || last.status === "failed") return last;
-      await delay(100, signal);
+      throwIfAborted(signal);
+      if (Date.now() >= deadline) break;
+      if (last.status === "success" || last.status === "failed") {
+        validateCompileEvidence(last, generation);
+        return last;
+      }
+      if (last.ok === false) throw new ScenarioFailure(errorCode(last, "SCENARIO_COMPILER_STATUS_FAILED"), errorMessage(last), last);
+      await delay(Math.max(0, Math.min(100, deadline - Date.now())), signal);
     }
     throw new ScenarioFailure("COMPILE_GENERATION_TIMEOUT", `Timed out waiting for compile generation ${generation}.`, last);
   }
@@ -1387,6 +1425,79 @@ function isErrorDiagnostic(value: unknown): boolean {
   return stringValue(objectValue(value).severity).toLowerCase() === "error";
 }
 
+function validateCompilerExpectations(definition: ScenarioCaseDefinition): void {
+  const expected = definition.expectedCompilerDiagnostics;
+  if (expected === undefined) return;
+  if (
+    definition.expectedResult !== "compile-failure" ||
+    !definition.sourceMutations?.length ||
+    !Array.isArray(expected) ||
+    expected.length === 0 ||
+    expected.length > 100 ||
+    expected.some(
+      (item) =>
+        !item ||
+        typeof item.file !== "string" ||
+        !item.file.length ||
+        item.file.length > 1024 ||
+        typeof item.code !== "string" ||
+        !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(item.code) ||
+        !["error", "warning"].includes(item.severity) ||
+        !Number.isInteger(item.minimumCount ?? 1) ||
+        (item.minimumCount ?? 1) < 1 ||
+        (item.minimumCount ?? 1) > 1000
+    )
+  ) {
+    throw new ScenarioFailure(
+      "INVALID_COMPILER_EXPECTATIONS",
+      "Compiler expectations require a compile-failure case with source mutations and 1-100 bounded file/severity/code/count assertions."
+    );
+  }
+}
+
+function validateCompileEvidence(value: Record<string, unknown>, generation: number): void {
+  const diagnostics = arrayValue(value.diagnostics);
+  const errors = diagnostics.filter(isErrorDiagnostic);
+  const succeeded = value.status === "success";
+  if (
+    value.generation !== generation ||
+    value.observed !== true ||
+    typeof value.completedAtUtc !== "string" ||
+    !Number.isFinite(Date.parse(value.completedAtUtc)) ||
+    !Array.isArray(value.diagnostics) ||
+    value.diagnosticsTruncated !== false ||
+    !Number.isSafeInteger(value.errorCount) ||
+    value.errorCount !== errors.length ||
+    value.ok !== succeeded ||
+    (succeeded ? errors.length !== 0 : errors.length === 0) ||
+    (!succeeded && errorCode(value, "") !== "COMPILE_GENERATION_FAILED") ||
+    diagnostics.some((entry) => {
+      const diagnostic = objectValue(entry);
+      return diagnostic.generation !== generation || !["error", "warning"].includes(stringValue(diagnostic.severity));
+    })
+  ) {
+    throw new ScenarioFailure(
+      "SCENARIO_COMPILER_EVIDENCE_INVALID",
+      "Unity did not provide a coherent, observed, completed exact-generation compiler result with complete diagnostics.",
+      { requestedCompileGeneration: generation, observed: value }
+    );
+  }
+}
+
+function matchCompilerDiagnostics(compile: Record<string, unknown>, expected: ScenarioCompilerDiagnosticExpectation[]): Record<string, unknown> {
+  const diagnostics = arrayValue(compile.diagnostics).map(objectValue);
+  const matches = (item: Record<string, unknown>, expectation: ScenarioCompilerDiagnosticExpectation) =>
+    stringValue(item.file).replaceAll("\\", "/") === expectation.file.replaceAll("\\", "/") &&
+    item.severity === expectation.severity &&
+    item.code === expectation.code;
+  const assertions = expected.map((expectation) => {
+    const observedCount = diagnostics.filter((item) => matches(item, expectation)).length;
+    return { ...expectation, minimumCount: expectation.minimumCount ?? 1, observedCount, matched: observedCount >= (expectation.minimumCount ?? 1) };
+  });
+  const unexpectedErrors = diagnostics.filter((item) => isErrorDiagnostic(item) && !expected.some((expectation) => matches(item, expectation)));
+  return { ok: assertions.every((item) => item.matched) && unexpectedErrors.length === 0, generation: compile.generation, assertions, unexpectedErrors };
+}
+
 function failureShape(error: unknown): ScenarioFailureShape {
   if (error instanceof ScenarioFailure) return { code: error.code, message: error.message, ...(error.data === undefined ? {} : { data: error.data }) };
   const value = objectValue(error);
@@ -1402,7 +1513,7 @@ function classifyFailure(code: string): ScenarioExpectedResult {
   const normalized = code.toUpperCase();
   if (normalized.includes("CANCEL")) return "cancelled";
   if (normalized.includes("TIMEOUT")) return "timeout";
-  if (normalized.includes("COMPILE")) return "compile-failure";
+  if (normalized === "SCENARIO_COMPILE_FAILED") return "compile-failure";
   return "assertion-failure";
 }
 

@@ -6,7 +6,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { ScenarioJobManager, type ScenarioJobRecord } from "../src/scenario/ScenarioJobManager.js";
+import { ScenarioJobManager, type ScenarioJobRecord, type ScenarioCompilerDiagnosticExpectation } from "../src/scenario/ScenarioJobManager.js";
 import type { UnityClient } from "../src/unity/UnityClient.js";
 
 describe("durable scenario matrix jobs", () => {
@@ -800,6 +800,393 @@ describe("durable scenario matrix jobs", () => {
     }
   });
 
+  for (const variant of [
+    "matching",
+    "windows-separator",
+    "wrong-file",
+    "wrong-code",
+    "wrong-severity",
+    "unexpected-error",
+    "missing-error",
+    "old-diagnostic",
+    "old-generation",
+    "future-generation",
+    "missing-generation",
+    "unobserved",
+    "not-completed",
+    "truncated",
+    "hidden-error",
+    "non-array-diagnostics",
+    "contradictory-ok",
+    "contradictory-success",
+    "infrastructure-failure",
+    "infrastructure-error-code",
+    "minimum-count",
+    "waiting-then-observed"
+  ]) {
+    it(`requires observed, exact-generation compiler evidence and declared diagnostics: ${variant}`, async (context) => {
+      const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-compile-evidence-"));
+      const sourcePath = "Assets/Fixture.cs";
+      const sourceFullPath = join(projectPath, sourcePath);
+      const original = "// original\r\n";
+      const mutated = "// deliberately seeded compiler defect\r\n";
+      await mkdir(join(projectPath, "Assets"), { recursive: true });
+      await writeFile(sourceFullPath, original, "utf8");
+      const fake = new ReloadRaceScenarioUnity(sourceFullPath, sourcePath, original, mutated);
+      const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+      const diagnostic: Record<string, unknown> = {
+        generation: 1,
+        severity: "error",
+        code: "CS1002",
+        file: sourcePath,
+        message: "; expected",
+        line: 1,
+        column: 1
+      };
+      const compile: Record<string, unknown> = {
+        ok: false,
+        status: "failed",
+        generation: 1,
+        observed: true,
+        completedAtUtc: "2026-09-05T01:00:00.000Z",
+        diagnostics: [diagnostic],
+        diagnosticsTruncated: false,
+        errorCount: 1,
+        error: { code: "COMPILE_GENERATION_FAILED", message: "The seeded compiler error was observed." }
+      };
+      switch (variant) {
+        case "windows-separator":
+          diagnostic.file = "Assets\\Fixture.cs";
+          break;
+        case "wrong-file":
+          diagnostic.file = "Assets/Unrelated.cs";
+          break;
+        case "wrong-code":
+          diagnostic.code = "CS0103";
+          break;
+        case "wrong-severity":
+          diagnostic.severity = "warning";
+          compile.errorCount = 0;
+          break;
+        case "unexpected-error":
+          (compile.diagnostics as unknown[]).push({ ...diagnostic, file: "Assets/Other.cs", code: "CS0128" });
+          compile.errorCount = 2;
+          break;
+        case "missing-error":
+          compile.diagnostics = [];
+          compile.errorCount = 0;
+          break;
+        case "old-diagnostic":
+          diagnostic.generation = 0;
+          break;
+        case "old-generation":
+          compile.generation = 0;
+          break;
+        case "future-generation":
+          compile.generation = 2;
+          break;
+        case "missing-generation":
+          delete compile.generation;
+          break;
+        case "unobserved":
+          compile.observed = false;
+          break;
+        case "not-completed":
+          compile.completedAtUtc = null;
+          break;
+        case "truncated":
+          compile.diagnosticsTruncated = true;
+          break;
+        case "hidden-error":
+          compile.errorCount = 2;
+          break;
+        case "non-array-diagnostics":
+          compile.diagnostics = {};
+          break;
+        case "contradictory-ok":
+          compile.ok = true;
+          break;
+        case "contradictory-success":
+          compile.ok = true;
+          compile.status = "success";
+          break;
+        case "infrastructure-failure":
+          compile.error = { code: "UNKNOWN_COMPILE_GENERATION", message: "No compilation observed." };
+          compile.observed = false;
+          compile.diagnostics = [];
+          compile.errorCount = 0;
+          break;
+        case "infrastructure-error-code":
+          compile.error = { code: "UNKNOWN_COMPILE_GENERATION", message: "Infrastructure failure with contradictory diagnostic fields." };
+          break;
+      }
+      const request = fake.request.bind(fake);
+      let compileQueries = 0;
+      context.mock.method(fake, "request", async (method: string, params: unknown = {}) => {
+        if (method === "compile.status_get" && (params as Record<string, unknown>).requestedCompileGeneration === 1) {
+          compileQueries++;
+          if (variant === "waiting-then-observed" && compileQueries === 1)
+            return { ok: true, status: "waiting", generation: 1, observed: false, completedAtUtc: null };
+          return compile;
+        }
+        return request(method, params);
+      });
+      try {
+        const started = await manager.start({
+          name: `compiler evidence ${variant}`,
+          scenePath: "Assets/Fixture.unity",
+          cases: [
+            {
+              id: "seeded",
+              expectedResult: "compile-failure",
+              expectedFailureCode: variant === "infrastructure-failure" ? undefined : "SCENARIO_COMPILE_FAILED",
+              expectedCompilerDiagnostics: [
+                { file: sourcePath, severity: "error", code: "CS1002", ...(variant === "minimum-count" ? { minimumCount: 2 } : {}) }
+              ],
+              sourceMutations: [{ path: sourcePath, content: mutated, expectedSha256: sha256(original) }]
+            }
+          ]
+        });
+        const completed = await waitForTerminal(manager, String(started.operationId));
+        const caseRecord = (completed.cases as Array<Record<string, unknown>>)[0];
+        assert.ok(compileQueries > 0, "The case must reach actual compiler-evidence observation.");
+        const expectedPass = variant === "matching" || variant === "windows-separator" || variant === "waiting-then-observed";
+        if (variant === "waiting-then-observed") assert.equal(compileQueries, 2);
+        assert.equal(completed.status, expectedPass ? "success" : "failed");
+        assert.equal(caseRecord.status, expectedPass ? "passed" : "failed");
+        assert.equal((caseRecord.restoration as Record<string, unknown>).ok, true);
+        assert.equal(await readFile(sourceFullPath, "utf8"), original, "Every compiler verdict must still restore exact source bytes.");
+        if (expectedPass) assert.equal((caseRecord.compilerAssertions as Record<string, unknown> | undefined)?.ok, true);
+      } finally {
+        await manager.close();
+        await removeTestProject(projectPath);
+      }
+    });
+  }
+
+  for (const variant of [
+    "truncated",
+    "wrong-generation",
+    "missing-generation",
+    "missing-requested-generation",
+    "nonterminal-without-code",
+    "nonterminal-producer-code",
+    "nonterminal-assertion-code",
+    "runtime-assertion"
+  ]) {
+    it(`matches expected assertion failures only after compiler observation succeeds: ${variant}`, async (context) => {
+      const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-compile-assertion-"));
+      const sourcePath = "Assets/Fixture.cs";
+      const sourceFullPath = join(projectPath, sourcePath);
+      const original = "// original\r\n";
+      const mutated = "// runtime assertion mutation\r\n";
+      await mkdir(join(projectPath, "Assets"), { recursive: true });
+      await writeFile(sourceFullPath, original, "utf8");
+      const fake = new ReloadRaceScenarioUnity(sourceFullPath, sourcePath, original, mutated);
+      const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+      const compile: Record<string, unknown> = {
+        ok: true,
+        status: "success",
+        generation: 1,
+        observed: true,
+        completedAtUtc: "2026-09-05T01:00:00.000Z",
+        diagnostics: [],
+        diagnosticsTruncated: false,
+        errorCount: 0
+      };
+      let failureCode = "SCENARIO_COMPILER_EVIDENCE_INVALID";
+      switch (variant) {
+        case "truncated":
+          compile.diagnosticsTruncated = true;
+          break;
+        case "wrong-generation":
+          compile.generation = 2;
+          break;
+        case "missing-generation":
+          delete compile.generation;
+          break;
+        case "missing-requested-generation":
+          failureCode = "COMPILE_GENERATION_REQUIRED";
+          break;
+        case "nonterminal-without-code":
+        case "nonterminal-producer-code":
+        case "nonterminal-assertion-code":
+          failureCode =
+            variant === "nonterminal-without-code"
+              ? "SCENARIO_COMPILER_STATUS_FAILED"
+              : variant === "nonterminal-producer-code"
+                ? "UNKNOWN_COMPILE_GENERATION"
+                : "RUNTIME_ASSERTION_FAILED";
+          compile.ok = false;
+          compile.status = "waiting";
+          compile.observed = false;
+          compile.completedAtUtc = null;
+          compile.error = {
+            ...(variant === "nonterminal-without-code" ? {} : { code: failureCode }),
+            message: "Compiler observation is unavailable."
+          };
+          break;
+        case "runtime-assertion":
+          failureCode = "RUNTIME_ASSERTION_FAILED";
+          break;
+      }
+      const runtimeFailure = { ok: false, matched: false, error: { code: failureCode, message: "Runtime value did not match." }, observed: 0 };
+      const request = fake.request.bind(fake);
+      const compileQueries: unknown[] = [];
+      let playStarts = 0;
+      let runtimeAssertions = 0;
+      context.mock.method(fake, "request", async (method: string, params: unknown = {}) => {
+        const values = params as Record<string, unknown>;
+        if (method === "compile.status_get") {
+          compileQueries.push(values.requestedCompileGeneration);
+          if (values.requestedCompileGeneration === 1) return compile;
+        }
+        if (method === "play_mode.set" && values.state === "playing") playStarts++;
+        if (method === "runtime.assert") {
+          runtimeAssertions++;
+          return runtimeFailure;
+        }
+        const response = await request(method, params);
+        if (method === "scenario.source_get" && variant === "missing-requested-generation") {
+          delete ((response as Record<string, unknown>).transaction as Record<string, unknown>).requestedCompileGeneration;
+        }
+        return response;
+      });
+      try {
+        const started = await manager.start({
+          name: `assertion eligibility ${variant}`,
+          scenePath: "Assets/Fixture.unity",
+          cases: [
+            {
+              id: "negative-runtime",
+              expectedResult: "assertion-failure",
+              sourceMutations: [{ path: sourcePath, content: mutated, expectedSha256: sha256(original) }],
+              objectAssertions: [{ name: "Fixture", exists: true }]
+            }
+          ]
+        });
+        const completed = await waitForTerminal(manager, String(started.operationId));
+        const caseRecord = (completed.cases as Array<Record<string, unknown>>)[0];
+        const observedFailure = caseRecord.observedFailure as Record<string, unknown>;
+        const isRuntimeAssertion = variant === "runtime-assertion";
+        assert.deepEqual(compileQueries, variant === "missing-requested-generation" ? [2] : [1, 2], "Do not poll again after compiler rejection.");
+        assert.equal(playStarts, isRuntimeAssertion ? 1 : 0);
+        assert.equal(runtimeAssertions, isRuntimeAssertion ? 1 : 0);
+        assert.equal((caseRecord.restoration as Record<string, unknown>).ok, true);
+        assert.deepEqual(await readFile(sourceFullPath), Buffer.from(original, "utf8"), "Source restoration must be byte-identical.");
+        assert.equal(observedFailure.code, failureCode);
+        if (variant.startsWith("nonterminal-")) {
+          assert.equal(observedFailure.message, "Compiler observation is unavailable.");
+          assert.deepEqual(observedFailure.data, compile, "Preserve the complete original compiler status response.");
+        } else if (isRuntimeAssertion) {
+          assert.deepEqual(observedFailure.data, runtimeFailure);
+        } else if (variant !== "missing-requested-generation") {
+          assert.deepEqual(observedFailure.data, { requestedCompileGeneration: 1, observed: compile });
+        }
+        assert.equal(completed.status, isRuntimeAssertion ? "success" : "failed");
+        assert.equal(caseRecord.status, isRuntimeAssertion ? "passed" : "failed");
+        assert.deepEqual(caseRecord.failure, isRuntimeAssertion ? undefined : observedFailure);
+      } finally {
+        await manager.close();
+        await removeTestProject(projectPath);
+      }
+    });
+  }
+
+  it("rejects duplicate case IDs before a job can execute or overwrite evidence", async () => {
+    const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-duplicate-case-"));
+    const fake = new FakeScenarioUnity();
+    const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+    try {
+      await assert.rejects(manager.start({ name: "duplicate", scenePath: "Assets/Fixture.unity", cases: [{ id: "same" }, { id: "same" }] }), {
+        code: "DUPLICATE_SCENARIO_CASE"
+      });
+      assert.equal(fake.restoreCount, 0);
+    } finally {
+      await manager.close();
+      await removeTestProject(projectPath);
+    }
+  });
+
+  for (const [variant, elapsed, cancelled] of [
+    ["before", 9, false],
+    ["equal", 10, false],
+    ["after", 11, false],
+    ["cancelled", 0, true]
+  ] as const) {
+    it(`honors the compile observation deadline or cancellation after a read: ${variant}`, async (context) => {
+      const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-compile-deadline-"));
+      const fake = new FakeScenarioUnity();
+      const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+      const controller = new AbortController();
+      let clock = 1000;
+      context.mock.method(Date, "now", () => clock);
+      context.mock.method(fake, "request", async (method: string) => {
+        assert.equal(method, "compile.status_get");
+        clock += elapsed;
+        if (cancelled) controller.abort();
+        return {
+          ok: true,
+          status: "success",
+          generation: 1,
+          observed: true,
+          completedAtUtc: "2026-09-05T01:00:00.000Z",
+          diagnostics: [],
+          diagnosticsTruncated: false,
+          errorCount: 0
+        };
+      });
+      try {
+        const result = internals(manager).waitForCompile(1, 10, controller.signal);
+        if (variant === "before") assert.equal((await result).status, "success");
+        else await assert.rejects(result, { code: cancelled ? "OPERATION_CANCELLED" : "COMPILE_GENERATION_TIMEOUT" });
+      } finally {
+        await manager.close();
+        context.mock.restoreAll();
+        await removeTestProject(projectPath);
+      }
+    });
+  }
+
+  for (const [name, expectations] of [
+    ["empty", []],
+    ["too many", Array.from({ length: 101 }, () => ({ file: "Assets/Fixture.cs", code: "CS1002", severity: "error" }))],
+    ["empty file", [{ file: "", code: "CS1002", severity: "error" }]],
+    ["oversized file", [{ file: "x".repeat(1025), code: "CS1002", severity: "error" }]],
+    ["invalid code", [{ file: "Assets/Fixture.cs", code: "*", severity: "error" }]],
+    ["invalid severity", [{ file: "Assets/Fixture.cs", code: "CS1002", severity: "log" }]],
+    ["zero minimum", [{ file: "Assets/Fixture.cs", code: "CS1002", severity: "error", minimumCount: 0 }]],
+    ["fractional minimum", [{ file: "Assets/Fixture.cs", code: "CS1002", severity: "error", minimumCount: 1.5 }]],
+    ["oversized minimum", [{ file: "Assets/Fixture.cs", code: "CS1002", severity: "error", minimumCount: 1001 }]]
+  ] as const) {
+    it(`rejects ${name} compiler expectations before starting source work`, async () => {
+      const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-compiler-definition-"));
+      const fake = new FakeScenarioUnity();
+      const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+      try {
+        await assert.rejects(
+          manager.start({
+            name: "invalid expectations",
+            scenePath: "Assets/Fixture.unity",
+            cases: [
+              {
+                id: "invalid",
+                expectedResult: "compile-failure",
+                expectedCompilerDiagnostics: expectations as unknown as ScenarioCompilerDiagnosticExpectation[],
+                sourceMutations: [{ path: "Assets/Fixture.cs", content: "// mutation must not run", expectedSha256: "a".repeat(64) }]
+              }
+            ]
+          }),
+          { code: "INVALID_COMPILER_EXPECTATIONS" }
+        );
+        assert.equal(fake.restoreCount, 0);
+      } finally {
+        await manager.close();
+        await removeTestProject(projectPath);
+      }
+    });
+  }
+
   it("recovers durable source apply and restore receipts when reload retries report EXECUTING", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-reload-"));
     const sourcePath = "Assets/Fixture.cs";
@@ -1069,6 +1456,7 @@ function internals(manager: ScenarioJobManager): {
   atomicWrite(path: string, contents: string): Promise<void>;
   replaceFile(temporary: string, destination: string): Promise<void>;
   setPlayMode(state: "playing" | "paused" | "stopped", timeoutMs: number): Promise<unknown>;
+  waitForCompile(generation: number, timeoutMs: number, signal?: AbortSignal): Promise<Record<string, unknown>>;
   releaseLease(operationId: string): Promise<void>;
   acquireLease(operationId: string): Promise<void>;
   writeEvidence(record: ScenarioJobRecord): Promise<void>;
@@ -1137,7 +1525,16 @@ class ReloadRaceScenarioUnity extends FakeScenarioUnity {
       case "scenario.source_complete":
         return { ok: true, completed: true };
       case "compile.status_get":
-        return { ok: true, status: "success", requestedCompileGeneration: this.generation, diagnostics: [] };
+        return {
+          ok: true,
+          status: "success",
+          generation: (params as Record<string, unknown>).requestedCompileGeneration,
+          observed: true,
+          completedAtUtc: "2026-09-05T01:00:00.000Z",
+          diagnostics: [],
+          diagnosticsTruncated: false,
+          errorCount: 0
+        };
       case "script.read":
         return { ok: true, path: this.receipt.path, sha256: sha256(await readFile(this.sourceFullPath, "utf8")) };
       default:

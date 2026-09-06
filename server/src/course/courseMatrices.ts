@@ -5,6 +5,19 @@ export const CourseFixtureScript = "Assets/GAM215Fixture/StudentExercise.cs";
 export const CourseHarnessObject = "GAM215 Course Harness";
 export const CourseHarnessComponent = "Gam215CourseHarness";
 
+// Observed with the supported Unity 2022.3 compiler; cascading errors are explicit.
+const seededCompilerCodes: Record<string, string[]> = {
+  "m1-syntax-malformed-comment": ["CS1513", "CS1035"],
+  "m1-syntax-malformed-brace": ["CS1513"],
+  "m1-syntax-malformed-quote": ["CS1010", "CS1026", "CS1002"],
+  "m1-syntax-missing-semicolon": ["CS1002"],
+  "m1-identifier-undeclared": ["CS0103"],
+  "m1-identifier-unassigned": ["CS0165"],
+  "m1-identifier-redeclared": ["CS0128"],
+  "m1-identifier-use-before-declaration": ["CS0841"],
+  "m1-identifier-case-mismatch": ["CS0103"]
+};
+
 interface RuntimeCaseOptions {
   id: string;
   body: string;
@@ -58,6 +71,11 @@ export function buildModule1Matrix(originalContent: string, originalSha256: stri
         Marvin.Write("Int", localCount);
         Marvin.Write("Float", localRatio);
         print("M1|WRITE|overloads");`,
+      consoleAssertions: [
+        exactLog("COURSE|m1-marvin-write-overloads"),
+        exactLog("MARVIN|Write|Module1|String|hello|true"),
+        exactLog("MARVIN|Write|Module1|Int|7|true")
+      ],
       expectedMarvinLog: "MARVIN|Write|Module1|Float|2.5|true",
       objectAssertions: [...harnessEquals("VisibleText", "2.5"), ...harnessEquals("CallCount", 3)]
     }),
@@ -438,11 +456,14 @@ public sealed class StudentExercise : MonoBehaviour
 }
 
 function compileFailure(id: string, content: string, originalSha256: string): ScenarioCaseDefinition {
+  const codes = seededCompilerCodes[id];
+  if (!codes) throw new Error(`Seeded compiler case ${id} needs explicit diagnostic expectations.`);
   return {
     id,
     description: "Expected compiler failure from a deliberately seeded clean-room student-code defect.",
     expectedResult: "compile-failure",
     expectedFailureCode: "SCENARIO_COMPILE_FAILED",
+    expectedCompilerDiagnostics: codes.map((code) => ({ file: CourseFixtureScript, severity: "error", code })),
     timeoutMs: 90000,
     sourceMutations: [{ path: CourseFixtureScript, content, expectedSha256: originalSha256 }]
   };

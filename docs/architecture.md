@@ -6,6 +6,14 @@ Each MCP tool registration is the versioned source for its handler, input schema
 
 The production CLI registers the compact `core` profile by default. `authoring`, `code`, `runtime`, and `validation` profiles are explicit opt-ins, while `all` preserves full-surface compatibility for controlled smoke suites. Discovery is bounded and paginated; there is deliberately no generic `operation_call` escape hatch.
 
+### Scenario compiler assertions
+
+`scenario_matrix_run` cases may declare `expectedCompilerDiagnostics` only with `expectedResult: "compile-failure"` and source mutations. Each entry specifies an exact project-relative `file`, `severity` (`error` or `warning`), diagnostic `code`, and optional `minimumCount` (default 1). The list accepts 1-100 entries; counts are integers from 1 to 1000. Slash direction is normalized for matching; unrelated error diagnostics fail the case. Compiler codes in the GAM 215 fixture are observed against the supported Unity 2022.3.62f1 compiler, not a cross-version promise.
+
+Every source-changing case requires a coherent, observed, completed exact-generation compiler result with complete diagnostics. Invalid/truncated evidence is `SCENARIO_COMPILER_EVIDENCE_INVALID`; missing requested generations and producer errors retain their own codes and evidence. Failures in compiler observation cannot satisfy an expected assertion or compiler failure before runtime verification. Declared timeout/cancellation behavior remains unchanged, and restoration still runs. `compilerAssertions` receipts include generation, expected and observed counts, match flags, and unexpected errors. The course smoke independently checks those receipts before producing its qualification.
+
+Migration: the new input field is optional. Upgrade the server and Unity package together; mocks and external bridge implementations must supply the complete compiler result contract instead of a bare success flag. Previously accepted incoherent evidence now fails explicitly. Do not work around that failure by dropping the assertions or treating older evidence as a current pass.
+
 Unity MCP Ghost uses a split architecture:
 
 ```text
