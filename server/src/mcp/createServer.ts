@@ -1,10 +1,11 @@
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { CallToolResult, ServerNotification, ServerRequest, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { z } from "zod";
 import { ScenarioJobManager, type ScenarioMatrixDefinition } from "../scenario/ScenarioJobManager.js";
-import { UnityRequestTimeoutError, type UnityClient } from "../unity/UnityClient.js";
+import { UnityCommandError, UnityRequestTimeoutError, type UnityClient, type UnityRequestOptions } from "../unity/UnityClient.js";
 import { PackageVersion } from "../version.js";
 import { listOperationCatalog, operationEnabled, recordOperation, searchOperationCatalog, type OperationProfile, type ToolSchema } from "./operationCatalog.js";
 import { asObject, failureResponse, GhostToolResponseSchema, type GhostToolMeta, successResponse, type ToolDiagnostic } from "./toolResponse.js";
@@ -21,7 +22,8 @@ export interface ToolContext {
   scenarios?: ScenarioJobManager;
 }
 
-type ToolHandler<TArgs> = (args: TArgs) => Promise<CallToolResult>;
+type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+type ToolHandler<TArgs> = (args: TArgs, extra: ToolExtra) => Promise<CallToolResult>;
 
 const EmptySchema = {};
 export const ParamsSchema = z.record(z.string(), z.unknown()).default({});
@@ -195,8 +197,8 @@ function registerTool<TSchema extends ToolSchema>(
         "unity-mcp-ghost/bridgeOperations": catalogEntry.bridgeOperations ?? []
       }
     },
-    (async (args: z.output<z.ZodObject<TSchema>>) => {
-      const result = await handler(args);
+    (async (args: z.output<z.ZodObject<TSchema>>, extra: ToolExtra) => {
+      const result = await handler(args, extra);
       const requestId = stringValue(asObject(args).requestId);
       if (meta.mutates && requestId && result.structuredContent && typeof result.structuredContent === "object") {
         (result.structuredContent as Record<string, unknown>).requestId = requestId;
@@ -329,49 +331,250 @@ async function pollOperation(context: ToolContext, operationId: string, timeoutM
   return last;
 }
 
+function compileFailure(code: string, message: string, data?: Record<string, unknown>): Error {
+  return Object.assign(new Error(message), { code, data, requestId: data?.requestId, projectId: data?.projectId });
+}
+
+// One monotonic budget covers the public validation start, all observations and
+// the final diagnostics read. The local race bounds even a non-cooperative
+// producer; it does not claim to stop Unity work already dispatched by transport.
+class CompileWaitBudget {
+  private readonly startedAt = performance.now();
+  private readonly deadline: number;
+  private readonly controller = new AbortController();
+  private readonly timer: ReturnType<typeof setTimeout>;
+  private readonly cancel = () => this.controller.abort();
+  private timedOut = false;
+
+  public constructor(
+    timeoutMs: number,
+    private readonly callerSignal?: AbortSignal
+  ) {
+    this.deadline = this.startedAt + timeoutMs;
+    callerSignal?.addEventListener("abort", this.cancel, { once: true });
+    if (callerSignal?.aborted) this.cancel();
+    this.timer = setTimeout(() => {
+      this.timedOut = true;
+      this.controller.abort();
+    }, timeoutMs);
+  }
+
+  public get elapsedMs(): number {
+    return performance.now() - this.startedAt;
+  }
+
+  public check(): number {
+    if (this.callerSignal?.aborted) throw compileFailure("OPERATION_CANCELLED", "Compile observation was cancelled.");
+    const remaining = this.deadline - performance.now();
+    if (this.timedOut || remaining <= 0) {
+      this.timedOut = true;
+      this.controller.abort();
+      throw compileFailure("COMPILE_GENERATION_TIMEOUT", "The total compile observation deadline elapsed.");
+    }
+    return remaining;
+  }
+
+  public async request(
+    context: ToolContext,
+    method: string,
+    params: Record<string, unknown>,
+    options: UnityRequestOptions = {}
+  ): Promise<Record<string, unknown>> {
+    const timeoutMs = this.check();
+    const signal = this.controller.signal;
+    let abort!: () => void;
+    const stopped = new Promise<never>((_resolve, reject) => {
+      abort = () => {
+        try {
+          this.check();
+        } catch (error) {
+          reject(error);
+        }
+      };
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      const result = await Promise.race([context.unity.request(method, params, { ...options, timeoutMs, signal }), stopped]);
+      this.check();
+      return asObject(result);
+    } catch (error) {
+      this.check();
+      throw error;
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+  }
+
+  public async sleep(intervalMs: number): Promise<void> {
+    const duration = Math.min(intervalMs, this.check());
+    const signal = this.controller.signal;
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", done);
+        resolve();
+      };
+      const timer = setTimeout(done, duration);
+      signal.addEventListener("abort", done, { once: true });
+      if (signal.aborted) done();
+    });
+    this.check();
+  }
+
+  public dispose(): void {
+    clearTimeout(this.timer);
+    this.callerSignal?.removeEventListener("abort", this.cancel);
+  }
+}
+
+function retryableCompileRead(error: unknown): boolean {
+  if (error instanceof UnityRequestTimeoutError) return error.code === "UNITY_REQUEST_TIMEOUT" && error.outcomeUnknown === false;
+  if (!(error instanceof UnityCommandError)) return false;
+  if (["EXECUTING", "OUTCOME_UNKNOWN", "REQUEST_EXECUTION_IN_PROGRESS"].includes(error.code)) return true;
+  const data = asObject(error.data);
+  return error.code === "EXPIRED" && data.status === "expired" && data.outcomeUnknown === false;
+}
+
+function diagnosticShape(value: unknown, generation: number): boolean {
+  const item = asObject(value);
+  return (
+    item.generation === generation &&
+    Number.isSafeInteger(item.sequence) &&
+    Number(item.sequence) > 0 &&
+    typeof item.timestampUtc === "string" &&
+    Number.isFinite(Date.parse(item.timestampUtc)) &&
+    typeof item.assembly === "string" &&
+    ["error", "warning"].includes(stringValue(item.severity)) &&
+    typeof item.code === "string" &&
+    typeof item.message === "string" &&
+    typeof item.file === "string" &&
+    Number.isSafeInteger(item.line) &&
+    Number(item.line) >= 0 &&
+    Number.isSafeInteger(item.column) &&
+    Number(item.column) >= 0
+  );
+}
+
+function validatePublicCompileEvidence(value: Record<string, unknown>, generation: number): void {
+  const diagnostics = arrayValue(value.diagnostics);
+  const errors = diagnostics.filter((item) => asObject(item).severity === "error");
+  const requestedAt = typeof value.requestedAtUtc === "string" ? Date.parse(value.requestedAtUtc) : NaN;
+  const observedAt = typeof value.observedAtUtc === "string" ? Date.parse(value.observedAtUtc) : NaN;
+  const completedAt = typeof value.completedAtUtc === "string" ? Date.parse(value.completedAtUtc) : NaN;
+  const succeeded = value.status === "success";
+  if (
+    value.observed !== true ||
+    value.outcomeUnknown === true ||
+    !Number.isFinite(requestedAt) ||
+    !Number.isFinite(observedAt) ||
+    !Number.isFinite(completedAt) ||
+    observedAt < requestedAt ||
+    completedAt < observedAt ||
+    !Array.isArray(value.diagnostics) ||
+    value.diagnosticsTruncated !== false ||
+    diagnostics.length > 1000 ||
+    diagnostics.some((item) => !diagnosticShape(item, generation)) ||
+    new Set(diagnostics.map((item) => asObject(item).sequence)).size !== diagnostics.length ||
+    !Number.isSafeInteger(value.errorCount) ||
+    value.errorCount !== errors.length ||
+    value.ok !== succeeded ||
+    (succeeded ? errors.length !== 0 || value.error != null : errors.length === 0 || asObject(value.error).code !== "COMPILE_GENERATION_FAILED")
+  ) {
+    throw compileFailure("COMPILE_EVIDENCE_INVALID", "Unity did not return coherent, observed, completed exact-generation compiler evidence.", {
+      requestedCompileGeneration: generation,
+      observed: value,
+      requestId: value.requestId,
+      projectId: value.projectId
+    });
+  }
+}
+
 async function waitForUnityCompile(
   context: ToolContext,
   requestedCompileGeneration: number,
   timeoutMs: number,
-  intervalMs = 250
+  intervalMs = 250,
+  existingBudget?: CompileWaitBudget
 ): Promise<Record<string, unknown>> {
-  const startedAt = Date.now();
+  const budget = existingBudget ?? new CompileWaitBudget(timeoutMs);
   let lastState: Record<string, unknown> | null = null;
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      lastState = asObject(
-        await context.unity.request("compile.status_get", {
-          requestedCompileGeneration
-        })
-      );
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, Math.max(intervalMs, 1000)));
-      continue;
+  try {
+    while (true) {
+      budget.check();
+      try {
+        lastState = await budget.request(context, "compile.status_get", { requestedCompileGeneration });
+      } catch (error) {
+        if (!retryableCompileRead(error)) throw error;
+        await budget.sleep(Math.max(intervalMs, 1000));
+        continue;
+      }
+      // Unknown generations and typed bridge failures are not failed compilations.
+      if (lastState.ok === false && asObject(lastState.error).code !== "COMPILE_GENERATION_FAILED") return lastState;
+      if (
+        lastState.generation !== requestedCompileGeneration ||
+        (lastState.requestedCompileGeneration !== undefined && lastState.requestedCompileGeneration !== requestedCompileGeneration)
+      ) {
+        throw compileFailure("COMPILE_GENERATION_MISMATCH", "Unity did not confirm the requested compile generation.", {
+          requestedCompileGeneration,
+          observed: lastState,
+          requestId: lastState.requestId,
+          projectId: lastState.projectId
+        });
+      }
+      if (lastState.status === "success" || lastState.status === "failed") {
+        validatePublicCompileEvidence(lastState, requestedCompileGeneration);
+        budget.check();
+        return { ...lastState, elapsedMs: budget.elapsedMs, requestedCompileGeneration };
+      }
+      if (lastState.ok !== true || !["waiting", "running"].includes(stringValue(lastState.status))) {
+        throw compileFailure("COMPILE_EVIDENCE_INVALID", "Unity returned no valid compile observation.", lastState);
+      }
+      await budget.sleep(intervalMs);
     }
-
-    if (lastState.status === "success" || lastState.status === "failed") {
-      return {
-        ...lastState,
-        ok: lastState.status === "success" && lastState.ok !== false,
-        elapsedMs: Date.now() - startedAt,
-        requestedCompileGeneration
-      };
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  } catch (error) {
+    if (asObject(error).code !== "COMPILE_GENERATION_TIMEOUT") throw error;
+    return {
+      ok: false,
+      status: "timeout",
+      error: { code: "COMPILE_GENERATION_TIMEOUT", message: `Timed out waiting for compile generation ${requestedCompileGeneration}.` },
+      elapsedMs: budget.elapsedMs,
+      requestedCompileGeneration,
+      state: lastState
+    };
+  } finally {
+    if (!existingBudget) budget.dispose();
   }
+}
 
-  return {
-    ok: false,
-    status: "timeout",
-    error: {
-      code: "COMPILE_GENERATION_TIMEOUT",
-      message: `Timed out waiting for compile generation ${requestedCompileGeneration}.`
-    },
-    elapsedMs: Date.now() - startedAt,
-    requestedCompileGeneration,
-    state: lastState
-  };
+function validatePublicDiagnostics(result: Record<string, unknown>, compile: Record<string, unknown>, path: string, limit: number): Record<string, unknown>[] {
+  const generation = Number(compile.generation);
+  const normalizedPath = path.trim().replaceAll("\\", "/").toLowerCase();
+  const matches = (item: Record<string, unknown>) =>
+    item.severity === "error" && stringValue(item.file).trim().replaceAll("\\", "/").toLowerCase().includes(normalizedPath);
+  const expected = arrayValue(compile.diagnostics).map(asObject).filter(matches);
+  const expectedBySequence = new Map(expected.map((item) => [item.sequence, item]));
+  const diagnostics = arrayValue(result.diagnostics).map(asObject);
+  const fields = ["sequence", "generation", "timestampUtc", "assembly", "severity", "code", "message", "file", "line", "column"];
+  if (
+    result.ok !== true ||
+    result.generation !== generation ||
+    !Array.isArray(result.diagnostics) ||
+    result.truncated !== false ||
+    diagnostics.length > limit ||
+    diagnostics.length !== expected.length ||
+    new Set(diagnostics.map((item) => item.sequence)).size !== diagnostics.length ||
+    diagnostics.some((item) => {
+      const other = expectedBySequence.get(item.sequence);
+      return !diagnosticShape(item, generation) || !matches(item) || !other || !fields.every((field) => item[field] === other[field]);
+    })
+  ) {
+    throw compileFailure(
+      "COMPILE_DIAGNOSTICS_INVALID",
+      "Unity did not return complete, matching diagnostics for the requested file and compile generation.",
+      result
+    );
+  }
+  return diagnostics;
 }
 
 async function waitForPlayState(
@@ -2040,40 +2243,78 @@ export function createMcpServer(context: ToolContext): McpServer {
       dryRun: DryRunSchema
     },
     { risk: "read", mutates: false, supportsDryRun: true, phase: 3, relatedResources: ["unity://console/errors"] },
-    async (args) => {
+    async (args, extra) => {
       const startedAt = Date.now();
+      const budget = new CompileWaitBudget(args.timeoutMs, extra.signal);
+      const requestId = randomUUID();
+      let validationStart: Record<string, unknown> | undefined;
+      let compile: Record<string, unknown> | undefined;
+      let startDispatched = false;
       try {
-        const validationStart = asObject(
-          await context.unity.request("script.validate", {
+        budget.check();
+        startDispatched = true;
+        validationStart = await budget.request(
+          context,
+          "script.validate",
+          {
             path: args.path,
             requestedCompileGeneration: args.requestedCompileGeneration,
             limit: args.limit,
             dryRun: args.dryRun
-          })
+          },
+          { requestId }
         );
+        if (validationStart.ok !== true) {
+          if (validationStart.ok === false) return successResponse("script_validate start failed.", validationStart, startedAt);
+          throw compileFailure("SCRIPT_VALIDATE_FAILED", "Unity did not confirm the validation start.", validationStart);
+        }
+        if (validationStart.error != null || validationStart.outcomeUnknown === true) {
+          const error = asObject(validationStart.error);
+          throw compileFailure(
+            stringValue(error.code) || (validationStart.outcomeUnknown === true ? "OUTCOME_UNKNOWN" : "SCRIPT_VALIDATE_FAILED"),
+            stringValue(error.message) || "Unity did not confirm a successful validation start.",
+            validationStart
+          );
+        }
         if (args.dryRun) {
           return successResponse("script_validate dry run completed.", validationStart, startedAt);
         }
 
         const generation = numberValue(validationStart.requestedCompileGeneration);
-        if (generation <= 0) {
-          return failureResponse("script_validate failed", new Error("Unity did not return a compile generation."), startedAt, [], {
-            code: "MISSING_COMPILE_GENERATION",
-            data: validationStart
-          });
+        if (!Number.isSafeInteger(generation) || generation <= 0) {
+          throw compileFailure("MISSING_COMPILE_GENERATION", "Unity did not return an exact compile generation.", validationStart);
         }
-
-        const compile = await waitForUnityCompile(context, generation, args.timeoutMs);
-        const diagnosticResult = asObject(
-          await context.unity.request("compile.diagnostics_get", {
-            severity: "error",
-            pathFilter: args.path,
-            generation,
-            limit: args.limit
-          })
-        );
-        const diagnostics = diagnosticsFromPayload(diagnosticResult);
-        const validationOk = compile.ok === true && diagnostics.length === 0;
+        if (args.requestedCompileGeneration !== undefined && generation !== args.requestedCompileGeneration) {
+          throw compileFailure("COMPILE_GENERATION_MISMATCH", "Validation did not confirm the requested compile generation.", validationStart);
+        }
+        compile = await waitForUnityCompile(context, generation, args.timeoutMs, 250, budget);
+        if (
+          !(compile.status === "success" && compile.ok === true) &&
+          !(compile.status === "failed" && asObject(compile.error).code === "COMPILE_GENERATION_FAILED")
+        ) {
+          return successResponse("script_validate could not observe compilation.", { ...compile, path: args.path, validationStart, compile }, startedAt);
+        }
+        const diagnosticResult = await budget.request(context, "compile.diagnostics_get", {
+          severity: "error",
+          pathFilter: args.path,
+          generation,
+          limit: args.limit
+        });
+        if (diagnosticResult.ok === false) {
+          return successResponse("script_validate diagnostics failed.", { ...diagnosticResult, path: args.path, validationStart, compile }, startedAt);
+        }
+        if (diagnosticResult.error != null || diagnosticResult.outcomeUnknown === true) {
+          const error = asObject(diagnosticResult.error);
+          throw compileFailure(
+            stringValue(error.code) || "COMPILE_DIAGNOSTICS_INVALID",
+            stringValue(error.message) || "Unity did not confirm a successful diagnostics read.",
+            diagnosticResult
+          );
+        }
+        const diagnostics = validatePublicDiagnostics(diagnosticResult, compile, args.path, args.limit);
+        budget.check();
+        const compilerErrorCount = Number(compile.errorCount);
+        const validationOk = compile.ok === true && compilerErrorCount === 0 && diagnostics.length === 0;
         return successResponse(
           "script_validate completed.",
           {
@@ -2081,22 +2322,42 @@ export function createMcpServer(context: ToolContext): McpServer {
             error: validationOk
               ? null
               : {
-                  code: compile.status === "timeout" ? "COMPILE_GENERATION_TIMEOUT" : "SCRIPT_COMPILER_ERRORS",
-                  message:
-                    compile.status === "timeout"
-                      ? `Timed out waiting for compile generation ${generation}.`
-                      : `Compile generation ${generation} produced ${diagnostics.length} scoped error${diagnostics.length === 1 ? "" : "s"}.`
+                  code: "SCRIPT_COMPILER_ERRORS",
+                  message: `Compile generation ${generation} produced ${compilerErrorCount} total compiler error${compilerErrorCount === 1 ? "" : "s"}; ${diagnostics.length} match '${args.path}'.`
                 },
             path: args.path,
             requestedCompileGeneration: generation,
+            requestId: validationStart.requestId ?? requestId,
+            projectId: validationStart.projectId ?? context.projectId,
             compile,
+            compilerErrorCount,
+            scopedErrorCount: diagnostics.length,
             diagnostics
           },
           startedAt,
           { confidence: validationOk ? 1 : 0 }
         );
       } catch (error) {
-        return failureResponse("script_validate failed", error, startedAt);
+        const failure = asObject(error);
+        const mayHaveStarted = startDispatched && !validationStart && !args.dryRun && args.requestedCompileGeneration === undefined;
+        const knownUnexecuted =
+          (error instanceof UnityRequestTimeoutError && error.outcomeUnknown === false) ||
+          (error instanceof UnityCommandError && asObject(error.data).outcomeUnknown === false);
+        const outcomeUnknown = mayHaveStarted && !knownUnexecuted;
+        return failureResponse("script_validate failed", error, startedAt, [], {
+          requestId: stringValue(failure.requestId) || stringValue(validationStart?.requestId) || requestId,
+          projectId: stringValue(failure.projectId) || stringValue(validationStart?.projectId) || context.projectId,
+          data: { ...asObject(failure.data), validationStart, compile, ...(mayHaveStarted ? { outcomeUnknown } : {}) },
+          ...(outcomeUnknown
+            ? {
+                warnings: [
+                  "The validation start may have reached Unity; its outcome is unknown. Reconcile the dispatched request before starting another validation."
+                ]
+              }
+            : {})
+        });
+      } finally {
+        budget.dispose();
       }
     }
   );
@@ -2341,15 +2602,18 @@ export function createMcpServer(context: ToolContext): McpServer {
       timeoutMs: z.number().int().positive().max(300000).default(30000)
     },
     { risk: "read", mutates: false, supportsDryRun: false, phase: 3 },
-    async (args) => {
+    async (args, extra) => {
       const startedAt = Date.now();
+      const budget = new CompileWaitBudget(args.timeoutMs, extra.signal);
       try {
-        const data = await waitForUnityCompile(context, args.requestedCompileGeneration, args.timeoutMs);
+        const data = await waitForUnityCompile(context, args.requestedCompileGeneration, args.timeoutMs, 250, budget);
         return successResponse("compile_wait completed.", data, startedAt, {
           confidence: data.status === "success" ? 1 : 0.5
         });
       } catch (error) {
         return failureResponse("compile_wait failed", error, startedAt);
+      } finally {
+        budget.dispose();
       }
     }
   );

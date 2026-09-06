@@ -9,6 +9,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../src/mcp/createServer.js";
 import { listOperationCatalog } from "../src/mcp/operationCatalog.js";
 import { UnityRequestTimeoutError, type UnityClient, type UnityRequestOptions } from "../src/unity/UnityClient.js";
+import { compileState } from "./fixtures/compileEvidence.js";
 
 type Backup = { backupPath: string; backupMetaPath: string };
 type Request = { method: string; params: Record<string, unknown>; options: UnityRequestOptions };
@@ -212,12 +213,7 @@ async function withExplicitRepair(options: Options, verify: (fixture: Fixture) =
       if (method === "compile.status_get") {
         const failed = restoring ? options.restore === "compile-failed" : options.repair === "compile-failed";
         const status = restoring && options.restore === "compile-timeout" ? "waiting" : failed ? "failed" : "success";
-        return {
-          ok: !failed,
-          status,
-          generation: !restoring && options.wrongGeneration === "compile" ? 999 : params.requestedCompileGeneration,
-          observed: status !== "waiting"
-        };
+        return compileState(Number(!restoring && options.wrongGeneration === "compile" ? 999 : params.requestedCompileGeneration), status);
       }
       if (method === "script.validate") {
         if (!restoring && options.repair === "validation-throw") throw new Error("Validation transport failed after confirmed apply.");

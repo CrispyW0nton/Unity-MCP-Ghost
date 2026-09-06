@@ -11,6 +11,7 @@ import { callTool, record, runMutationRollbackSmoke, type SmokeStep } from "../s
 import { createMcpServer } from "../src/mcp/createServer.js";
 import type { UnityClient } from "../src/unity/UnityClient.js";
 import { assertSmokeValidation, restoreSmokeEditor, smokeErrorEvidence } from "../src/testing/repairSmokeHarness.js";
+import { compileDiagnostic, compileState } from "./fixtures/compileEvidence.js";
 
 it("characterizes the real MCP success envelope without starting the CLI on import", async () => {
   const server = new McpServer({ name: "smoke-characterization", version: "1" });
@@ -152,20 +153,19 @@ async function fixture(
         const stale =
           (options.fault === "stale-baseline" && backupCount === 0) || (options.fault === "stale-cleanup" && calls.some((c) => c.name === "script_delete"));
         return {
-          ok: !failed,
-          status: failed ? "failed" : "success",
-          generation: p.requestedCompileGeneration,
+          ...compileState(
+            Number(p.requestedCompileGeneration),
+            failed ? "failed" : "success",
+            failed
+              ? [compileDiagnostic(Number(p.requestedCompileGeneration), { code: "CS1525", file: scriptPath, message: "Invalid expression term ';'" })]
+              : []
+          ),
           observed: !stale,
           completedAtUtc: stale ? null : "2026-09-06T12:00:01Z",
-          observedAtUtc: stale ? null : "2026-09-06T12:00:00Z",
-          diagnostics: failed
-            ? [{ generation: p.requestedCompileGeneration, severity: "error", code: "CS1525", file: scriptPath, message: "Invalid expression term ';'" }]
-            : [],
-          errorCount: failed ? 1 : 0,
-          error: failed ? { code: "COMPILE_GENERATION_FAILED", message: "Compiler errors" } : null
+          observedAtUtc: stale ? null : "2026-09-06T12:00:00Z"
         };
       }
-      if (method === "compile.diagnostics_get") return { ok: true, generation: p.generation, diagnostics: [] };
+      if (method === "compile.diagnostics_get") return { ok: true, generation: p.generation, diagnostics: [], truncated: false };
       if (method === "script.apply_edits") {
         if (p.dryRun) return { ok: true, dryRun: true };
         const before = await bytes();
@@ -518,14 +518,22 @@ for (const outcome of [
           };
         if (method === "compile.status_get")
           return {
-            ok: outcome !== "settled-compiler-failure",
-            status: outcome === "compile-timeout" ? "waiting" : outcome === "settled-compiler-failure" ? "failed" : "success",
-            generation: 7,
+            ...compileState(
+              7,
+              outcome === "compile-timeout" ? "waiting" : outcome === "settled-compiler-failure" ? "failed" : "success",
+              outcome === "settled-compiler-failure" ? [compileDiagnostic(7, { file: "Assets/Fixture.cs" })] : []
+            ),
             observed: outcome === "settled-compiler-failure",
             observedAtUtc: outcome === "settled-compiler-failure" ? "2026-09-06T12:00:00Z" : null,
             completedAtUtc: outcome === "settled-compiler-failure" ? "2026-09-06T12:00:01Z" : null
           };
-        if (method === "compile.diagnostics_get") return { ok: true, generation: 7, diagnostics: [] };
+        if (method === "compile.diagnostics_get")
+          return {
+            ok: true,
+            generation: 7,
+            truncated: false,
+            diagnostics: outcome === "settled-compiler-failure" ? [compileDiagnostic(7, { file: "Assets/Fixture.cs" })] : []
+          };
         throw new Error(`Unexpected request ${method}`);
       }
     } as unknown as UnityClient;
@@ -544,7 +552,7 @@ for (const outcome of [
           await record(
             steps,
             "target script validation",
-            () => callTool(client, "script_validate", { path: "Assets/Fixture.cs", timeoutMs: 1 }),
+            () => callTool(client, "script_validate", { path: "Assets/Fixture.cs", timeoutMs: outcome === "compile-timeout" ? 1 : 2000 }),
             (result) => {
               assertSmokeValidation(result);
               return { ok: true, checks: { compileVerified: true } };

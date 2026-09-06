@@ -8,6 +8,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../src/mcp/createServer.js";
 import { UnityRequestTimeoutError, type UnityClient, type UnityRequestOptions } from "../src/unity/UnityClient.js";
+import { compileDiagnostic, compileState } from "./fixtures/compileEvidence.js";
 
 type RepairBackup = { backupPath: string; backupMetaPath: string };
 type RepairFixtureOptions = {
@@ -108,7 +109,7 @@ async function withRepairFiles(
             : restoring || options.repair === "initially-green" || (generation > 1 && options.repair === "green")
               ? "success"
               : "failed";
-        return { ok: status !== "failed", status, generation, observed: status !== "waiting" };
+        return compileState(generation, status);
       }
       if (method === "compile.diagnostics_get") {
         return {
@@ -569,9 +570,7 @@ describe("MCP result adaptation", () => {
       request: async (method: string, params: unknown) => {
         observedRequests.push({ method, params });
         reads++;
-        return reads === 1
-          ? { ok: true, status: "waiting", generation: 7, observed: false, diagnostics: [] }
-          : { ok: true, status: "success", generation: 7, observed: true, diagnostics: [] };
+        return compileState(7, reads === 1 ? "waiting" : "success");
       }
     } as unknown as UnityClient;
     const server = createMcpServer({ unity: fakeUnity });
@@ -603,14 +602,15 @@ describe("MCP result adaptation", () => {
           return { ok: true, path: "Assets/Broken.cs", requestedCompileGeneration: 12 };
         }
         if (method === "compile.status_get") {
-          return { ok: false, status: "failed", generation: 12, observed: true, diagnostics: [] };
+          return compileState(12, "failed");
         }
         if (method === "compile.diagnostics_get") {
           assert.equal((params as { generation?: number }).generation, 12);
           return {
             ok: true,
             generation: 12,
-            diagnostics: [{ generation: 12, severity: "error", code: "CS1002", message: "; expected" }]
+            truncated: false,
+            diagnostics: [compileDiagnostic(12)]
           };
         }
         throw new Error(`Unexpected method: ${method}`);
@@ -656,7 +656,7 @@ describe("MCP result adaptation", () => {
         }
         if (method === "compile.status_get") {
           const generation = Number(request.requestedCompileGeneration);
-          return { ok: generation === 2, status: generation === 2 ? "success" : "failed", generation, observed: true };
+          return compileState(generation, generation === 2 ? "success" : "failed");
         }
         if (method === "compile.diagnostics_get") {
           return Number(request.generation) === 1
@@ -716,7 +716,7 @@ describe("MCP result adaptation", () => {
         }
         if (method === "compile.status_get") {
           const generation = Number(request.requestedCompileGeneration);
-          return { ok: generation === 3, status: generation === 3 ? "success" : "failed", generation, observed: true };
+          return compileState(generation, generation === 3 ? "success" : "failed");
         }
         if (method === "compile.diagnostics_get") {
           return {

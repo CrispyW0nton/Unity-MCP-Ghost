@@ -34,6 +34,8 @@ Sequence update, 2026-09-06: group 1's explicit repair handler is committed at `
 
 Group 8 harness resolution overlay, 2026-09-06: the deliberately invalid repair now requires the expected error plus independently verified original hash/restoration. At-most-once calls, unique owned scratch content, active authenticated cleanup-permission preflight and uncertain-outcome restoration deferral replace the old success-only/retry/fixed-folder behavior. [The bounded verification receipt](repair-smoke-safety-verification-2026-09-06.md) records regressions and review follow-up; this is preparation for the still-required final live mutation smoke, not a live pass or full group 8 completion.
 
+Group 1 public-wait resolution overlay, 2026-09-06: `compile_wait` and `script_validate` now propagate actual SDK cancellation, use one monotonic start/status/diagnostic budget and reject delayed or contradictory evidence. W1.19/W1.24/W1.25's public boundary (G6) has 86 direct public-route cases; complete slice verification is 527/527 Node and 10/10 protocol. [The bounded receipt](public-compile-wait-verification-2026-09-06.md) records proof-first review fixes and limits. This does not close repair/test/Play/Console/input wait propagation, actual no-op/reload compilation or full group 1. Next is group 2's Test Runner start/infrastructure callbacks, followed by owned-run timeout/cancellation settlement. Group 6 must retain the existing raw-start compatibility validation distinction and resolve diagnostic path normalization without removing public operations.
+
 ## Final gate ledger (all pending on the complete final series)
 
 - Fresh `npm ci`, format:check, lint, typecheck, build, test, test:protocol, test:course, audit --audit-level=high and `git diff --check`.
