@@ -56,11 +56,12 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             DrainBudget(MaxItemsPerUpdate, MaxMillisecondsPerUpdate, DateTime.UtcNow);
         }
 
-        internal static int DrainBudget(int maxItems, double maxMilliseconds, DateTime nowUtc)
+        internal static int DrainBudget(int maxItems, double maxMilliseconds, DateTime nowUtc, Func<TimeSpan> elapsedTime = null)
         {
             var completed = 0;
             var stopwatch = Stopwatch.StartNew();
-            while (completed < Math.Max(1, maxItems) && stopwatch.Elapsed.TotalMilliseconds < Math.Max(0.1d, maxMilliseconds))
+            var elapsed = elapsedTime ?? (() => stopwatch.Elapsed);
+            while (completed < Math.Max(1, maxItems) && elapsed().TotalMilliseconds < Math.Max(0.1d, maxMilliseconds))
             {
                 DispatchItem item;
                 lock (Work)
@@ -75,7 +76,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
                 try
                 {
-                    if (item.DeadlineUtc.HasValue && nowUtc > item.DeadlineUtc.Value)
+                    // Earlier work consumes deadline time even within the same Editor update.
+                    var itemNowUtc = nowUtc + elapsed();
+                    if (item.DeadlineUtc.HasValue && itemNowUtc >= item.DeadlineUtc.Value)
                     {
                         item.OnExpired?.Invoke();
                     }

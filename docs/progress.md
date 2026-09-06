@@ -11,6 +11,12 @@ Milestone source documents:
 
 Commits and verified gates:
 
+- `8659db3` — `fix(reliability): retain repair backups and report unknown edits`
+  - Prevented backup completion after unverified restoration, retained per-backup cleanup outcomes, and stopped implicit restoration/cleanup replay. Empty source and BOM/CRLF bytes are verified in disk-backed MCP regressions.
+  - Applied both validated findings from completed review `20260905-190113-1f67b101`: truthful retained-versus-unverified backup hints, and pre-dispatch apply identity with unknown current hash after a lost response. Unknown applies stop all further requests pending explicit reconciliation.
+  - Parent verification passed 45/45 focused integration tests (37 repair cases), `npm test` 218/218, `npm run test:protocol` 9/9, format, lint, typecheck, build, direct strict TypeScript checking of the integration test, `git diff --check`, and `npm audit --audit-level=high` with zero vulnerabilities. Worker review-fix red evidence was 24/37 passing before the fixes; it remains a failed run, not a passing gate.
+  - The four committed paths contain only repair implementation, integration tests and evidence documentation. The separate dispatcher fix and unadopted goal proposal were excluded; no secrets, course assets or Unity generated files were staged. No push or PR was made.
+  - Controlled bridge responses do not certify live Unity repair behavior, global backup-pruning lifetime, partial C# transaction compensation, or the complete milestone. Full remaining requirements stay active.
 - `6443719` — `docs(reliability): document HTTP lifecycle and remaining proof`
   - Documented the authenticated HTTP endpoint and graceful shutdown boundary; recorded the completed transport/lifecycle review fixes and outstanding P0/live gates.
   - Corrected fixture-complete wording so historical course passes cannot waive remaining milestone requirements. No runtime behavior changed.

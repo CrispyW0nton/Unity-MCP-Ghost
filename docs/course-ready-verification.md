@@ -19,7 +19,7 @@ The subsequent read-only implementation/test audit did **not** close all 16 orig
 - **Durable replacement — repaired in `23718cb`:** request, operation, compile, queue, scenario-transaction, security, Console and Play state now use a flushed atomic writer without delete-destination fallback. Fresh EditMode evidence passes 121/121, including real Windows sharing/cleanup failures and operation/request persistence regressions. The bounded writer fix does not establish all higher-level job/transaction recovery semantics or cross-platform certification.
 - **Queue crash window:** a non-idempotent claim recovered before its execution-store claim exists can receive `Claimed` with empty `ResponseJson`, publish an empty result and discard its payload. Recovery needs an explicit non-replayed terminal receipt. Cancellation/dead-letter retention and pre-read byte limits also need coverage.
 - **Partial script transactions:** source replacement followed by failed backup retention, source deletion followed by failed metadata movement, and restoration followed by failed metadata copying lack compensation. Backup-path containment also needs reparse-point coverage.
-- **Deadline/cancellation propagation:** dispatcher checks use one timestamp for an entire drain, allowing a later item to outlive its deadline. HTTP/WebSocket cancellation-before-execution requires direct queue-boundary proof, distinct from a client timeout.
+- **Deadline/cancellation propagation:** the dispatcher frozen-clock defect is repaired and verified below: elapsed drain time is rechecked for each item, including exact deadline equality. HTTP/WebSocket cancellation-before-execution still requires direct queue-boundary proof, distinct from a client timeout; this bounded fix does not certify that broader path.
 - **Queue authentication:** the current HMAC covers identity/method/deadline but not parameters. Add parameter-tampering rejection and bind canonical payload content on both sides.
 - **Remaining direct evidence:** real failed-test callback/repair rollback, import-start/no-op generation behavior, durable job reload recovery, allocation/decode cleanup, elapsed dispatcher budget, strict JSON edge cases, and cross-language risk-policy parity need assertion-level checks. Existing green test counts do not prove these untested paths.
 - **Course assertion specificity:** `m1-marvin-write-overloads` calls all three overloads but asserts only the final float log/text and aggregate call count; independently assert the string and integer outputs too. Seeded compile-failure definitions currently accept the generic `SCENARIO_COMPILE_FAILED` code without declaring the expected diagnostic source/message/code. Add generation- and fixture-file-specific diagnostic expectations so an unrelated compiler failure cannot count as successful seeded-defect coverage. These are source-observed validation gaps, not claims of a reproduced live failure.
@@ -51,6 +51,16 @@ Earlier pre-review evidence, retained for chronology:
 - Normal runs then passed EditMode 111/111 (`editmode-8f6dda9b-ce57-494f-831c-8971286de44e-results.xml`) and PlayMode 1/1 (`playmode-ac82cda6-ce65-468a-a572-84bf5882831e-results.xml`). These validate the runner, not expanded PlayMode coverage.
 
 ## Current verification receipts
+
+### Dispatcher deadline unit
+
+The dispatcher now checks each action against the drain-start UTC time plus current monotonic elapsed time. An action at or after its deadline expires through the existing callback without executing its mutation. The same elapsed-time source drives the drain budget; an internal optional test seam supplies deterministic time without changing normal callers.
+
+The first real Unity regression run failed exactly the new delayed-action case (121/122 passed; `editmode-2a28faa5-9a55-4fde-a26c-8319ff05ec32-results.xml`). The initial implementation then passed 123/123. Completed review `20260905-191957-ac729e43` retained one independently validated test finding: wall-clock sleeps did not prove exact equality and could produce false failures. The follow-up replaced them with deterministic one-tick-before, equal and one-tick-after assertions. The finding was applied inline because it was the only eligible item and both affected regions were already in the implementation context; no findings were skipped.
+
+Final `npm run test:unity:editmode` passed 124/124 with zero skips on Windows Unity 2022.3.62f1. The parent inspected all three boundary-case results in [the fresh XML](../test-project/Logs/editmode-f4ba2e07-98d5-4e3e-8f79-aded5f52315e-results.xml); [the matching Editor log](../test-project/Logs/unity-editmode-f4ba2e07-98d5-4e3e-8f79-aded5f52315e.log) is retained locally. The owned runner completed successfully. This is dispatcher/Editor evidence, not full network cancellation or course certification. The earlier red run remains failed evidence.
+
+Before committing, the parent reran `npm test`: 218/218 passed with zero failures, cancellations or skips. This replaces an earlier Node invocation whose final output was not retained; its missing process handle was confirmed before starting the new run.
 
 ### Repair recovery unit
 
