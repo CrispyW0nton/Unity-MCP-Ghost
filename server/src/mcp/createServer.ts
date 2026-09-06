@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { z } from "zod";
 import { ScenarioJobManager, type ScenarioMatrixDefinition } from "../scenario/ScenarioJobManager.js";
-import type { UnityClient } from "../unity/UnityClient.js";
+import { UnityRequestTimeoutError, type UnityClient } from "../unity/UnityClient.js";
 import { PackageVersion } from "../version.js";
 import { listOperationCatalog, operationEnabled, recordOperation, searchOperationCatalog, type OperationProfile, type ToolSchema } from "./operationCatalog.js";
 import { asObject, failureResponse, GhostToolResponseSchema, type GhostToolMeta, successResponse, type ToolDiagnostic } from "./toolResponse.js";
@@ -164,10 +164,11 @@ function registerTool<TSchema extends ToolSchema>(
   description: string,
   inputSchema: TSchema,
   meta: GhostToolMeta,
-  handler: ToolHandler<z.output<z.ZodObject<TSchema>>>
+  handler: ToolHandler<z.output<z.ZodObject<TSchema>>>,
+  outputSchema: ToolSchema = GhostToolResponseSchema
 ): void {
   const effectiveInputSchema = (meta.mutates ? { ...MutationRequestSchema, ...inputSchema } : inputSchema) as TSchema;
-  const catalogEntry = recordOperation(server, name, description, effectiveInputSchema, GhostToolResponseSchema, meta);
+  const catalogEntry = recordOperation(server, name, description, effectiveInputSchema, outputSchema, meta);
   if (!operationEnabled(catalogEntry, contextProfiles(server))) return;
 
   server.registerTool(
@@ -175,7 +176,7 @@ function registerTool<TSchema extends ToolSchema>(
     {
       description,
       inputSchema: effectiveInputSchema,
-      outputSchema: GhostToolResponseSchema,
+      outputSchema,
       annotations: annotationsFor(meta),
       _meta: {
         "unity-mcp-ghost/operationId": catalogEntry.operationId,
@@ -2451,13 +2452,13 @@ export function createMcpServer(context: ToolContext): McpServer {
   registerTool(
     server,
     "repair_apply_edits",
-    "Preview or apply explicit ranged C# repair edits, wait for Unity compile, revalidate diagnostics, and roll back on failure.",
+    "Preview or apply explicit ranged C# repair edits and verify compilation. Applying requires rollbackOnFailure=true. Returns result contract 2 with explicit compiler and recovery evidence.",
     {
       objective: z.string().default("Apply an explicit Unity C# repair safely."),
       scriptPath: z.string().min(1),
       edits: z.array(ScriptEditSchema).min(1),
       dryRun: DryRunSchema,
-      rollbackOnFailure: z.boolean().default(true),
+      rollbackOnFailure: z.boolean().default(true).describe("False is only valid for dry-run previews; applying repairs requires true."),
       compileTimeoutMs: z.number().int().positive().max(300000).default(30000),
       runTests: z.boolean().default(false),
       testMode: z.enum(["editmode", "playmode"]).default("editmode"),
@@ -2466,200 +2467,363 @@ export function createMcpServer(context: ToolContext): McpServer {
     { risk: "code-write", mutates: true, supportsDryRun: true, phase: 3, relatedResources: ["unity://console/errors", "unity://tests/{mode}"] },
     async (args) => {
       const startedAt = Date.now();
+      const steps: Record<string, unknown>[] = [];
+      const retainedBackups: Array<{ backupPath: string; backupMetaPath: string }> = [];
+      const transactionCleanup: Record<string, unknown>[] = [];
+      let originalSha256 = "";
+      let currentSha256: string | null = null;
+      let appliedSha256: string | null = null;
+      let applyRequestId: string | undefined;
+      let applyResult: Record<string, unknown> | null = null;
+      let sourceChanged = false;
+      let partialApply = false;
+      let unconfirmedApply: { requestId: string; outcomeUnknown: true } | null = null;
+      let unconfirmedTests: { requestId: string; operationId: string | null; outcomeUnknown: true } | null = null;
+      let unconfirmedRestore: { requestId: string; outcomeUnknown: true } | null = null;
+      let rollback: Record<string, unknown> | null = null;
+      let repairVerified = false;
+      let cleanupAttempted = false;
+      let compilerErrorCount = 0;
+      let scopedErrorCount = 0;
+      let testsFailed = false;
+
+      const hashFrom = (value: unknown): string | null => (typeof value === "string" && /^[a-f0-9]{64}$/i.test(value) ? value.toLowerCase() : null);
+      const producerError = (error: unknown, code: string, message: string): Error => {
+        const detail = asObject(error);
+        return Object.assign(new Error(stringValue(detail.message) || message), { code: stringValue(detail.code) || code, data: detail });
+      };
+      const requireOk = (receipt: Record<string, unknown>, code: string, message: string): void => {
+        if (receipt.ok !== true) throw producerError(receipt.error, code, message);
+      };
+      const recordStep = (name: string, receipt: Record<string, unknown>): void => {
+        steps.push({ name, ok: receipt.ok === true, data: receipt });
+      };
+      const retainBackup = (receipt: Record<string, unknown>): void => {
+        const backup = { backupPath: stringValue(receipt.backupPath), backupMetaPath: stringValue(receipt.backupMetaPath) };
+        if (
+          (backup.backupPath || backup.backupMetaPath) &&
+          !retainedBackups.some((entry) => entry.backupPath === backup.backupPath && entry.backupMetaPath === backup.backupMetaPath)
+        ) {
+          retainedBackups.push(backup);
+        }
+      };
+      const readHash = async (step: string): Promise<string> => {
+        currentSha256 = null;
+        const read = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
+        // Keep byte evidence in backups instead of duplicating full source text
+        // in every read-back receipt.
+        recordStep(step, { ...read, content: undefined });
+        requireOk(read, "SCRIPT_READ_FAILED", "Source read-back was not confirmed.");
+        currentSha256 = hashFrom(read.sha256);
+        if (!currentSha256) throw producerError(null, "SCRIPT_HASH_MISSING", "Source read-back returned no valid SHA-256.");
+        return currentSha256;
+      };
+      const compileAndValidate = async (generation: number, prefix = ""): Promise<void> => {
+        if (!Number.isInteger(generation) || generation <= 0) {
+          throw producerError(null, "COMPILE_GENERATION_MISSING", "The mutation returned no requested compile generation.");
+        }
+        const compile = await waitForUnityCompile(context, generation, args.compileTimeoutMs);
+        recordStep(`${prefix}compile_wait`, compile);
+        requireOk(compile, "REPAIR_COMPILE_FAILED", "The requested compile generation did not succeed.");
+        if (compile.status !== "success" || numberValue(compile.generation) !== generation) {
+          throw producerError(null, "COMPILE_GENERATION_MISMATCH", "Compilation did not confirm the requested generation.");
+        }
+        const validation = asObject(
+          await context.unity.request("script.validate", { path: args.scriptPath, requestedCompileGeneration: generation, limit: 100 })
+        );
+        recordStep(`${prefix}script_validate`, validation);
+        requireOk(validation, "SCRIPT_VALIDATE_FAILED", "Source validation failed.");
+        if (numberValue(validation.requestedCompileGeneration) !== generation) {
+          throw producerError(null, "COMPILE_GENERATION_MISMATCH", "Validation did not confirm the requested generation.");
+        }
+        const diagnostics = asObject(
+          await context.unity.request("compile.diagnostics_get", { severity: "error", pathFilter: args.scriptPath, generation, limit: 100 })
+        );
+        recordStep(`${prefix}compile_diagnostics_get`, diagnostics);
+        requireOk(diagnostics, "COMPILE_DIAGNOSTICS_FAILED", "Compiler diagnostics could not be verified.");
+        if (numberValue(diagnostics.generation) !== generation) {
+          throw producerError(null, "COMPILE_GENERATION_MISMATCH", "Compiler diagnostics did not confirm the requested generation.");
+        }
+        const errors = Math.max(diagnosticCount(validation), diagnosticCount(diagnostics));
+        if (!prefix) {
+          compilerErrorCount = diagnosticCount(diagnostics);
+          scopedErrorCount = errors;
+        }
+        if (errors > 0) throw producerError(null, "REPAIR_DIAGNOSTICS_FAILED", "The requested generation still has scoped compiler errors.");
+      };
+      const restoreOriginal = async (): Promise<Record<string, unknown>> => {
+        // Establish the attempt before any request; neither restoration nor its
+        // cleanup may be replayed by an exception handler.
+        rollback = { ok: false, expectedSha256: originalSha256, byteIdentical: false };
+        try {
+          const backup = retainedBackups[0];
+          if (!backup?.backupPath || !appliedSha256) {
+            throw producerError(null, "REPAIR_RECOVERY_MISSING", "Byte-preserving restoration requires the original backup and confirmed applied hash.");
+          }
+          const before = await readHash("rollback_source_read");
+          if (before !== appliedSha256) {
+            throw producerError(null, "REPAIR_SOURCE_CHANGED", "Source changed after the confirmed edit; preserve it and reconcile recovery before restoring.");
+          }
+          rollback.beforeSha256 = before;
+          const requestId = randomUUID();
+          unconfirmedRestore = { requestId, outcomeUnknown: true };
+          currentSha256 = null;
+          const writeBack = asObject(
+            await context.unity.request("script.restore", { path: args.scriptPath, ...backup, expectedSha256: before }, { requestId })
+          );
+          unconfirmedRestore = null;
+          rollback.writeBack = writeBack;
+          retainBackup(writeBack);
+          currentSha256 = hashFrom(writeBack.afterSha256);
+          recordStep("rollback_script_write", writeBack);
+          requireOk(writeBack, "SCRIPT_RESTORE_FAILED", "Source restoration was not confirmed.");
+          await compileAndValidate(numberValue(writeBack.requestedCompileGeneration), "rollback_");
+          const restoredSha256 = await readHash("rollback_hash_verify");
+          rollback.restoredSha256 = restoredSha256;
+          rollback.byteIdentical = restoredSha256 === originalSha256;
+          if (!rollback.byteIdentical) throw producerError(null, "ROLLBACK_HASH_MISMATCH", "Restored source bytes do not match the original hash.");
+          rollback.ok = true;
+        } catch (error) {
+          rollback.error = {
+            code: stringValue(asObject(error).code) || "REPAIR_RESTORE_FAILED",
+            message: error instanceof Error ? error.message : String(error)
+          };
+          if (unconfirmedRestore) rollback.unconfirmedRestore = unconfirmedRestore;
+        }
+        return rollback;
+      };
+      const completeTransactions = async (): Promise<void> => {
+        if (cleanupAttempted) return;
+        cleanupAttempted = true;
+        while (retainedBackups.length > 0) {
+          const backup = retainedBackups[0]!;
+          let receipt: Record<string, unknown>;
+          try {
+            receipt = asObject(await context.unity.request("script.transaction_complete", backup));
+          } catch (error) {
+            receipt = {
+              ok: false,
+              outcomeUnknown: true,
+              error: { code: stringValue(asObject(error).code) || "REPAIR_CLEANUP_FAILED", message: error instanceof Error ? error.message : String(error) }
+            };
+          }
+          transactionCleanup.push({ ...receipt, ...backup, ok: receipt.ok === true });
+          recordStep("script_transaction_complete", receipt);
+          if (receipt.ok !== true) return;
+          retainedBackups.shift();
+        }
+      };
+      const evidenceMode = (): string => {
+        if (unconfirmedApply) return "unknown";
+        if (partialApply) return "recovery-required";
+        if (rollback) return rollback.ok === true ? "rolled-back" : "restoration-unverified";
+        if (sourceChanged) return "applied";
+        return args.dryRun ? "dry-run" : "not-applied";
+      };
+      const evidence = (): Record<string, unknown> => {
+        const recoveryPathsUnverified = transactionCleanup.some((receipt) => receipt.ok !== true);
+        const hints: string[] = [];
+        if (retainedBackups.length > 0)
+          hints.push(
+            recoveryPathsUnverified
+              ? "Preserve the listed recovery backups; after failed cleanup their existence is unverified."
+              : "The listed recovery backups are retained; cleanup was not attempted."
+          );
+        if (unconfirmedApply)
+          hints.push(
+            `Apply outcome is unknown for request ${unconfirmedApply.requestId}. Reconcile it with Unity before any apply, restore, or cleanup; a read cannot rule out a late write. The missing receipt may contain additional recovery paths.`
+          );
+        if (partialApply)
+          hints.push(
+            `The apply transaction requires recovery. Reconcile request ${applyRequestId} and its retained producer receipt before any apply, restore, or cleanup.`
+          );
+        if (unconfirmedTests)
+          hints.push(
+            `Required test execution is unsettled for request ${unconfirmedTests.requestId}${unconfirmedTests.operationId ? `, operation ${unconfirmedTests.operationId}` : ""}. Reconcile the Test Runner before source restoration or cleanup.`
+          );
+        if (unconfirmedRestore)
+          hints.push(`Restoration outcome is unknown for request ${unconfirmedRestore.requestId}. Reconcile it before any further mutation or cleanup.`);
+        if (rollback?.ok === false && !unconfirmedRestore)
+          hints.push("Restoration was not verified. Inspect the original and current hashes and all backup bytes before manual recovery.");
+        return {
+          resultContractVersion: 2,
+          consoleDiagnosticsChecked: false,
+          objective: args.objective,
+          scriptPath: args.scriptPath,
+          editCount: args.edits.length,
+          mode: evidenceMode(),
+          originalSha256,
+          currentSha256,
+          finalSha256: repairVerified ? currentSha256 : null,
+          applyRequestId,
+          applyResult,
+          unconfirmedApply,
+          unconfirmedTests,
+          unconfirmedRestore,
+          repairVerified,
+          scopedErrorCount,
+          compilerErrorCount,
+          consoleErrorCount: null,
+          testsFailed,
+          rollback,
+          steps,
+          transactionCleanup,
+          retainedBackups: [...retainedBackups],
+          recoveryPathsUnverified,
+          recoveryHint: hints.length ? hints.join(" ") : null
+        };
+      };
       try {
-        const steps: unknown[] = [];
+        if (!args.dryRun && !args.rollbackOnFailure) {
+          throw producerError(null, "REPAIR_ROLLBACK_REQUIRED", "repair_apply_edits requires rollbackOnFailure=true when applying a repair.");
+        }
         const script = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
-        const originalContent = stringValue(script.content);
-        steps.push({ name: "script_read_backup", ok: script.ok, data: { path: args.scriptPath, originalBytes: Buffer.byteLength(originalContent, "utf8") } });
+        recordStep("script_read_backup", { ...script, content: undefined });
+        requireOk(script, "SCRIPT_READ_FAILED", "Cannot read the original source.");
+        originalSha256 = hashFrom(script.sha256) ?? "";
+        if (typeof script.content !== "string" || !originalSha256) {
+          throw producerError(null, "REPAIR_ORIGINAL_UNVERIFIED", "Cannot begin repair without original source content and a valid byte hash.");
+        }
+        currentSha256 = originalSha256;
 
         const dryRunPreview = asObject(
           await context.unity.request("script.apply_edits", {
             path: args.scriptPath,
             edits: args.edits,
-            expectedSha256: stringValue(script.sha256),
+            expectedSha256: originalSha256,
             dryRun: true
           })
         );
-        steps.push({ name: "script_apply_edits_dry_run", ok: dryRunPreview.ok, data: dryRunPreview });
+        recordStep("script_apply_edits_dry_run", dryRunPreview);
+        requireOk(dryRunPreview, "REPAIR_PREVIEW_FAILED", "The explicit edit preview failed.");
 
         if (args.dryRun) {
           return successResponse(
             "repair_apply_edits completed dry-run preview.",
             {
               ok: true,
-              mode: "dry-run",
-              objective: args.objective,
-              scriptPath: args.scriptPath,
-              editCount: args.edits.length,
-              steps,
+              ...evidence(),
               nextActions: ["Review the dry-run preview.", "Rerun with dryRun=false only after accepting the ranged edits."]
             },
             startedAt
           );
         }
 
-        const applyResult = asObject(
-          await context.unity.request("script.apply_edits", {
-            path: args.scriptPath,
-            edits: args.edits,
-            expectedSha256: stringValue(script.sha256),
-            dryRun: false
-          })
-        );
-        steps.push({ name: "script_apply_edits", ok: applyResult.ok, data: applyResult });
-
-        const requestedCompileGeneration = numberValue(applyResult.requestedCompileGeneration);
-        if (requestedCompileGeneration <= 0) {
-          throw new Error("script.apply_edits did not return requestedCompileGeneration.");
-        }
-        const compileStatus = await waitForUnityCompile(context, requestedCompileGeneration, args.compileTimeoutMs);
-        steps.push({ name: "compile_wait", ok: compileStatus.ok, data: compileStatus });
-
-        const validation = asObject(
-          await context.unity.request("script.validate", {
-            path: args.scriptPath,
-            requestedCompileGeneration,
-            limit: 100
-          })
-        );
-        steps.push({ name: "script_validate", ok: validation.ok, data: validation });
-
-        const compileDiagnostics = asObject(
-          await context.unity.request("compile.diagnostics_get", {
-            severity: "error",
-            pathFilter: args.scriptPath,
-            generation: requestedCompileGeneration,
-            limit: 100
-          })
-        );
-        steps.push({ name: "compile_diagnostics_get", ok: compileDiagnostics.ok, data: compileDiagnostics });
-
-        const diagnostics = asObject(
-          await context.unity.request("console.diagnostics_get", {
-            severity: "error",
-            pathFilter: args.scriptPath,
-            limit: 100
-          })
-        );
-        steps.push({ name: "console_diagnostics_get", ok: diagnostics.ok, data: diagnostics });
-
-        let tests: Record<string, unknown> | null = null;
-        if (args.runTests) {
-          const testStart = asObject(
-            await context.unity.request("tests.run", {
-              mode: args.testMode,
-              filter: args.testFilter
-            })
-          );
-          tests = typeof testStart.operationId === "string" ? await pollOperation(context, testStart.operationId, 120000, 500) : testStart;
-          steps.push({ name: "tests_run", ok: tests.ok, data: tests });
-        }
-
-        const scopedErrorCount = Math.max(diagnosticCount(validation), diagnosticCount(diagnostics));
-        const compilerErrorCount = diagnosticCount(compileDiagnostics);
-        const effectiveErrorCount = Math.max(scopedErrorCount, compilerErrorCount);
-        const testState = tests ? asObject(tests.state) : {};
-        const testsFailed = tests ? testState.status !== "success" || numberValue(testState.failed) > 0 || tests.status === "failed" : false;
-        const shouldRollback = args.rollbackOnFailure && (compileStatus.ok === false || effectiveErrorCount > 0 || testsFailed);
-        let rollback: Record<string, unknown> | null = null;
-
-        if (shouldRollback) {
-          const backupPath = stringValue(applyResult.backupPath);
-          const writeBack = backupPath
-            ? asObject(
-                await context.unity.request("script.restore", {
-                  path: args.scriptPath,
-                  backupPath,
-                  backupMetaPath: stringValue(applyResult.backupMetaPath),
-                  expectedSha256: stringValue(applyResult.afterSha256)
-                })
-              )
-            : asObject(
-                await context.unity.request("script.write", {
-                  path: args.scriptPath,
-                  content: originalContent,
-                  overwrite: true,
-                  expectedSha256: stringValue(applyResult.afterSha256),
-                  dryRun: false
-                })
-              );
-          const rollbackGeneration = numberValue(writeBack.requestedCompileGeneration);
-          if (rollbackGeneration <= 0) {
-            throw new Error("rollback script.write did not return requestedCompileGeneration.");
-          }
-          const rollbackCompile = await waitForUnityCompile(context, rollbackGeneration, args.compileTimeoutMs);
-          const rollbackValidation = asObject(
-            await context.unity.request("script.validate", {
+        applyRequestId = randomUUID();
+        unconfirmedApply = { requestId: applyRequestId, outcomeUnknown: true };
+        currentSha256 = null;
+        applyResult = asObject(
+          await context.unity.request(
+            "script.apply_edits",
+            {
               path: args.scriptPath,
-              requestedCompileGeneration: rollbackGeneration,
-              limit: 100
-            })
+              edits: args.edits,
+              expectedSha256: originalSha256,
+              dryRun: false
+            },
+            { requestId: applyRequestId }
+          )
+        );
+        unconfirmedApply = null;
+        retainBackup(applyResult);
+        recordStep("script_apply_edits", applyResult);
+        const applyError = asObject(applyResult.error);
+        partialApply =
+          applyResult.ok !== true &&
+          (retainedBackups.length > 0 ||
+            ["incomplete", "unknown"].includes(stringValue(applyError.restorationStatus)) ||
+            arrayValue(applyError.recoveryFiles).length > 0 ||
+            stringValue(applyError.recoveryDirectory).length > 0);
+        currentSha256 = hashFrom(applyResult.afterSha256);
+        requireOk(applyResult, "REPAIR_APPLY_FAILED", "The explicit edit was not confirmed.");
+        // Existing-script writes retain the original source even for unchanged
+        // bytes. Metadata paths may be empty when the producer did not change it.
+        if (hashFrom(applyResult.beforeSha256) !== originalSha256 || !currentSha256 || !stringValue(applyResult.backupPath).trim()) {
+          partialApply = true;
+          throw producerError(
+            null,
+            "REPAIR_APPLY_RECEIPT_INVALID",
+            "The apply receipt must confirm the original and resulting byte hashes and the original-source backup. Preserve its recovery material and reconcile the transaction."
           );
-          const rollbackRead = asObject(await context.unity.request("script.read", { path: args.scriptPath }));
-          const byteIdentical = stringValue(rollbackRead.sha256) === stringValue(script.sha256);
-          const cleanup = asObject(
-            await context.unity.request("script.transaction_complete", {
-              backupPath,
-              backupMetaPath: stringValue(applyResult.backupMetaPath)
-            })
-          );
-          const restoreCleanup = asObject(
-            await context.unity.request("script.transaction_complete", {
-              backupPath: stringValue(writeBack.backupPath),
-              backupMetaPath: stringValue(writeBack.backupMetaPath)
-            })
-          );
-          rollback = {
-            writeBack,
-            compile: rollbackCompile,
-            validation: rollbackValidation,
-            readBack: rollbackRead,
-            expectedSha256: stringValue(script.sha256),
-            restoredSha256: stringValue(rollbackRead.sha256),
-            byteIdentical,
-            cleanup,
-            restoreCleanup
-          };
-          steps.push({ name: "rollback_script_write", ok: writeBack.ok, data: writeBack });
-          steps.push({ name: "rollback_compile_wait", ok: rollbackCompile.ok, data: rollbackCompile });
-          steps.push({ name: "rollback_script_validate", ok: rollbackValidation.ok, data: rollbackValidation });
-          steps.push({ name: "rollback_hash_verify", ok: byteIdentical, data: rollback });
-        } else if (effectiveErrorCount === 0 && compileStatus.ok !== false && !testsFailed) {
-          const cleanup = asObject(
-            await context.unity.request("script.transaction_complete", {
-              backupPath: stringValue(applyResult.backupPath),
-              backupMetaPath: stringValue(applyResult.backupMetaPath)
-            })
-          );
-          steps.push({ name: "script_transaction_complete", ok: cleanup.ok, data: cleanup });
+        }
+        sourceChanged = true;
+        appliedSha256 = currentSha256;
+        await compileAndValidate(numberValue(applyResult.requestedCompileGeneration));
+
+        if (args.runTests) {
+          const requestId = randomUUID();
+          unconfirmedTests = { requestId, operationId: null, outcomeUnknown: true };
+          let testStart: Record<string, unknown>;
+          try {
+            testStart = asObject(await context.unity.request("tests.run", { mode: args.testMode, filter: args.testFilter }, { requestId }));
+          } catch (error) {
+            // Only the bridge client's typed proof of non-execution makes this
+            // start failure safe to roll back. Generic errors remain unsettled.
+            if (error instanceof UnityRequestTimeoutError && error.outcomeUnknown === false) {
+              unconfirmedTests = null;
+              testsFailed = true;
+              recordStep("tests_start", { ok: false, requestId, outcomeUnknown: false, error: { code: error.code, message: error.message } });
+            }
+            throw error;
+          }
+          recordStep("tests_start", testStart);
+          unconfirmedTests.operationId = stringValue(testStart.operationId) || null;
+          const tests = unconfirmedTests.operationId ? await pollOperation(context, unconfirmedTests.operationId, 120000, 500) : testStart;
+          recordStep("tests_run", tests);
+          const state = asObject(tests.state);
+          if (!["success", "failed", "cancelled", "timeout", "aborted"].includes(stringValue(state.status))) {
+            // pollOperation can return a still-running operation at its deadline.
+            // That does not settle Unity's runner or authorize rollback.
+            throw producerError(tests.error, "REPAIR_TESTS_UNSETTLED", "Required tests have no terminal receipt; execution remains unsettled.");
+          }
+          unconfirmedTests = null;
+          testsFailed = tests.ok !== true || state.status !== "success" || numberValue(state.failed) > 0 || tests.status === "failed";
+          if (testsFailed) throw producerError(tests.error, "REPAIR_TESTS_FAILED", "Required tests did not complete successfully.");
         }
 
+        const finalSha256 = await readHash("repair_hash_verify");
+        if (!appliedSha256 || finalSha256 !== appliedSha256) {
+          throw producerError(null, "REPAIR_HASH_MISMATCH", "Final source bytes do not match the confirmed edit receipt.");
+        }
+        repairVerified = true;
+        await completeTransactions();
+        const failedCleanup = transactionCleanup.find((receipt) => receipt.ok !== true);
+        if (failedCleanup) throw producerError(failedCleanup.error, "REPAIR_CLEANUP_FAILED", "Repair was verified, but backup cleanup was not confirmed.");
         return successResponse(
-          shouldRollback ? "repair_apply_edits applied edits then rolled back after validation failure." : "repair_apply_edits applied edits and revalidated.",
-          {
-            ok: !shouldRollback && scopedErrorCount === 0 && compileStatus.ok !== false && !testsFailed,
-            mode: shouldRollback ? "rolled-back" : "applied",
-            objective: args.objective,
-            scriptPath: args.scriptPath,
-            editCount: args.edits.length,
-            scopedErrorCount: effectiveErrorCount,
-            compilerErrorCount,
-            consoleErrorCount: diagnosticCount(diagnostics),
-            testsFailed,
-            rollback,
-            steps,
-            nextActions: shouldRollback
-              ? ["Inspect validation diagnostics and request a new patch_propose pass before trying another edit."]
-              : ["Run repair_loop_run or tests_run for broader project validation if this script participates in gameplay flows."]
-          },
-          startedAt,
-          {
-            confidence: shouldRollback ? 0.4 : 0.9
-          }
+          "repair_apply_edits applied edits and verified the current source and compiler generation.",
+          { ok: true, ...evidence() },
+          startedAt
         );
       } catch (error) {
-        return failureResponse("repair_apply_edits failed", error, startedAt);
+        if (sourceChanged && !partialApply && !unconfirmedApply && !unconfirmedTests && !repairVerified && !rollback) rollback = await restoreOriginal();
+        if (rollback?.ok === true && !cleanupAttempted) await completeTransactions();
+        return failureResponse("repair_apply_edits failed", error, startedAt, [], {
+          code: rollback?.ok === false ? "REPAIR_ROLLBACK_FAILED" : undefined,
+          requestId:
+            unconfirmedApply?.requestId ??
+            unconfirmedTests?.requestId ??
+            (stringValue(asObject(rollback?.unconfirmedRestore).requestId) || stringValue(asObject(error).requestId) || applyRequestId),
+          warnings:
+            unconfirmedApply || unconfirmedTests || unconfirmedRestore || partialApply
+              ? ["Unity execution or transaction recovery is unsettled. Reconcile the retained evidence before further mutation or cleanup."]
+              : undefined,
+          data: evidence()
+        });
       }
+    },
+    {
+      ...GhostToolResponseSchema,
+      data: z
+        .object({
+          resultContractVersion: z.literal(2).describe("Explicit repair result contract version; independent of the operation catalog version."),
+          consoleDiagnosticsChecked: z.literal(false).describe("Historical Console diagnostics are not checked by this compiler-generation repair."),
+          consoleErrorCount: z.null().describe("Unchecked, not a count of zero."),
+          mode: z.enum(["unknown", "recovery-required", "rolled-back", "restoration-unverified", "applied", "dry-run", "not-applied"]),
+          editCount: z.number().int().positive(),
+          repairVerified: z.boolean()
+        })
+        .passthrough()
+        .nullable()
     }
   );
 

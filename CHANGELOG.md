@@ -2,6 +2,11 @@
 
 All notable changes to Unity MCP Ghost are documented here. The project follows Semantic Versioning while it remains pre-1.0.
 
+## Unreleased - local Course-Ready candidate
+
+- `repair_apply_edits` result contract 2 makes incomplete/unknown receipts and failed verification explicit, retains recovery evidence, and requires rollback for non-dry-run repairs. Console diagnostics are explicitly unchecked (`consoleDiagnosticsChecked: false`, `consoleErrorCount: null`). See [migration and recovery guidance](docs/repair-result-contract-v2.md).
+- The complete local release-candidate verification is still in progress. The historical fixture-complete label below is superseded by this qualification: neither configured CI nor controlled-bridge tests certify the unfinished integrated milestone. Remote CI and real course-project certification remain pending.
+
 ## [0.2.0-rc.1] - 2026-09-04
 
 ### Added

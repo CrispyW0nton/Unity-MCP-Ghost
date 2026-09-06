@@ -66,6 +66,8 @@ npm run smoke -- --unity-project-path C:/Path/To/UnityProject --unity-port 6400 
 
 Run the project-neutral repair-loop smoke against an open repository fixture:
 
+Explicit repair callers should read the [result contract 2 migration](docs/repair-result-contract-v2.md): applied repairs require rollback, unchecked Console diagnostics are not zero errors, and unknown outcomes must not be replayed.
+
 ```bash
 npm run phase3:repair-smoke -- --unity-project-path C:/Path/To/UnityProject --request-timeout-ms 30000
 ```
