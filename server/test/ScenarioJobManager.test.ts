@@ -345,30 +345,60 @@ describe("durable scenario matrix jobs", () => {
     });
   }
 
-  it("does not report a known operation missing during an atomic job-file replacement", async () => {
-    const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-read-race-"));
-    const fake = new FakeScenarioUnity();
-    const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+  for (const missingReads of [1, 5, 6]) {
+    it(`bounds job-file retries after ${missingReads} observed missing reads`, async (context) => {
+      const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-read-race-"));
+      const fake = new FakeScenarioUnity();
+      const manager = new ScenarioJobManager({ unity: fake as unknown as UnityClient, projectPath, projectId: "project-1", editorInstanceId: "editor-1" });
+      const originalRead = fs.readFile;
+      let restoreReadMock: (() => void) | undefined;
+      try {
+        const started = await manager.start({ name: "read race", scenePath: "Assets/Fixture.unity", cases: [{ id: "green" }] });
+        const operationId = String(started.operationId);
+        await waitForTerminal(manager, operationId);
+        const jobPath = join(projectPath, "Library", "UnityMcpGhost", "scenario-jobs", `${operationId}.json`);
+        const replacementPath = `${jobPath}.replacement`;
+        const original = await readFile(jobPath, "utf8");
+        await rename(jobPath, replacementPath);
+        let failedReads = 0;
+        let successfulReads = 0;
+        const interceptedRead = context.mock.method(fs, "readFile", async (...args: Parameters<typeof readFile>) => {
+          if (args[0] !== jobPath) return originalRead(...args);
+          try {
+            const value = await originalRead(...args);
+            successfulReads++;
+            return value;
+          } catch (error) {
+            assert.equal((error as NodeJS.ErrnoException).code, "ENOENT");
+            failedReads++;
+            // A timer cannot guarantee when asynchronous restoration finishes.
+            // Restore after the observed I/O failure, before the next real retry.
+            if (failedReads === missingReads && missingReads < 6) await rename(replacementPath, jobPath);
+            throw error;
+          }
+        });
+        restoreReadMock = () => interceptedRead.mock.restore();
+        syncBuiltinESMExports();
 
-    try {
-      const started = await manager.start({ name: "read race", scenePath: "Assets/Fixture.unity", cases: [{ id: "green" }] });
-      const operationId = String(started.operationId);
-      await waitForTerminal(manager, operationId);
-      const jobPath = join(projectPath, "Library", "UnityMcpGhost", "scenario-jobs", `${operationId}.json`);
-      const replacementPath = `${jobPath}.replacement`;
-      await rename(jobPath, replacementPath);
-      const restore = new Promise<void>((resolveRestore, rejectRestore) => {
-        setTimeout(() => void rename(replacementPath, jobPath).then(resolveRestore, rejectRestore), 25);
-      });
-
-      const observed = await manager.get(operationId);
-      await restore;
-      assert.equal(observed.operationId, operationId);
-      assert.equal(observed.status, "success", JSON.stringify(observed.error));
-    } finally {
-      await removeTestProject(projectPath);
-    }
-  });
+        if (missingReads < 6) {
+          const observed = await manager.get(operationId);
+          assert.equal(observed.operationId, operationId);
+          assert.equal(observed.status, "success", JSON.stringify(observed.error));
+          assert.equal(successfulReads, 1);
+          assert.equal(await originalRead(jobPath, "utf8"), original);
+        } else {
+          await assert.rejects(manager.get(operationId), { code: "SCENARIO_OPERATION_NOT_FOUND" });
+          assert.equal(successfulReads, 0);
+          assert.equal(await originalRead(replacementPath, "utf8"), original);
+        }
+        assert.equal(failedReads, missingReads);
+      } finally {
+        restoreReadMock?.();
+        syncBuiltinESMExports();
+        await removeTestProject(projectPath);
+      }
+    });
+  }
 
   it("rejects a second scenario while the project/editor lease is active", async () => {
     const projectPath = await mkdtemp(join(tmpdir(), "unity-mcp-scenario-lease-"));
