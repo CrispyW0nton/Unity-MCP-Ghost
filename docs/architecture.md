@@ -56,7 +56,9 @@ Library/UnityMcpGhost/queue/pending/*.json
 Library/UnityMcpGhost/queue/results/*.json
 ```
 
-When the TypeScript server is started with `--unity-project-path`, failed socket requests can fall back to the durable queue. Queue requests contain an HMAC proof bound to request, method, deadline, idempotency key, project, and editor identity; they do not contain the raw bridge token. This keeps game-development loops alive while Unity recompiles scripts or reloads assemblies without weakening project pinning.
+When the TypeScript server is started with `--unity-project-path`, failed socket requests can fall back to the durable queue. Queue files use the version 2 envelope `{authProofVersion: 2, requestJson, authProof}`. `requestJson` is the exact serialized inner JSON-RPC text, including nested parameters, replay metadata and project/editor identity. The HMAC-SHA256 input is the UTF-8 prefix `UnityMcpGhost.Queue.v2`, a zero byte, then the exact UTF-8 inner text; the key is the lowercase 64-character token text, not hex-decoded bytes. Both pending and stale claims authenticate before inner parsing. The token itself is not stored in queue files.
+
+Upgrade the Node producer and UPM receiver together. Legacy metadata-only proofs are rejected, not automatically rewritten or re-signed. Retain old claims and recovery evidence until their previous outcomes are reconciled. See [SECURITY.md](../SECURITY.md#durable-queue-request-authentication) for byte limits and the trust boundary, and [the release checklist](release-checklist.md#installation-and-migration) for upgrade handling. Queue authentication alone does not certify every reload, cancellation or stale-claim recovery path.
 
 ## Initial Tool Slice
 

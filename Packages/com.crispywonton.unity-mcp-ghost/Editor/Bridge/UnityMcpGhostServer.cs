@@ -263,7 +263,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private async Task<string> DispatchDurably(UnityMcpRequest request, string rawRequest)
         {
-            var authorization = BridgeSecurity.AuthorizeRequest(request, false);
+            var authorization = BridgeSecurity.AuthorizeRequest(request);
             if (!authorization.Allowed)
             {
                 return BridgeSecurity.AuthorizationError(request, authorization);

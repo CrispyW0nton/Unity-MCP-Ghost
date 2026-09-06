@@ -1,0 +1,6 @@
+{
+  "description": "Public, non-secret queue v2 known-answer vector; exact requestJson UTF-8 with Unicode, control escapes, exponents, negative zero, nested JSON and a date-like string.",
+  "token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "requestJson": "{\"jsonrpc\":\"2.0\",\"id\":\"vector-☃\",\"requestId\":\"vector-☃\",\"method\":\"health\",\"params\":{\"path\":\"Assets/雪🦊.txt\",\"content\":\"quote:\\\" slash:\\/ backslash:\\\\ null:\\u0000\\n\\t\\b\\f\\r\",\"scientific\":1.25e+3,\"negativeZero\":-0,\"date\":\"2026-09-05T00:00:00Z\",\"operations\":[{\"method\":\"health\",\"params\":{\"dryRun\":true,\"nested\":{\"values\":[null,true,false,1e-7]}}}]},\"idempotencyKey\":\"vector-key\",\"idempotent\":false,\"deadlineUnixMs\":2000000000000,\"projectId\":\"unity-project-vector\",\"editorInstanceId\":\"editor-vector\"}",
+  "authProof": "fe07642bff1dd5bee0171c157c6c862d7f9cbac6c88b808c8ee3c80751f023eb"
+}

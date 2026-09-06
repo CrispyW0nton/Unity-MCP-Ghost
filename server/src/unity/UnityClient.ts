@@ -1,7 +1,8 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import WebSocket from "ws";
+import { encodeQueueRequest } from "./queueRequestEnvelope.js";
 
 export interface UnityRpcResponse<T = unknown> {
   jsonrpc: "2.0";
@@ -25,7 +26,6 @@ interface UnityRpcRequest {
   deadlineUnixMs: number;
   projectId: string;
   editorInstanceId: string;
-  authProof: string;
 }
 
 export interface UnityClientOptions {
@@ -88,7 +88,7 @@ export class UnityClient {
       this.throwIfDisposed();
       const token = await this.readToken();
       this.throwIfDisposed();
-      const payload = createPayload("health", {}, randomUUID(), this.options.requestTimeoutMs, this.options.projectId, this.options.editorInstanceId, token);
+      const payload = createPayload("health", {}, randomUUID(), this.options.requestTimeoutMs, this.options.projectId, this.options.editorInstanceId);
       await this.requestViaHttp("health", payload, this.options.requestTimeoutMs, token, this.lifetime.signal);
       return true;
     } catch {
@@ -103,7 +103,7 @@ export class UnityClient {
     const timeoutMs = options.timeoutMs ?? this.options.requestTimeoutMs;
     const token = await this.readToken();
     this.throwIfDisposed();
-    const payload = createPayload(method, params, id, timeoutMs, this.options.projectId, this.options.editorInstanceId, token, options.idempotencyKey);
+    const payload = createPayload(method, params, id, timeoutMs, this.options.projectId, this.options.editorInstanceId, options.idempotencyKey);
 
     try {
       return withRequestMetadata(
@@ -134,7 +134,7 @@ export class UnityClient {
         }
         try {
           return withRequestMetadata(
-            await this.requestViaQueue<T>(payload, method, timeoutMs, signal),
+            await this.requestViaQueue<T>(payload, method, timeoutMs, token, signal),
             id,
             this.options.projectId,
             this.options.editorInstanceId
@@ -260,12 +260,13 @@ export class UnityClient {
     });
   }
 
-  private async requestViaQueue<T>(payload: UnityRpcRequest, method: string, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+  private async requestViaQueue<T>(payload: UnityRpcRequest, method: string, timeoutMs: number, token: string, signal?: AbortSignal): Promise<T> {
     const queueDir = this.options.queueDir;
     if (!queueDir) {
       throw new Error("Unity durable queue is not configured.");
     }
 
+    const envelope = encodeQueueRequest(JSON.stringify(payload), token);
     const pendingDir = join(queueDir, "pending");
     const resultsDir = join(queueDir, "results");
     const cancellationDir = join(queueDir, "cancellations");
@@ -275,7 +276,7 @@ export class UnityClient {
     const tempPath = `${pendingPath}.${randomUUID()}.tmp`;
     const resultPath = join(resultsDir, `${queueKey}.json`);
 
-    await writeFile(tempPath, JSON.stringify(payload), "utf8");
+    await writeFile(tempPath, envelope, "utf8");
     await rename(tempPath, pendingPath);
 
     const startedAt = Date.now();
@@ -428,7 +429,6 @@ function createPayload(
   timeoutMs: number,
   projectId: string,
   editorInstanceId: string,
-  token: string,
   idempotencyKey?: string
 ): UnityRpcRequest {
   const payload: UnityRpcRequest = {
@@ -441,12 +441,8 @@ function createPayload(
     idempotent: isReplaySafe(method, params),
     deadlineUnixMs: Date.now() + timeoutMs,
     projectId,
-    editorInstanceId,
-    authProof: ""
+    editorInstanceId
   };
-  payload.authProof = createHmac("sha256", token)
-    .update(`${payload.id}\n${payload.method}\n${payload.deadlineUnixMs}\n${payload.idempotencyKey}\n${payload.projectId}\n${payload.editorInstanceId}`, "utf8")
-    .digest("hex");
   return payload;
 }
 

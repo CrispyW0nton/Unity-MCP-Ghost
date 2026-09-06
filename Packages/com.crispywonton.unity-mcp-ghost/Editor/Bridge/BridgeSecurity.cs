@@ -161,15 +161,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return FixedTimeEquals(authorizationHeader.Substring(prefix.Length), Token);
         }
 
-        public static string CreateQueueProof(UnityMcpRequest request)
-        {
-            using (var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(Token)))
-            {
-                return BytesToHex(hmac.ComputeHash(Encoding.UTF8.GetBytes(ProofPayload(request))));
-            }
-        }
-
-        public static BridgeAuthorizationResult AuthorizeRequest(UnityMcpRequest request, bool requireQueueProof)
+        // Call only after the transport has authenticated the bearer or queue envelope.
+        public static BridgeAuthorizationResult AuthorizeRequest(UnityMcpRequest request)
         {
             if (request == null)
             {
@@ -191,11 +184,6 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             {
                 return BridgeAuthorizationResult.Deny("EDITOR_INSTANCE_ID_MISMATCH", "The request is pinned to a different Unity editor instance.");
             }
-            if (requireQueueProof && !FixedTimeEquals(request.AuthProof, CreateQueueProof(request)))
-            {
-                return BridgeAuthorizationResult.Deny("AUTHENTICATION_FAILED", "The durable queue request proof is missing or invalid.");
-            }
-
             return AuthorizeCapability(request.Method, request.RawJson, Settings);
         }
 
@@ -463,17 +451,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static extern int chmod(string pathname, uint mode);
 #endif
 
-        private static string ProofPayload(UnityMcpRequest request)
-        {
-            return (request.Id ?? string.Empty) + "\n"
-                + (request.Method ?? string.Empty) + "\n"
-                + request.DeadlineUnixMs.ToString(CultureInfo.InvariantCulture) + "\n"
-                + (request.IdempotencyKey ?? string.Empty) + "\n"
-                + (request.ProjectId ?? string.Empty) + "\n"
-                + (request.EditorInstanceId ?? string.Empty);
-        }
-
-        private static bool FixedTimeEquals(string left, string right)
+        internal static bool FixedTimeEquals(string left, string right)
         {
             var leftBytes = Encoding.UTF8.GetBytes(left ?? string.Empty);
             var rightBytes = Encoding.UTF8.GetBytes(right ?? string.Empty);
@@ -510,7 +488,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
         }
 
-        private static string BytesToHex(byte[] bytes)
+        internal static string BytesToHex(byte[] bytes)
         {
             var builder = new StringBuilder(bytes.Length * 2);
             foreach (var value in bytes)

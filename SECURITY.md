@@ -8,7 +8,7 @@ Security fixes are applied to the current development branch and `0.2.x` release
 
 Ghost controls a live Unity Editor and can change scripts, assets, scenes, packages, and runtime state. Its boundary is the signed-in operating-system user running Unity and the MCP server. It is not a sandbox against another process running as that same user, an administrator/root process, a malicious Unity package, or malicious code already loaded into the project.
 
-The bridge binds only to loopback. HTTP and WebSocket requests require a cryptographically random per-project bearer token and exact project/editor instance IDs. Browser requests carrying an `Origin` header are rejected and Ghost does not enable CORS. The durable queue uses an HMAC proof bound to request metadata instead of persisting the raw token in queue files.
+The bridge binds only to loopback. HTTP and WebSocket requests require a cryptographically random per-project bearer token and exact project/editor instance IDs. Browser requests carrying an `Origin` header are rejected and Ghost does not enable CORS. The durable queue uses a version 2 HMAC envelope that authenticates the exact serialized request, including all parameters and replay-related metadata, instead of persisting the raw token in queue files.
 
 Native remote binding is deliberately unsupported. For remote use, place an authenticated encrypted tunnel in front of the loopback endpoint and keep the Unity bridge loopback-only. Never expose the bridge port directly to a LAN or the internet.
 
@@ -42,6 +42,14 @@ The bridge enforces JSON content type and POST method for HTTP; aggregate byte l
 The optional MCP-facing Streamable HTTP endpoint is separate from the Unity bridge. It also accepts only literal-loopback binding and requires the project's owner-only token plus exact project/editor headers. It rejects browser `Origin` requests, enables no CORS, and bounds bodies, results, admission and response delivery. Tool profiles control discovery, not authorization. Stdio remains the default. See the README for the explicit HTTP flags and credential handling; never put a token in a command-line argument.
 
 HTTP disconnect/timeout is not permission to cancel or replay a mutation. Graceful CLI shutdown closes HTTP admission, drains actual handlers and scenario restoration/finalization, and only then disposes Unity. A failed drain prevents disposal; unresolved finalization is reported with retained recovery state. Force-killing the process bypasses graceful cleanup and requires reconciliation of durable operations before retrying mutations.
+
+### Durable queue request authentication
+
+Queue files contain exactly `authProofVersion: 2`, `requestJson` and `authProof`. The HMAC-SHA256 input is the UTF-8 domain prefix `UnityMcpGhost.Queue.v2` followed by a zero byte and the exact UTF-8 bytes of `requestJson`. The key is the existing lowercase 64-character token text, not its hex-decoded bytes. Receivers authenticate before parsing the inner JSON-RPC request; they do not reconstruct or independently canonicalize its parameters. Both new pending requests and recovered stale claims use this boundary, then undergo the same project/editor and capability checks as other transports.
+
+The inner request is limited to 1 MiB of UTF-8; the outer envelope is limited to 6 MiB plus 1 KiB. The larger outer bound allows JSON string escaping without permitting an unbounded file read. Invalid UTF-8, duplicate or unexpected outer properties, invalid proofs and unsupported proof versions fail with typed errors. HTTP and WebSocket still carry ordinary JSON-RPC bodies authenticated by their bearer token.
+
+Legacy metadata-only proofs are rejected; Node and UPM must be upgraded together. This protects queue request integrity, not confidentiality or isolation from the same OS user, who can read the token. Queue files and deadletters can contain source text and must remain local and untracked. This change does not certify cancellation-marker authentication, all stale-claim recovery paths, or the full release milestone; see the verification map for remaining gates.
 
 ## Reporting a vulnerability
 

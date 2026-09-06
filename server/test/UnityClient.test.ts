@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { WebSocketServer } from "ws";
-import { UnityClient, UnityRequestTimeoutError } from "../src/unity/UnityClient.js";
+import { UnityClient, UnityCommandError, UnityRequestTimeoutError } from "../src/unity/UnityClient.js";
+import { MAX_QUEUE_REQUEST_BYTES } from "../src/unity/queueRequestEnvelope.js";
 
 describe("UnityClient durable request semantics", () => {
   const token = "a".repeat(64);
@@ -48,10 +49,9 @@ describe("UnityClient durable request semantics", () => {
       assert.equal(observed.projectId, "unity-project-test");
       assert.equal(observed.editorInstanceId, "editor-test");
       assert.equal(authorization, `Bearer ${token}`);
-      const expectedProof = createHmac("sha256", token)
-        .update(`request-123\nhealth\n${observed.deadlineUnixMs}\nrequest-123\nunity-project-test\neditor-test`, "utf8")
-        .digest("hex");
-      assert.equal(observed.authProof, expectedProof);
+      assert.equal(observed.authProof, undefined);
+      assert.equal(observed.authProofVersion, undefined);
+      assert.equal(observed.requestJson, undefined);
       assert.equal(result.requestId, "request-123");
     } finally {
       await close(server);
@@ -138,12 +138,23 @@ describe("UnityClient durable request semantics", () => {
         received = resolve;
       });
       let closed!: Promise<void>;
-      websocket.on("connection", (socket) => {
+      let authorization = "";
+      let payload: Record<string, unknown> = {};
+      websocket.on("connection", (socket, request) => {
+        authorization = request.headers.authorization ?? "";
         closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
-        socket.on("message", () => received());
+        socket.on("message", (message) => {
+          payload = JSON.parse(message.toString()) as Record<string, unknown>;
+          received();
+        });
       });
       const pending = assert.rejects(client.request("health"), /cancelled|disposed/i);
       await observed;
+      assert.equal(authorization, `Bearer ${token}`);
+      assert.equal(payload.method, "health");
+      assert.equal(payload.authProof, undefined);
+      assert.equal(payload.authProofVersion, undefined);
+      assert.equal(payload.requestJson, undefined);
       client.dispose();
       client.dispose();
       await pending;
@@ -242,6 +253,20 @@ describe("UnityClient durable request semantics", () => {
       }
       assert.equal(pendingFiles.length, 1);
       assert.match(pendingFiles[0], /^[0-9a-f]{24}\.json$/);
+      const envelope = JSON.parse(await readFile(join(queueDir, "pending", pendingFiles[0]), "utf8"));
+      assert.deepEqual(Object.keys(envelope), ["authProofVersion", "requestJson", "authProof"]);
+      assert.equal(envelope.authProofVersion, 2);
+      assert.equal(
+        envelope.authProof,
+        createHmac("sha256", token)
+          .update("UnityMcpGhost.Queue.v2\0" + envelope.requestJson, "utf8")
+          .digest("hex")
+      );
+      const inner = JSON.parse(envelope.requestJson);
+      assert.deepEqual(inner.params, { path: "Assets/Test.cs", content: "" });
+      assert.equal(inner.idempotent, false);
+      assert.equal(inner.id, "queued-timeout");
+      assert.equal(inner.authProof, undefined);
       await rejection;
       assert.deepEqual(await readdir(join(queueDir, "pending")), []);
     } finally {
@@ -253,6 +278,83 @@ describe("UnityClient durable request semantics", () => {
       }
     }
   });
+
+  it("rejects oversized queue serialization before writing a pending file", async () => {
+    const queueDir = await mkdtemp(join(tmpdir(), "unity-mcp-oversized-"));
+    const client = new UnityClient({ host: "127.0.0.1", port: 1, queueDir, requestTimeoutMs: 1000, ...secureOptions(tokenFile) });
+    try {
+      await assert.rejects(client.request("health", { content: "é".repeat(MAX_QUEUE_REQUEST_BYTES / 2) }, { requestId: "oversized" }), {
+        code: "REQUEST_TOO_LARGE",
+        requestId: "oversized",
+        projectId: "unity-project-test"
+      });
+      assert.deepEqual(await readdir(queueDir), []);
+    } finally {
+      client.dispose();
+      await rm(queueDir, { recursive: true, force: true });
+    }
+  });
+
+  for (const errorCode of [undefined, "AUTHENTICATION_FAILED"]) {
+    it(`consumes a v2 queue ${errorCode ? "typed authentication error" : "successful result"} without replay`, async () => {
+      const queueDir = await mkdtemp(join(tmpdir(), "unity-mcp-result-"));
+      const client = new UnityClient({ host: "127.0.0.1", port: 1, queueDir, requestTimeoutMs: 2000, ...secureOptions(tokenFile) });
+      const requestId = errorCode ? "queued-rejected" : "queued-success";
+      const params = { dryRun: true, operations: [{ method: "health", params: { text: "雪🦊\n\t", nested: [1e-7, true, null] } }] };
+      const settled = client.request("health", params, { requestId }).then(
+        (result) => ({ result, error: undefined }),
+        (error: unknown) => ({ result: undefined, error })
+      );
+      try {
+        let files: string[] = [];
+        const deadline = Date.now() + 2000;
+        while (files.length === 0 && Date.now() < deadline) {
+          files = (await readdir(join(queueDir, "pending")).catch(() => [] as string[])).filter((file) => file.endsWith(".json"));
+          if (files.length === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.equal(files.length, 1);
+        const pendingPath = join(queueDir, "pending", files[0]);
+        const raw = await readFile(pendingPath, "utf8");
+        const envelope = JSON.parse(raw);
+        const inner = JSON.parse(envelope.requestJson);
+        assert.deepEqual(inner.params, params);
+        assert.equal(
+          envelope.authProof,
+          createHmac("sha256", token)
+            .update("UnityMcpGhost.Queue.v2\0" + envelope.requestJson, "utf8")
+            .digest("hex")
+        );
+        assert.ok(!raw.includes(token));
+        await rm(pendingPath);
+        await writeFile(
+          join(queueDir, "results", files[0]),
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: errorCode ? null : inner.id,
+            ...(errorCode
+              ? { error: { code: -32010, message: "The durable queue request proof is missing or invalid.", data: { code: errorCode } } }
+              : { result: { ok: true } })
+          }),
+          "utf8"
+        );
+        const outcome = await settled;
+        if (errorCode) {
+          assert.ok(outcome.error instanceof UnityCommandError);
+          assert.equal(outcome.error.code, errorCode);
+          assert.equal(outcome.error.requestId, requestId);
+        } else {
+          assert.equal(outcome.error, undefined);
+          assert.deepEqual(outcome.result, { ok: true, requestId, projectId: "unity-project-test", editorInstanceId: "editor-test" });
+        }
+        assert.deepEqual(await readdir(join(queueDir, "pending")), []);
+        assert.deepEqual(await readdir(join(queueDir, "results")), []);
+      } finally {
+        client.dispose();
+        await settled;
+        await rm(queueDir, { recursive: true, force: true });
+      }
+    });
+  }
 });
 
 function secureOptions(tokenFile: string): { projectId: string; editorInstanceId: string; tokenFile: string } {

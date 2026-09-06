@@ -4,7 +4,8 @@
 
 - Version: `0.2.0-rc.1`
 - Supported baseline: Unity `2022.3.62f1` on Windows; Node.js 20, 22, and 24 are configured in CI.
-- Qualification: **GAM 215-equivalent fixture complete; real course-project certification pending.**
+- Status: implementation and final complete-series verification are incomplete; this checklist is not a release certificate.
+- Target qualification, only after every required local gate in [the approved completion contract](course-ready-local-rc-goal.md) passes: **Locally verified Course-Ready release candidate; remote CI and real course-project certification pending.**
 
 Do not advertise macOS, Linux, Unity 2021, Unity 6, or another Unity 2022 patch as certified until the exact matrix result is observed green and recorded in `docs/progress.md`. Do not add a CI badge until that workflow has actually passed in the repository.
 
@@ -62,6 +63,10 @@ Standalone EditMode/PlayMode runs default to a 20-minute work deadline, includin
 Install the UPM package from the repository subdirectory and build the companion Node server from the same version. Generate a client entry with `npm run config:client -- --unity-project-path <project>`. Existing clients that relied on all tools being listed must add `--tool-profile all`, or select only the required authoring/code/runtime/validation profiles.
 
 The bridge identity format now requires a project token and separate HTTP/WebSocket ports. Opening the Unity window regenerates missing local identity files; never migrate or copy a token between projects.
+
+Queue authentication version 2 requires matching Node and UPM commits. Stop admitting new work and let in-flight operations settle before upgrading both sides. The new receiver rejects old raw JSON-RPC queue files and metadata-only proofs with `QUEUE_PROOF_VERSION_UNSUPPORTED`; do not automatically rewrite or re-sign them. Retain old claims, deadletters, operation receipts and source backups until their prior outcomes are reconciled. Rejection by the new receiver does not prove that an old in-flight mutation never executed.
+
+With the fixture open and its bridge ready, run `node --import tsx server/src/queueSmoke.ts --unity-project-path test-project`. This performs only health requests, forces actual Node-to-Unity queue fallback, and verifies tampered parameters/replay/identity fields and legacy requests are rejected. It also checks the unmodified signed request and its exact response identity. Rejected probe files may remain in the fixture's ignored deadletter directory; the probe never removes active claims or an entire queue directory. A passing queue smoke is not a full course or recovery certification.
 
 ## Rollback
 

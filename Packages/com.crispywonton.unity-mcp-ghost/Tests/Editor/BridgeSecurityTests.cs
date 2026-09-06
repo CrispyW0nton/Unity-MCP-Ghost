@@ -19,7 +19,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
             Assert.That(first, Is.EqualTo(second));
             Assert.That(first, Has.Length.EqualTo(64));
             Assert.That(BridgeSecurity.AuthenticateBearer("Bearer " + first), Is.True);
-            Assert.That(BridgeSecurity.AuthenticateBearer("Bearer " + first.Substring(0, 63) + "0"), Is.False);
+            var differentLastDigit = first[63] == '0' ? '1' : '0';
+            Assert.That(BridgeSecurity.AuthenticateBearer("Bearer " + first.Substring(0, 63) + differentLastDigit), Is.False);
             Assert.That(BridgeSecurity.AuthenticateBearer(first), Is.False);
         }
 
@@ -38,28 +39,82 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
         {
             var request = Request("health");
             request.ProjectId = string.Empty;
-            Assert.That(BridgeSecurity.AuthorizeRequest(request, false).Code, Is.EqualTo("PROJECT_ID_REQUIRED"));
+            Assert.That(BridgeSecurity.AuthorizeRequest(request).Code, Is.EqualTo("PROJECT_ID_REQUIRED"));
 
             request.ProjectId = "wrong-project";
-            Assert.That(BridgeSecurity.AuthorizeRequest(request, false).Code, Is.EqualTo("PROJECT_ID_MISMATCH"));
+            Assert.That(BridgeSecurity.AuthorizeRequest(request).Code, Is.EqualTo("PROJECT_ID_MISMATCH"));
 
             request.ProjectId = BridgeSecurity.ProjectId;
             request.EditorInstanceId = "wrong-editor";
-            Assert.That(BridgeSecurity.AuthorizeRequest(request, false).Code, Is.EqualTo("EDITOR_INSTANCE_ID_MISMATCH"));
+            Assert.That(BridgeSecurity.AuthorizeRequest(request).Code, Is.EqualTo("EDITOR_INSTANCE_ID_MISMATCH"));
 
             request.EditorInstanceId = BridgeSecurity.EditorInstanceId;
-            Assert.That(BridgeSecurity.AuthorizeRequest(request, false).Allowed, Is.True);
+            Assert.That(BridgeSecurity.AuthorizeRequest(request).Allowed, Is.True);
+        }
+
+        [TestCase("id")]
+        [TestCase("requestId")]
+        [TestCase("method")]
+        [TestCase("deadlineUnixMs")]
+        [TestCase("idempotencyKey")]
+        [TestCase("projectId")]
+        [TestCase("editorInstanceId")]
+        [TestCase("jsonrpc")]
+        public void QueueProofBindsEveryRequestMetadataField(string field)
+        {
+            var request = QueueRequestEnvelopeTests.RequestObject();
+            var envelope = JObject.Parse(QueueRequestEnvelopeTests.EncodeForTests(request.ToString(Newtonsoft.Json.Formatting.None), BridgeSecurity.Token));
+            var authenticated = QueueRequestEnvelopeTests.DecodeForTests(envelope.ToString(Newtonsoft.Json.Formatting.None), BridgeSecurity.Token);
+            Assert.That(BridgeSecurity.AuthorizeRequest(JsonRpcUtil.ParseRequest(authenticated)).Allowed, Is.True);
+
+            request[field] = field == "deadlineUnixMs" ? (JToken)(request[field].Value<long>() + 1) : new JValue("changed");
+            envelope["requestJson"] = request.ToString(Newtonsoft.Json.Formatting.None);
+            var error = Assert.Throws<QueueRequestEnvelopeException>(() => QueueRequestEnvelopeTests.DecodeForTests(envelope.ToString(Newtonsoft.Json.Formatting.None), BridgeSecurity.Token));
+            Assert.That(error.Code, Is.EqualTo("AUTHENTICATION_FAILED"));
+        }
+
+        [TestCase("dryRun")]
+        [TestCase("path")]
+        [TestCase("content")]
+        [TestCase("nestedBatch")]
+        [TestCase("idempotent")]
+        public void QueueProofRejectsTamperingToParametersAndIdempotencyDeclaration(string field)
+        {
+            // Only authorize a health request; this regression never executes a mutation.
+            var request = QueueRequestEnvelopeTests.RequestObject();
+            var parameters = JObject.Parse("{\"dryRun\":true,\"path\":\"Assets/Original.txt\",\"content\":\"original\",\"operations\":[{\"method\":\"health\",\"params\":{\"content\":\"original\"}}]}");
+            request["params"] = parameters;
+            var envelope = JObject.Parse(QueueRequestEnvelopeTests.EncodeForTests(request.ToString(Newtonsoft.Json.Formatting.None), BridgeSecurity.Token));
+            var authenticated = QueueRequestEnvelopeTests.DecodeForTests(envelope.ToString(Newtonsoft.Json.Formatting.None), BridgeSecurity.Token);
+            Assert.That(BridgeSecurity.AuthorizeRequest(JsonRpcUtil.ParseRequest(authenticated)).Allowed, Is.True);
+
+            switch (field)
+            {
+                case "dryRun": parameters["dryRun"] = false; break;
+                case "path": parameters["path"] = "Assets/Changed.txt"; break;
+                case "content": parameters["content"] = "changed"; break;
+                case "nestedBatch": parameters["operations"][0]["params"]["content"] = "changed"; break;
+                case "idempotent": request["idempotent"] = false; break;
+            }
+            envelope["requestJson"] = request.ToString(Newtonsoft.Json.Formatting.None);
+
+            var error = Assert.Throws<QueueRequestEnvelopeException>(() => QueueRequestEnvelopeTests.DecodeForTests(envelope.ToString(Newtonsoft.Json.Formatting.None), BridgeSecurity.Token));
+            Assert.That(error.Code, Is.EqualTo("AUTHENTICATION_FAILED"));
         }
 
         [Test]
-        public void QueueProofBindsRequestIdentityMethodAndDeadline()
+        public void AuthenticatedQueueStillEnforcesIdentityAndCapabilities()
         {
-            var request = Request("health");
-            request.AuthProof = BridgeSecurity.CreateQueueProof(request);
-            Assert.That(BridgeSecurity.AuthorizeRequest(request, true).Allowed, Is.True);
+            var request = QueueRequestEnvelopeTests.RequestObject();
+            request["projectId"] = "wrong-project";
+            var authenticated = QueueRequestEnvelopeTests.DecodeForTests(QueueRequestEnvelopeTests.EncodeForTests(request.ToString(), BridgeSecurity.Token), BridgeSecurity.Token);
+            Assert.That(BridgeSecurity.AuthorizeRequest(JsonRpcUtil.ParseRequest(authenticated)).Code, Is.EqualTo("PROJECT_ID_MISMATCH"));
 
-            request.Method = "editor.get_state";
-            Assert.That(BridgeSecurity.AuthorizeRequest(request, true).Code, Is.EqualTo("AUTHENTICATION_FAILED"));
+            request["projectId"] = BridgeSecurity.ProjectId;
+            request["method"] = "asset.delete";
+            authenticated = QueueRequestEnvelopeTests.DecodeForTests(QueueRequestEnvelopeTests.EncodeForTests(request.ToString(), BridgeSecurity.Token), BridgeSecurity.Token);
+            Assert.That(BridgeSecurity.AuthorizeCapability(JsonRpcUtil.ParseRequest(authenticated).Method, "{}", BridgeSettings.CreateDefault(BridgeSecurity.DeterministicPort)).Code,
+                Is.EqualTo("DESTRUCTIVE_CAPABILITY_DISABLED"));
         }
 
         [Test]

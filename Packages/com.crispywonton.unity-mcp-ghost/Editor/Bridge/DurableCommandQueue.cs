@@ -116,7 +116,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             UnityMcpRequest request = null;
             try
             {
-                var json = File.ReadAllText(claimPath);
+                var json = QueueRequestEnvelope.ReadAuthenticatedRequest(claimPath);
                 request = JsonRpcUtil.ParseRequest(json);
                 if (string.IsNullOrEmpty(request.Id))
                 {
@@ -127,7 +127,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 {
                     request.IdempotencyKey = request.Id;
                 }
-                var authorization = BridgeSecurity.AuthorizeRequest(request, true);
+                var authorization = BridgeSecurity.AuthorizeRequest(request);
                 if (!authorization.Allowed)
                 {
                     response = BridgeSecurity.AuthorizationError(request, authorization);
@@ -154,16 +154,19 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     }
                 }
             }
-            catch (JsonRpcProtocolException exception)
+            catch (QueueRequestEnvelopeException exception)
             {
-                response = JsonRpcUtil.Error(exception);
+                response = QueueError(exception.Code, exception.Message);
                 MoveToDeadLetter(claimPath, queueKey);
             }
-            catch (Exception exception)
+            catch (JsonRpcProtocolException exception)
             {
-                response = request != null
-                    ? JsonRpcUtil.Error(request, -32000, exception.Message)
-                    : JsonRpcUtil.Error(new JsonRpcProtocolException(-32000, exception.Message));
+                response = QueueProtocolError(exception);
+                MoveToDeadLetter(claimPath, queueKey);
+            }
+            catch (Exception)
+            {
+                response = QueueProcessingError(request);
                 MoveToDeadLetter(claimPath, queueKey);
             }
 
@@ -190,15 +193,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 {
                     queueKey = Path.GetFileName(claimPath).Split('.')[0];
                 }
+                UnityMcpRequest request = null;
                 try
                 {
-                    var raw = File.ReadAllText(claimPath);
-                    var request = JsonRpcUtil.ParseRequest(raw);
+                    var raw = QueueRequestEnvelope.ReadAuthenticatedRequest(claimPath);
+                    request = JsonRpcUtil.ParseRequest(raw);
                     if (string.IsNullOrWhiteSpace(request.IdempotencyKey))
                     {
                         request.IdempotencyKey = request.Id;
                     }
-                    var authorization = BridgeSecurity.AuthorizeRequest(request, true);
+                    var authorization = BridgeSecurity.AuthorizeRequest(request);
                     if (!authorization.Allowed)
                     {
                         WriteAtomic(Path.Combine(ResultsDirectory, queueKey + ".json"), BridgeSecurity.AuthorizationError(request, authorization));
@@ -225,8 +229,19 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                         DeleteIfExists(claimPath);
                     }
                 }
+                catch (QueueRequestEnvelopeException exception)
+                {
+                    WriteAtomic(Path.Combine(ResultsDirectory, queueKey + ".json"), QueueError(exception.Code, exception.Message));
+                    MoveToDeadLetter(claimPath, queueKey);
+                }
+                catch (JsonRpcProtocolException exception)
+                {
+                    WriteAtomic(Path.Combine(ResultsDirectory, queueKey + ".json"), QueueProtocolError(exception));
+                    MoveToDeadLetter(claimPath, queueKey);
+                }
                 catch (Exception)
                 {
+                    WriteAtomic(Path.Combine(ResultsDirectory, queueKey + ".json"), QueueProcessingError(request));
                     MoveToDeadLetter(claimPath, queueKey);
                 }
                 DeleteIfExists(leasePath);
@@ -248,6 +263,24 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     results[index].Delete();
                 }
             }
+        }
+
+        private static string QueueError(string code, string message)
+        {
+            // An untrusted request must not supply the receipt ID or error text.
+            return JsonRpcUtil.Error(null, -32010, message, new JObject { ["code"] = code });
+        }
+
+        private static string QueueProtocolError(JsonRpcProtocolException exception)
+        {
+            return JsonRpcUtil.Error(new UnityMcpRequest { IdJson = exception.IdJson }, exception.ErrorCode,
+                "The authenticated durable queue request is invalid.", new JObject { ["code"] = "INVALID_REQUEST" });
+        }
+
+        private static string QueueProcessingError(UnityMcpRequest request)
+        {
+            return JsonRpcUtil.Error(request, -32000, "The durable queue request could not be processed; its execution outcome is unknown.",
+                new JObject { ["code"] = "QUEUE_PROCESSING_FAILED", ["outcomeUnknown"] = true });
         }
 
         private static void MoveToDeadLetter(string claimPath, string queueKey)
