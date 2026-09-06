@@ -2,15 +2,32 @@
 
 ## Course-Ready Reliability milestone
 
+Goal amendment approved on 2026-09-05: the user adopted `docs/course-ready-local-rc-goal.md`. Its local release-candidate acceptance gates now govern completion; all seven local implementation workstreams and their safety requirements remain required. Remote CI, additional environments and real course-project certification remain visible external follow-ups, not passed gates. After the goal service reported no active goal, the replacement objective was successfully created and activated in this chat. No completion or blocked status was fabricated to bypass the earlier active-goal editing limitation.
+
 Status: active; the GAM 215-equivalent fixture matrices have passed locally, but final reliability review, complete-series verification, and real course-project certification remain pending. Passing matrices alone do not certify the release candidate.
 
 Milestone source documents:
 
+- `docs/course-ready-local-rc-goal.md` — user-approved completion contract
 - `docs/development-prompt-course-ready-reliability.md`
 - `docs/unity-mcp-deep-audit-2026-09-04.md`
 
 Commits and verified gates:
 
+- `553c6c3` — `fix(security): authenticate complete durable queue requests`
+  - Added bounded v2 exact-request HMAC envelopes on Node/C#, authenticated pending and stale claims before inner parsing, and preserved bearer transports, project/capability checks and semantic deduplication. Legacy packets now require an explicit joint Node/UPM upgrade.
+  - Five original tampering regressions failed before the fix; final unit evidence: Node 229/229, Unity EditMode 183/183, protocol 9/9, live queue 8/8 and HTTP/WebSocket security 12/12. Typecheck, build, lint, format and diff checks passed. The invalid-token CLI guard failed without printing the token; the owned fixture Editor was stopped.
+  - Completed review `20260905-220909-da48b24a` covered eight lenses; its one actionable architecture-documentation finding was independently validated and resolved. Narrow Unicode/manual-publisher/I/O coverage limits and the separate stale-claim/cancellation lifecycle work remain recorded in the verification map.
+  - Committed 21 owned implementation/test/documentation files, no tokens, `Library/`, course assets or external publication. This is not a completed-milestone or real-project certification claim.
+- `cd4a487` — `test(reliability): make scenario read retries deterministic`
+  - Replaced the flaky 25 ms rename timer with real observed `ENOENT` boundaries; proved recovery after one/five missing reads and failure after six without losing the original file bytes. Production retry policy is unchanged.
+  - Focused tests 3/3, full scenario tests 34/34, full Node tests 229/229; typecheck, lint, format and diff checks passed. Completed review `20260905-220909-da48b24a` covered the test harness and found no actionable test-fidelity defect.
+  - Only the owned scenario test file was committed; authentication, goal and evidence files remained separate. No push or course-project changes.
+- `1a2100a` — `fix(reliability): expire queued work against elapsed drain time`
+  - Rechecks each queued action against monotonic time consumed by earlier actions; exact deadline equality expires without execution.
+  - Completed review `20260905-191957-ac729e43` identified one missing equality assertion. Deterministic one-tick-before/equal/after tests replaced the wall-clock wait and resolved that finding.
+  - Real Unity EditMode verification passed 124/124 with zero skips; fresh Node verification passed 218/218, protocol 9/9, lint, format and `git diff --check`. The initial Unity regression failed before the production fix; exact receipts remain in the verification map.
+  - Four owned source/test/evidence paths were committed. The unadopted goal proposal remains excluded; no push, course-project changes or generated Unity files were included. Full HTTP/WebSocket cancellation-before-execution evidence remains outstanding.
 - `8659db3` — `fix(reliability): retain repair backups and report unknown edits`
   - Prevented backup completion after unverified restoration, retained per-backup cleanup outcomes, and stopped implicit restoration/cleanup replay. Empty source and BOM/CRLF bytes are verified in disk-backed MCP regressions.
   - Applied both validated findings from completed review `20260905-190113-1f67b101`: truthful retained-versus-unverified backup hints, and pre-dispatch apply identity with unknown current hash after a lost response. Unknown applies stop all further requests pending explicit reconciliation.
