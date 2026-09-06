@@ -88,6 +88,8 @@ npm run smoke:runtime -- --unity-project-path C:/Path/To/Unity-MCP-Ghost/test-pr
 
 `input_simulate` reports its selected backend and evidence. Ghost first uses an active Unity Input System device, then a project-scoped `IUnityMcpInputDriver`; it does not claim legacy Input Manager delivery without observable proof. The repository fixture supplies a deterministic course-test driver. Requests fail with `UNSUPPORTED_INPUT_BACKEND` when neither path accepts and verifies them.
 
+The Input System adapter requires unpaused normal Play mode, Dynamic updates and verified Game View routing; it does not change project input settings. Accepted calls initially return `running`: poll `input.status` through `batch_execute` and verify the intended gameplay outcome. Serialize requests per device. A failed tap/click can still report later release-cleanup evidence without becoming successful; do not replay it blindly. Gameplay and action-callback tests currently run on Input System 1.7.0; optional test assemblies require the source-compatible 1.3.0 API minimum, not certification of every newer version.
+
 Run the durable scenario smoke to exercise green, compiler-failure, assertion-failure, timeout, and cancellation paths. Each case proves byte-identical source restoration and writes a local evidence bundle under the selected project's ignored `Library/UnityMcpGhost/evidence` directory:
 
 ```bash

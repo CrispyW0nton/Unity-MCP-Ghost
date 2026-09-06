@@ -14,6 +14,10 @@ Milestone source documents:
 
 Commits and verified gates:
 
+- `9b839a7` — `fix(testing): retain version probe ownership through cleanup`
+  - Consumed completed review `20260906-000340-84469f2a` and applied its one validated P1 finding. Three real root-first exit regressions failed before atomic Windows Job Object ownership, then passed; supervisor loss remains a failed certification even when kernel cleanup succeeds.
+  - Parent verification: 44/44 focused process/runner tests, Node 307/307, protocol 10/10, typecheck/build/lint/format/strict test checking/diff checks passed, audit zero. The compiled version probe verified installed Unity 2022.3.62f1 and left no Unity process running.
+  - Committed nine owned implementation/test/docs files. Windows 10+ and PowerShell 7 with Add-Type are explicit runner prerequisites; no MCP execution capability or dependency was added. Final Unity suites, all-runner signal coverage and complete-series gates remain pending. This post-commit ledger entry travels with the next progress update.
 - `24360e9` — `fix(validation): require exact compiler and course evidence`
   - Enforced coherent exact-generation compiler receipts, file/code/count expectations for all nine seeded compiler defects, and independent Console assertions for each Marvin Write overload. Compiler observation failures no longer satisfy expected runtime assertion failures.
   - Completed review `20260905-233614-8794ea99`; both independently validated findings were applied. Direct receipt rejection tests cover missing generations and insufficient counts. Final Node 24.11.1 tests passed 290/290 and protocol 10/10; build, typecheck, lint, formatting, strict changed-test typechecking and diff checks passed; audit found zero vulnerabilities.

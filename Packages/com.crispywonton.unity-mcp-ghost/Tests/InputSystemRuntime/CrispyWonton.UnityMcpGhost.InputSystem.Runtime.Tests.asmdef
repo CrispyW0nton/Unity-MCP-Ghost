@@ -1,0 +1,29 @@
+{
+  "name": "CrispyWonton.UnityMcpGhost.InputSystem.Runtime.Tests",
+  "rootNamespace": "CrispyWonton.UnityMcpGhost.Runtime.Tests",
+  "references": [
+    "CrispyWonton.UnityMcpGhost.Runtime",
+    "Unity.InputSystem"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS",
+    "GHOST_INPUT_SYSTEM_TESTS"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unity.inputsystem",
+      "expression": "1.3.0",
+      "define": "GHOST_INPUT_SYSTEM_TESTS"
+    }
+  ],
+  "noEngineReferences": false,
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}
