@@ -74,7 +74,7 @@ npm run phase3:repair-smoke -- --unity-project-path C:/Path/To/UnityProject --re
 
 Use `--script-path Assets/.../Target.cs` for another project. Add `--screenshot-baseline-filter <label>` only when that project already has a named Ghost baseline; when supplied, the smoke requires baseline selection and a passing visual diff.
 
-Add `--allow-mutation` only for a controlled scratch-script rollback test. It creates and removes `Assets/UnityMcpGhostScratch`.
+Add `--allow-mutation` only in a controlled project with an explicit destructive-capability grant for cleanup. The harness checks the selected Editor identity before creating a unique `Assets/GhostRepairScratch_<run-id>.cs`; it never enables capabilities itself or deletes a folder. It accepts the intentional compiler error only after verified rollback and independent byte checks. An uncertain write, test, or cleanup retains recovery receipts and defers further Editor mutations. See [repair-smoke safety and recovery](docs/repair-smoke-safety-verification-2026-09-06.md).
 
 Run the repeatable security boundary smoke, including missing/wrong credentials, browser Origin rejection, capability default-deny, fragmented WebSocket delivery, and the WebSocket message-size limit:
 

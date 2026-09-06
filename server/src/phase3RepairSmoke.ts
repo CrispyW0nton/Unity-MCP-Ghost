@@ -2,28 +2,19 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { readConfig } from "./config.js";
-import { UnityClient } from "./unity/UnityClient.js";
+import { UnityClient, type UnityRequestOptions } from "./unity/UnityClient.js";
+import { pathToFileURL } from "node:url";
 import { DefaultFixtureScript, repairSmokeScene, RepairSmokeState } from "./testing/repairSmokeState.js";
 
-interface SmokeStep {
-  name: string;
-  ok: boolean;
-  summary?: unknown;
-  assertions?: unknown;
-  error?: string;
-}
-
-const ScratchScriptPath = "Assets/UnityMcpGhostScratch/GhostRepairScratch.cs";
-const ScratchFolderPath = "Assets/UnityMcpGhostScratch";
-const ScratchContent = `using UnityEngine;
-
-public class GhostRepairScratch : MonoBehaviour
-{
-    private int health = 1;
-
-    public int Health => health;
-}
-`;
+import {
+  callTool,
+  runMutationRollbackSmoke,
+  assertSmokeValidation,
+  smokeErrorEvidence,
+  restoreSmokeEditor,
+  type SmokeStep
+} from "./testing/repairSmokeHarness.js";
+export { callTool, runMutationRollbackSmoke, type SmokeStep } from "./testing/repairSmokeHarness.js";
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
@@ -68,7 +59,15 @@ async function main(): Promise<void> {
     editorInstanceId: config.unityEditorInstanceId,
     tokenFile: config.unityTokenFile
   });
-  const editorState = new RepairSmokeState(unity, Math.max(config.requestTimeoutMs, 30000));
+  let originalEditorSnapshot: Record<string, unknown> | undefined;
+  const snapshotObserver: Pick<UnityClient, "request"> = {
+    async request<T>(method: string, params: unknown = {}, options: UnityRequestOptions = {}): Promise<T> {
+      const result = await unity.request<T>(method, params, options);
+      if (method === "editor.snapshot" && !originalEditorSnapshot) originalEditorSnapshot = asRecord(structuredClone(result));
+      return result;
+    }
+  };
+  const editorState = new RepairSmokeState(snapshotObserver, Math.max(config.requestTimeoutMs, 30000));
 
   try {
     await client.connect(transport);
@@ -80,11 +79,18 @@ async function main(): Promise<void> {
           }
         : undefined
     );
-    await record(steps, "target script validation", () =>
-      callTool(client, "script_validate", {
-        path: flags.scriptPath,
-        timeoutMs: config.requestTimeoutMs
-      })
+    await record(
+      steps,
+      "target script validation",
+      () =>
+        callTool(client, "script_validate", {
+          path: flags.scriptPath,
+          timeoutMs: config.requestTimeoutMs
+        }),
+      (result) => {
+        assertSmokeValidation(result);
+        return assertion({ compileVerified: true });
+      }
     );
     await record(
       steps,
@@ -130,18 +136,22 @@ async function main(): Promise<void> {
     );
 
     if (flags.allowMutation) {
-      await runMutationRollbackSmoke(client, steps, config.requestTimeoutMs);
+      await runMutationRollbackSmoke(client, steps, config.requestTimeoutMs, {
+        projectPath: config.unityProjectPath,
+        projectId: config.unityProjectId,
+        editorInstanceId: config.unityEditorInstanceId
+      });
     }
   } catch (error) {
     failed = true;
-    steps.push({ name: "phase3 repair smoke", ok: false, error: message(error) });
+    steps.push({ name: "phase3 repair smoke", ok: false, error: message(error), summary: smokeErrorEvidence(error) });
   } finally {
     try {
-      const restored = await editorState.restore();
+      const restored = await restoreSmokeEditor(steps, () => editorState.restore(), originalEditorSnapshot);
       if (restored) steps.push({ name: "restore original editor snapshot", ok: true, summary: summarizeBridgeResult(restored) });
     } catch (error) {
       failed = true;
-      steps.push({ name: "restore original editor snapshot", ok: false, error: message(error) });
+      steps.push({ name: "restore original editor snapshot", ok: false, error: message(error), summary: smokeErrorEvidence(error) });
     } finally {
       unity.dispose();
       await client.close().catch(() => undefined);
@@ -171,99 +181,7 @@ async function main(): Promise<void> {
   }
 }
 
-async function runMutationRollbackSmoke(client: Client, steps: SmokeStep[], timeoutMs: number): Promise<void> {
-  let folderCreated = false;
-  let scriptCreated = false;
-
-  try {
-    folderCreated = await record(steps, "create scratch folder", () =>
-      callTool(client, "asset_create_folder", {
-        parentPath: "Assets",
-        folderName: "UnityMcpGhostScratch",
-        dryRun: false
-      })
-    );
-    if (!folderCreated) {
-      return;
-    }
-
-    scriptCreated = await record(steps, "create scratch script", () =>
-      callTool(client, "script_create", {
-        path: ScratchScriptPath,
-        content: ScratchContent,
-        overwrite: true,
-        dryRun: false
-      })
-    );
-    if (!scriptCreated) {
-      return;
-    }
-
-    await record(steps, "validate scratch script", () =>
-      callTool(client, "script_validate", {
-        path: ScratchScriptPath,
-        timeoutMs
-      })
-    );
-    const repairRan = await record(steps, "apply invalid edit and roll back", () =>
-      callTool(client, "repair_apply_edits", {
-        objective: "Verify non-dry-run repair rollback on a controlled scratch C# script.",
-        scriptPath: ScratchScriptPath,
-        edits: [{ startLine: 4, startColumn: 26, endLine: 4, endColumn: 27, text: "" }],
-        dryRun: false,
-        rollbackOnFailure: true,
-        compileTimeoutMs: timeoutMs
-      })
-    );
-
-    if (repairRan) {
-      const readBack = await callTool(client, "script_read", { path: ScratchScriptPath });
-      const readBackData = readBack.data && typeof readBack.data === "object" ? (readBack.data as Record<string, unknown>) : {};
-      const readBackContent = typeof readBackData.content === "string" ? readBackData.content : "";
-      steps.push({
-        name: "verify scratch rollback content",
-        ok: readBackContent === ScratchContent,
-        summary: { matchesOriginal: readBackContent === ScratchContent }
-      });
-    }
-  } finally {
-    let cleanupGeneration = 0;
-    if (scriptCreated) {
-      try {
-        const result = await callTool(client, "script_delete", {
-          path: ScratchScriptPath,
-          dryRun: false
-        });
-        const ok = result.ok !== false;
-        cleanupGeneration = Number(asRecord(result.data).requestedCompileGeneration ?? 0);
-        steps.push({ name: "delete scratch script", ok, summary: summarize(result) });
-      } catch (error) {
-        steps.push({ name: "delete scratch script", ok: false, error: message(error) });
-      }
-    }
-
-    if (folderCreated) {
-      await record(steps, "delete scratch folder", () =>
-        callTool(client, "asset_delete", {
-          path: ScratchFolderPath,
-          moveToTrash: false,
-          dryRun: false
-        })
-      );
-    }
-
-    if (cleanupGeneration > 0) {
-      await record(
-        steps,
-        "compile after scratch cleanup",
-        () => callTool(client, "compile_wait", { requestedCompileGeneration: cleanupGeneration, timeoutMs }),
-        assertCompileWait
-      );
-    }
-  }
-}
-
-async function record(
+export async function record(
   steps: SmokeStep[],
   name: string,
   run: () => Promise<Record<string, unknown>>,
@@ -272,12 +190,13 @@ async function record(
   try {
     const result = await run();
     const assertion = assert?.(result);
-    const ok = result.ok !== false && assertion?.ok !== false;
+    const ok = result.ok === true && assertion?.ok !== false;
+    if (!ok) throw Object.assign(new Error(`${name} did not satisfy its smoke assertions.`), { response: result, assertions: assertion });
     steps.push({ name, ok, summary: summarize(result), assertions: assertion });
     return ok;
   } catch (error) {
-    steps.push({ name, ok: false, error: message(error) });
-    return false;
+    steps.push({ name, ok: false, error: message(error), summary: smokeErrorEvidence(error) });
+    throw error;
   }
 }
 
@@ -285,21 +204,6 @@ interface AssertionResult {
   ok: boolean;
   checks: Record<string, boolean>;
   details?: Record<string, unknown>;
-}
-
-function assertCompileWait(result: Record<string, unknown>): AssertionResult {
-  const data = asRecord(result.data);
-  return assertion(
-    {
-      toolOk: result.ok !== false,
-      compileSettled: data.status === "success" || data.ok === true,
-      notCompiling: asRecord(data.state).isCompiling !== true
-    },
-    {
-      status: data.status,
-      elapsedMs: data.elapsedMs
-    }
-  );
 }
 
 function assertRepairLoop(result: Record<string, unknown>, baselineRequired: boolean): AssertionResult {
@@ -373,56 +277,6 @@ function assertion(checks: Record<string, boolean>, details?: Record<string, unk
   };
 }
 
-async function callTool(client: Client, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= 8; attempt += 1) {
-    try {
-      return await callToolOnce(client, name, args);
-    } catch (error) {
-      lastError = error;
-      if (!isTransientUnityBridgeError(error) || attempt === 8) {
-        throw error;
-      }
-
-      await delay(1500);
-    }
-  }
-
-  throw lastError;
-}
-
-async function callToolOnce(client: Client, name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const result = await client.callTool({ name, arguments: args });
-  const content = result.structuredContent as { ok?: boolean; data?: unknown; diagnostics?: unknown[] } | undefined;
-  if (!content) {
-    throw new Error(`Tool '${name}' returned no structured content.`);
-  }
-
-  if (result.isError || content.ok === false) {
-    throw new Error(`${name} failed: ${JSON.stringify(content.diagnostics ?? content)}`);
-  }
-
-  return {
-    ok: content.ok,
-    data: content.data
-  };
-}
-
-function isTransientUnityBridgeError(error: unknown): boolean {
-  const text = message(error);
-  return (
-    text.includes("ECONNREFUSED") ||
-    text.includes("fetch failed") ||
-    text.includes("socket hang up") ||
-    text.includes("other side closed") ||
-    text.includes("Unity HTTP bridge responded 503")
-  );
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function summarize(result: Record<string, unknown>): unknown {
   const data = result.data;
   if (!data || typeof data !== "object") {
@@ -491,7 +345,8 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`${message(error)}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+  main().catch((error: unknown) => {
+    process.stderr.write(`${message(error)}\n`);
+    process.exitCode = 1;
+  });

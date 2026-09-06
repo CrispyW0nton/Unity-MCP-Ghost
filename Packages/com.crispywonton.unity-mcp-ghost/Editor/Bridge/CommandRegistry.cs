@@ -99,6 +99,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 + "\"editorInstanceId\":\"" + BridgeSecurity.EditorInstanceId + "\","
                 + "\"protocolVersion\":1,"
                 + "\"authenticated\":true,"
+                + "\"capabilities\":{\"destructive\":" + Bool(BridgeSecurity.Settings.AllowDestructive) + "},"
                 + "\"activeScenePath\":\"" + JsonRpcUtil.Escape(activeScene.path) + "\","
                 + "\"isCompiling\":" + Bool(EditorApplication.isCompiling) + ","
                 + "\"isPlaying\":" + Bool(EditorApplication.isPlaying) + ","

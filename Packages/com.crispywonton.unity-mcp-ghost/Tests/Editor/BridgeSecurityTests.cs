@@ -130,6 +130,48 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
         }
 
         [Test]
+        public void HealthReflectsActiveCapabilityRevocationWithoutWaitingForIdentityHeartbeat()
+        {
+            // Replace only the cached in-memory settings for this serial test.
+            // Never save settings, republish identity, or modify token files.
+            var field = typeof(BridgeSecurity).GetField("settings",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Assert.That(field, Is.Not.Null);
+            var active = BridgeSecurity.Settings;
+            var original = field.GetValue(null);
+            try
+            {
+                active.AllowDestructive = true;
+                field.SetValue(null, active);
+                var startupHealth = ReadAuthorizedHealth();
+
+                active.AllowDestructive = false;
+                var revokedHealth = ReadAuthorizedHealth();
+                Assert.That((bool?)revokedHealth["capabilities"]?["destructive"], Is.False,
+                    "Health must expose the currently enforced capability after revocation.");
+                Assert.That((bool?)startupHealth["capabilities"]?["destructive"], Is.True);
+                Assert.That(BridgeSecurity.AuthorizeRequest(Request("script.delete")).Code,
+                    Is.EqualTo("DESTRUCTIVE_CAPABILITY_DISABLED"));
+                Assert.That((string)revokedHealth["projectId"], Is.EqualTo(BridgeSecurity.ProjectId));
+                Assert.That((string)revokedHealth["editorInstanceId"], Is.EqualTo(BridgeSecurity.EditorInstanceId));
+                Assert.That((bool)revokedHealth["authenticated"], Is.True);
+            }
+            finally
+            {
+                field.SetValue(null, original);
+            }
+        }
+
+        private static JObject ReadAuthorizedHealth()
+        {
+            var request = Request("health");
+            Assert.That(BridgeSecurity.AuthorizeRequest(request).Allowed, Is.True);
+            var response = JObject.Parse(new CommandRegistry().Execute(request));
+            Assert.That(response["error"], Is.Null, response.ToString());
+            return (JObject)response["result"];
+        }
+
+        [Test]
         public void PackageAddRequiresEnabledCapabilityAndAllowedSource()
         {
             var settings = BridgeSettings.CreateDefault(BridgeSecurity.DeterministicPort);
