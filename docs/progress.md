@@ -14,6 +14,11 @@ Milestone source documents:
 
 Commits and verified gates:
 
+- `868c8b4` — `fix(reliability): retain uncertain queue recovery without replay`
+  - Added observation-only recovery admission, correlated `OUTCOME_UNKNOWN` receipts, retained non-cached payloads, and protection of unresolved request records from result eviction. Cached outcomes survive expired recovery deadlines; a different transport's live execution owner remains intact.
+  - Original crash cases reproduced five failures before the fix. Review finding #2 then reproduced replay after 1,001 newer completions (190/191 tests passed); cleanup was restricted to completed records. Final Windows Unity 2022.3.62f1 EditMode passed 191/191, Node 24.11.1 passed 230/230, and protocol passed 9/9. Typecheck, build, lint, format and diff checks passed; no Unity process remained.
+  - Completed five-lens review `20260905-222952-468b6c89`; the independently validated retention finding was fixed, and the active-owner proposal was withdrawn after caller inspection and protected by a characterization test. Review and red/green XML details are in `course-ready-verification.md`.
+  - Committed only six owned implementation/test/evidence files. No secrets, generated Unity data, course assets or external publication. Full queue bounds, storage-fault reconciliation and complete-series course verification remain required. This post-commit ledger entry travels with the next progress update.
 - `d3f7e85` — `docs(goal): adopt attainable local course-ready acceptance gates`
   - Committed the user-approved active goal contract and rolling evidence ledger. Local Windows Unity 2022.3.62f1 implementation and safety gates remain mandatory; remote CI, other environments and real course projects remain pending external obligations.
   - Reviewed the complete two-file documentation diff and checked whitespace. No code, tokens, generated Unity data, course assets, push or PR were included. This entry is recorded after the commit and will travel with the next progress update.

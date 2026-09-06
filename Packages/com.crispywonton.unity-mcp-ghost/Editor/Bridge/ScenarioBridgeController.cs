@@ -175,6 +175,12 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     var receipt = ScriptFileTransaction.Write(mutation.FullPath, mutation.AssetPath, mutation.Content, mutation.ExpectedSha256, false);
                     if (!receipt.Ok)
                     {
+                        // A failed mutation can still own recovery files. Persist its
+                        // full evidence separately so rollback only replays successes.
+                        transaction["failedMutationReceipt"] = ReceiptJson(receipt);
+                        transaction["requiresReconciliation"] = RequiresReconciliation(transaction);
+                        transaction["updatedUtc"] = DateTime.UtcNow.ToString("O");
+                        SaveTransaction(transactionId, transaction);
                         throw new ScenarioMutationException(receipt.Error?["code"]?.Value<string>() ?? "SCENARIO_SOURCE_APPLY_FAILED", receipt.Error?["message"]?.Value<string>() ?? "Scenario source mutation failed.");
                     }
                     receipts.Add(receipt);
@@ -201,7 +207,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 {
                     ["ok"] = false,
                     ["transactionId"] = transactionId,
-                    ["error"] = new JObject
+                    ["failedMutationReceipt"] = transaction["failedMutationReceipt"]?.DeepClone(),
+                    ["requiresReconciliation"] = RequiresReconciliation(transaction),
+                    ["error"] = transaction["failedMutationReceipt"]?["error"]?.DeepClone() ?? new JObject
                     {
                         ["code"] = exception is ScenarioMutationException typed ? typed.Code : "SCENARIO_SOURCE_APPLY_FAILED",
                         ["message"] = exception.Message
@@ -234,6 +242,10 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 ? string.Empty
                 : ValidateTransactionId(root.Value<string>("transactionId"));
             var transaction = string.IsNullOrEmpty(transactionId) ? null : LoadTransaction(transactionId);
+            if (RequiresReconciliation(transaction))
+            {
+                return ReconciliationFailure(transactionId, transaction);
+            }
             if (transaction != null && string.Equals(transaction.Value<string>("status"), "restored", StringComparison.Ordinal))
             {
                 return new JObject
@@ -309,6 +321,10 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 ? string.Empty
                 : ValidateTransactionId(root.Value<string>("transactionId"));
             var transaction = string.IsNullOrEmpty(transactionId) ? null : LoadTransaction(transactionId);
+            if (RequiresReconciliation(transaction))
+            {
+                return ReconciliationFailure(transactionId, transaction);
+            }
             var receipts = new List<JObject>((root["receipts"] as JArray ?? new JArray()).OfType<JObject>());
             if (transaction != null)
             {
@@ -546,6 +562,33 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static JObject ReceiptJson(ScriptMutationReceipt receipt)
         {
             return JObject.FromObject(receipt, JsonSerializer.CreateDefault());
+        }
+
+        private static bool RequiresReconciliation(JObject transaction)
+        {
+            var restorationStatus = transaction?["failedMutationReceipt"]?["error"]?.Value<string>("restorationStatus");
+            return transaction?.Value<bool?>("requiresReconciliation") == true
+                || (!string.IsNullOrWhiteSpace(restorationStatus) && !string.Equals(restorationStatus, "complete", StringComparison.Ordinal));
+        }
+
+        private static string ReconciliationFailure(string transactionId, JObject transaction)
+        {
+            return new JObject
+            {
+                ["ok"] = false,
+                ["transactionId"] = transactionId,
+                ["status"] = transaction.Value<string>("status"),
+                ["requiresReconciliation"] = true,
+                ["failedMutationReceipt"] = transaction["failedMutationReceipt"]?.DeepClone(),
+                ["receipts"] = transaction["receipts"]?.DeepClone() ?? new JArray(),
+                ["rollback"] = transaction["rollback"]?.DeepClone() ?? new JArray(),
+                ["refreshCount"] = 0,
+                ["error"] = new JObject
+                {
+                    ["code"] = "SCENARIO_SOURCE_RECONCILIATION_REQUIRED",
+                    ["message"] = "A failed source mutation has incomplete or unknown restoration. Reconcile the retained recovery evidence before restoring or completing this transaction."
+                }
+            }.ToString(Formatting.None);
         }
 
         private static string EnsureScriptPath(string value)

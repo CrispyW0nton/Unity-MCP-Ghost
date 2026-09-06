@@ -384,18 +384,21 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                         }
 
                         var restored = ScriptFileTransaction.Restore(fullPath, path, backupPath, backupMetaPath, deleted ? string.Empty : expectedAfter);
+                        var outcome = JObject.Parse(ScriptFileTransaction.ToJson(restored));
+                        outcome["index"] = record["index"];
+                        outcome["method"] = method;
+                        outcome["path"] = path;
                         if (!restored.Ok)
                         {
-                            throw new InvalidOperationException(restored.Error?["message"]?.Value<string>() ?? "Script restoration failed.");
+                            ok = false;
+                            outcomes.Add(outcome);
+                            continue;
                         }
 
                         ScriptFileTransaction.DiscardBackup(backupPath);
                         ScriptFileTransaction.DiscardBackup(backupMetaPath);
                         ScriptFileTransaction.DiscardBackup(restored.BackupPath);
                         ScriptFileTransaction.DiscardBackup(restored.BackupMetaPath);
-                        var outcome = JObject.Parse(ScriptFileTransaction.ToJson(restored));
-                        outcome["index"] = record["index"];
-                        outcome["method"] = method;
                         outcomes.Add(outcome);
                     }
                     refreshedScripts = true;
