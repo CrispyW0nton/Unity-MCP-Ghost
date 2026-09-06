@@ -11,9 +11,21 @@ Milestone source documents:
 - `docs/course-ready-local-rc-goal.md` — user-approved completion contract
 - `docs/development-prompt-course-ready-reliability.md`
 - `docs/unity-mcp-deep-audit-2026-09-04.md`
+- `docs/course-ready-requirements-trace.md` — finite 150-row implementation/evidence map at `3503821`, with all original P0 findings accounted for and eight consolidated remaining-work groups
+
+Current bounded work: explicit repair recovery is committed at `72f69f0`, including all five validated review fixes and result-contract migration. The finite trace retains its original baseline findings with a dated resolution overlay; it is not a passing gate. Next is the existing live repair smoke helper's truthful expected-error and owned-scratch/retry correction, followed by shared public waits and actual Test Runner lifecycle. Durable transaction/queue bounds, full contract parity and the final live matrix remain separately open. Do not reopen completed input work or add domains to compensate for missing proof.
 
 Commits and verified gates:
 
+- `72f69f0` — `fix(reliability): make explicit repair recovery truthful`
+  - Verified source/apply receipts, exact-generation handler checks, required-test outcomes, current-hash restoration, retained unknown/partial recovery and at-most-once cleanup. Published explicit result contract 2 and client migration; no historical Console count masquerades as zero errors.
+  - Review `20260906-011754-a5b8dc88` completed eight lenses and an independent validation batch. All five findings #1/#2/#3/#6/#7 plus generation tests #5 were applied and independently rechecked. The original Not ready receipt is preserved separately from successful follow-up verification; no separate-provider CLI was available.
+  - Parent post-fix verification: 133/133 focused integration cases, Node 395/395, protocol 10/10, no failures/skips/cancellations; typecheck/build/lint/format, strict changed-test diagnostics, catalog, release-layout and diff checks passed; audit zero. Node 24.11.1 on Windows. Detailed commands and red/green history: `docs/explicit-repair-verification-2026-09-06.md`.
+  - Committed exactly eight owned implementation/test/catalog/documentation files. `npm ci`, live Unity and complete-course/reload/concurrent-Editor gates were not rerun for this TypeScript behavior slice. Actual course projects remain untouched. This post-commit ledger travels with the next progress update.
+- `3503821` — `fix(runtime): deliver input in normal gameplay frames`
+  - Added independent normal-player-loop and InputAction observations, asynchronous receipts, per-device admission, atomic pointer state and failed-tap release cleanup. Review `20260906-003158-465f58f2` findings #1/#2/#4/#5/#6 are applied; the bounded physical-stall test from #7 remains intentionally for scheduling fidelity.
+  - Parent verification: PlayMode 9/9, EditMode 234/234, Node 307/307 and protocol 10/10, zero failures/skips/cancellations; typecheck/build/lint/format/diff and release-layout checks pass, audit zero. Red-first follow-up reproduced all three input defects (6/9 before fixes). Fixture source/scene hashes are unchanged and no Unity process remained.
+  - Committed 13 owned files, including polling/support documentation. No project settings or actual course assets changed. Cross-reload input durability, broader lifecycle and final complete-series gates remain open; this is not full course certification. This post-commit ledger entry travels with the next progress update.
 - `9b839a7` — `fix(testing): retain version probe ownership through cleanup`
   - Consumed completed review `20260906-000340-84469f2a` and applied its one validated P1 finding. Three real root-first exit regressions failed before atomic Windows Job Object ownership, then passed; supervisor loss remains a failed certification even when kernel cleanup succeeds.
   - Parent verification: 44/44 focused process/runner tests, Node 307/307, protocol 10/10, typecheck/build/lint/format/strict test checking/diff checks passed, audit zero. The compiled version probe verified installed Unity 2022.3.62f1 and left no Unity process running.
