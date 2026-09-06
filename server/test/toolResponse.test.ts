@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { failureResponse, successResponse } from "../src/mcp/toolResponse.js";
-import { UnityRequestTimeoutError } from "../src/unity/UnityClient.js";
+import { UnityCommandError, UnityRequestTimeoutError } from "../src/unity/UnityClient.js";
 
 function structured(result: ReturnType<typeof successResponse>): Record<string, unknown> {
   return result.structuredContent as Record<string, unknown>;
@@ -93,6 +93,25 @@ describe("tool response envelope", () => {
       code: "UNITY_CONNECTION_CLOSED",
       message: "socket closed"
     });
+  });
+
+  it("preserves a recovered queue's unknown outcome as a structured MCP error", () => {
+    const data = {
+      code: "OUTCOME_UNKNOWN",
+      requestId: "recovered-mutation",
+      idempotencyKey: "recovered-key",
+      status: "outcomeUnknown",
+      outcomeUnknown: true
+    };
+    const error = new UnityCommandError("Recovered execution is unknown; do not replay.", -32006, data, data.requestId);
+
+    const result = failureResponse("request failed", error, Date.now());
+
+    assert.equal(result.isError, true);
+    assert.equal(structured(result).ok, false);
+    assert.equal(structured(result).requestId, data.requestId);
+    assert.deepEqual(structured(result).data, data);
+    assert.deepEqual(structured(result).error, { code: "OUTCOME_UNKNOWN", message: error.message, data });
   });
 
   it("preserves the request id and warns when a timed-out mutation has an unknown outcome", () => {

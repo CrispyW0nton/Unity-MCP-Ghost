@@ -224,9 +224,10 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     }
                     else
                     {
-                        var outcome = RequestExecutionStore.Begin(request, raw, Guid.NewGuid().ToString("N"));
+                        var outcome = RequestExecutionStore.Begin(request, raw, Guid.NewGuid().ToString("N"), allowExecution: false);
                         WriteAtomic(Path.Combine(ResultsDirectory, queueKey + ".json"), outcome.ResponseJson);
-                        DeleteIfExists(claimPath);
+                        if (outcome.Disposition == RequestClaimDisposition.Cached) DeleteIfExists(claimPath);
+                        else MoveToDeadLetter(claimPath, queueKey);
                     }
                 }
                 catch (QueueRequestEnvelopeException exception)

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -174,6 +175,141 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
             Assert.That(response["error"]["data"]["code"].Value<string>(), Is.EqualTo("QUEUE_PROCESSING_FAILED"));
             Assert.That(response["error"]["data"]["outcomeUnknown"].Value<bool>(), Is.True);
             Assert.That(response.ToString(), Does.Not.Contain("private-content-must-not-be-echoed").And.Not.Contain(BridgeSecurity.Token));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void UnclaimedNonReplayableRecoveryPersistsUnknownOutcomeAndRetainsPayload(bool expired)
+        {
+            var raw = QueueRequestEnvelopeTests.RequestObject("recovery-unclaimed", "queue.test_non_replayable");
+            raw["idempotent"] = false;
+            if (expired) raw["deadlineUnixMs"] = DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds();
+            var envelope = QueueRequestEnvelopeTests.EncodeForTests(raw.ToString(Formatting.None), BridgeSecurity.Token);
+            WriteQueued("recovery-unclaimed", envelope, true);
+
+            DurableCommandQueue.PollWithinBudget(8, 1000);
+
+            var response = ReadResponse("recovery-unclaimed");
+            Assert.That(response["id"].Value<string>(), Is.EqualTo("recovery-unclaimed"));
+            Assert.That(response["error"]["data"]["code"].Value<string>(), Is.EqualTo("OUTCOME_UNKNOWN"));
+            Assert.That(response["error"]["data"]["outcomeUnknown"].Value<bool>(), Is.True);
+            var states = Directory.GetFiles(Path.Combine(directory, "requests"), "*.state.json");
+            Assert.That(states.Length, Is.EqualTo(1));
+            Assert.That(JObject.Parse(File.ReadAllText(states[0]))["Status"].Value<string>(), Is.EqualTo("outcomeUnknown"));
+            var retained = Directory.GetFiles(DurableCommandQueue.DeadLetterDirectory, "*.json");
+            Assert.That(retained.Length, Is.EqualTo(1));
+            Assert.That(File.ReadAllText(retained[0]), Is.EqualTo(envelope));
+            Assert.That(Directory.GetFiles(DurableCommandQueue.ProcessingDirectory), Is.Empty);
+
+            // A renewed deadline and a new transport owner are not replay authority.
+            raw["deadlineUnixMs"] = DateTimeOffset.UtcNow.AddMinutes(1).ToUnixTimeMilliseconds();
+            var retryJson = raw.ToString(Formatting.None);
+            var retry = RequestExecutionStore.Begin(JsonRpcUtil.ParseRequest(retryJson), retryJson, "retry-owner");
+            Assert.That(retry.Disposition, Is.EqualTo(RequestClaimDisposition.OutcomeUnknown));
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void NonReplayableRecoveryPreservesKnownResultsAndUncertainPayloads(bool expired, bool completed)
+        {
+            var now = DateTime.UtcNow;
+            var raw = QueueRequestEnvelopeTests.RequestObject("recovery-existing", "queue.test_non_replayable");
+            raw["idempotent"] = false;
+            if (expired) raw["deadlineUnixMs"] = new DateTimeOffset(now).AddMinutes(-1).ToUnixTimeMilliseconds();
+            var json = raw.ToString(Formatting.None);
+            var request = JsonRpcUtil.ParseRequest(json);
+            RequestExecutionStore.UtcNow = () => now.AddMinutes(-3);
+            Assert.That(RequestExecutionStore.Begin(request, json, "original-owner").Disposition, Is.EqualTo(RequestClaimDisposition.Claimed));
+            string completedResponse = null;
+            if (completed) completedResponse = RequestExecutionStore.Complete(request, "original-owner", JsonRpcUtil.Success(request, "{\"ok\":true,\"mutationCount\":1}"));
+            RequestExecutionStore.UtcNow = () => now;
+            var envelope = QueueRequestEnvelopeTests.EncodeForTests(json, BridgeSecurity.Token);
+            WriteQueued("recovery-existing", envelope, true);
+
+            DurableCommandQueue.PollWithinBudget(8, 1000);
+
+            var response = ReadResponse("recovery-existing");
+            Assert.That(response["id"].Value<string>(), Is.EqualTo("recovery-existing"));
+            var retained = Directory.GetFiles(DurableCommandQueue.DeadLetterDirectory, "*.json");
+            if (completed)
+            {
+                Assert.That(response.ToString(Formatting.None), Is.EqualTo(JObject.Parse(completedResponse).ToString(Formatting.None)));
+                Assert.That(retained, Is.Empty);
+            }
+            else
+            {
+                Assert.That(response["error"]["data"]["code"].Value<string>(), Is.EqualTo("OUTCOME_UNKNOWN"));
+                Assert.That(response["error"]["data"]["outcomeUnknown"].Value<bool>(), Is.True);
+                Assert.That(retained.Length, Is.EqualTo(1));
+                Assert.That(File.ReadAllText(retained[0]), Is.EqualTo(envelope));
+            }
+            Assert.That(Directory.GetFiles(DurableCommandQueue.ProcessingDirectory), Is.Empty);
+        }
+
+        [Test]
+        public void RecoveryMarkerSurvivesCompletedReceiptEviction()
+        {
+            var now = DateTime.UtcNow;
+            RequestExecutionStore.UtcNow = () => now;
+            var raw = QueueRequestEnvelopeTests.RequestObject("recovery-retention", "queue.test_non_replayable");
+            var envelope = QueueRequestEnvelopeTests.EncodeForTests(raw.ToString(Formatting.None), BridgeSecurity.Token);
+            WriteQueued("recovery-retention", envelope, true);
+            DurableCommandQueue.PollWithinBudget(8, 1000);
+            var requestDirectory = Path.Combine(directory, "requests");
+            var markerPath = Directory.GetFiles(requestDirectory, "*.state.json").Single();
+            var markerBytes = File.ReadAllBytes(markerPath);
+            File.SetLastWriteTimeUtc(markerPath, now.AddMinutes(-5));
+
+            // Real persisted completions put the marker beyond the result-cache cap.
+            for (var index = 0; index < 1001; index++)
+            {
+                var newerJson = QueueRequestEnvelopeTests.RequestObject("newer-" + index, "health").ToString(Formatting.None);
+                var newer = JsonRpcUtil.ParseRequest(newerJson);
+                Assert.That(RequestExecutionStore.Begin(newer, newerJson, "newer-owner").Disposition, Is.EqualTo(RequestClaimDisposition.Claimed));
+                RequestExecutionStore.Complete(newer, "newer-owner", JsonRpcUtil.Success(newer, "{\"ok\":true}"));
+            }
+            now = now.AddMinutes(2);
+            raw["deadlineUnixMs"] = new DateTimeOffset(now).AddMinutes(1).ToUnixTimeMilliseconds();
+            var retryJson = raw.ToString(Formatting.None);
+
+            var retry = RequestExecutionStore.Begin(JsonRpcUtil.ParseRequest(retryJson), retryJson, "retry-owner");
+
+            Assert.That(retry.Disposition, Is.EqualTo(RequestClaimDisposition.OutcomeUnknown));
+            Assert.That(File.ReadAllBytes(markerPath), Is.EqualTo(markerBytes));
+            Assert.That(Directory.GetFiles(requestDirectory, "*.result.json").Length, Is.EqualTo(1000), "Completed-result eviction must still work.");
+            var retained = Directory.GetFiles(DurableCommandQueue.DeadLetterDirectory, "*.json").Single();
+            Assert.That(File.ReadAllText(retained), Is.EqualTo(envelope));
+        }
+
+        [Test]
+        public void RecoveryPreservesActiveExecutionOwnerAndItsLaterCompletion()
+        {
+            var now = DateTime.UtcNow;
+            RequestExecutionStore.UtcNow = () => now;
+            var json = QueueRequestEnvelopeTests.RequestObject("recovery-active", "queue.test_non_replayable").ToString(Formatting.None);
+            var request = JsonRpcUtil.ParseRequest(json);
+            Assert.That(RequestExecutionStore.Begin(request, json, "active-owner").Disposition, Is.EqualTo(RequestClaimDisposition.Claimed));
+            var statePath = Directory.GetFiles(Path.Combine(directory, "requests"), "*.state.json").Single();
+            var stateBytes = File.ReadAllBytes(statePath);
+            var envelope = QueueRequestEnvelopeTests.EncodeForTests(json, BridgeSecurity.Token);
+            WriteQueued("recovery-active", envelope, true);
+
+            DurableCommandQueue.PollWithinBudget(8, 1000);
+
+            var response = ReadResponse("recovery-active");
+            Assert.That(response["error"]["data"]["code"].Value<string>(), Is.EqualTo("EXECUTING"));
+            Assert.That(response["error"]["data"]["outcomeUnknown"].Value<bool>(), Is.True);
+            Assert.That(File.ReadAllBytes(statePath), Is.EqualTo(stateBytes), "A stale queue lease must not revoke a different transport's live owner.");
+            var retained = Directory.GetFiles(DurableCommandQueue.DeadLetterDirectory, "*.json").Single();
+            Assert.That(File.ReadAllText(retained), Is.EqualTo(envelope));
+            Assert.That(Directory.GetFiles(DurableCommandQueue.ProcessingDirectory), Is.Empty);
+            var completed = RequestExecutionStore.Complete(request, "active-owner", JsonRpcUtil.Success(request, "{\"ok\":true,\"mutationCount\":1}"));
+            Assert.That(JObject.Parse(completed)["result"]["ok"].Value<bool>(), Is.True);
+            var retry = RequestExecutionStore.Begin(request, json, "retry-owner");
+            Assert.That(retry.Disposition, Is.EqualTo(RequestClaimDisposition.Cached));
+            Assert.That(retry.ResponseJson, Is.EqualTo(completed));
         }
 
         private JObject AssertRejectedBeforeExecution(string id, string envelope, bool stale, string code, string responseId = null)

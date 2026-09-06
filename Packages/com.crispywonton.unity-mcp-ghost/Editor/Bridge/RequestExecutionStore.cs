@@ -39,7 +39,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         internal static string RootOverrideForTests;
         internal static Func<DateTime> UtcNow = () => DateTime.UtcNow;
 
-        public static RequestClaim Begin(UnityMcpRequest request, string rawRequest, string owner)
+        public static RequestClaim Begin(UnityMcpRequest request, string rawRequest, string owner, bool allowExecution = true)
         {
             if (request == null || string.IsNullOrWhiteSpace(request.IdempotencyKey))
             {
@@ -55,7 +55,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 EnsureDirectories();
                 CleanupIfDue();
                 var now = UtcNow();
-                if (request.DeadlineUnixMs > 0 && now > FromUnixMilliseconds(request.DeadlineUnixMs))
+                // Recovery observes prior execution; an expired dispatch deadline
+                // cannot prove that a previously claimed operation never ran.
+                if (allowExecution && request.DeadlineUnixMs > 0 && now > FromUnixMilliseconds(request.DeadlineUnixMs))
                 {
                     return new RequestClaim
                     {
@@ -144,14 +146,22 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     RequestId = request.Id,
                     Method = request.Method,
                     PayloadSha256 = payloadSha256,
-                    Status = "executing",
+                    Status = allowExecution ? "executing" : "outcomeUnknown",
                     ReplaySafe = replaySafe,
                     Owner = owner,
                     ClaimedUtc = existing?.ClaimedUtc ?? FormatUtc(now),
                     UpdatedUtc = FormatUtc(now),
-                    LeaseExpiresUtc = FormatUtc(leaseEnd)
+                    LeaseExpiresUtc = allowExecution ? FormatUtc(leaseEnd) : string.Empty
                 };
                 WriteAtomic(statePath, JsonConvert.SerializeObject(state, Formatting.Indented));
+                if (!allowExecution)
+                {
+                    return new RequestClaim
+                    {
+                        Disposition = RequestClaimDisposition.OutcomeUnknown,
+                        ResponseJson = JsonRpcUtil.Error(request, -32006, "A recovered queue claim has no execution receipt; its outcome is unknown and it will not be replayed.", OutcomeData(request, "outcomeUnknown", true))
+                    };
+                }
                 return new RequestClaim { Disposition = RequestClaimDisposition.Claimed, Owner = owner };
             }
         }
@@ -306,9 +316,12 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             foreach (var file in states)
             {
                 var state = ReadState(file.FullName);
+                // Unresolved admission records are not disposable result-cache entries.
+                // Removing one would grant fresh authority for an uncertain mutation.
+                if (state == null || state.Status != "completed") continue;
                 var completedUtc = ParseUtc(state?.CompletedUtc);
                 var expired = completedUtc != DateTime.MinValue && now - completedUtc > ResultTtl;
-                var excessive = states.IndexOf(file) >= MaxStoredResults && state != null && state.Status != "executing";
+                var excessive = states.IndexOf(file) >= MaxStoredResults;
                 if (!expired && !excessive)
                 {
                     continue;

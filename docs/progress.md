@@ -14,6 +14,9 @@ Milestone source documents:
 
 Commits and verified gates:
 
+- `d3f7e85` — `docs(goal): adopt attainable local course-ready acceptance gates`
+  - Committed the user-approved active goal contract and rolling evidence ledger. Local Windows Unity 2022.3.62f1 implementation and safety gates remain mandatory; remote CI, other environments and real course projects remain pending external obligations.
+  - Reviewed the complete two-file documentation diff and checked whitespace. No code, tokens, generated Unity data, course assets, push or PR were included. This entry is recorded after the commit and will travel with the next progress update.
 - `553c6c3` — `fix(security): authenticate complete durable queue requests`
   - Added bounded v2 exact-request HMAC envelopes on Node/C#, authenticated pending and stale claims before inner parsing, and preserved bearer transports, project/capability checks and semantic deduplication. Legacy packets now require an explicit joint Node/UPM upgrade.
   - Five original tampering regressions failed before the fix; final unit evidence: Node 229/229, Unity EditMode 183/183, protocol 9/9, live queue 8/8 and HTTP/WebSocket security 12/12. Typecheck, build, lint, format and diff checks passed. The invalid-token CLI guard failed without printing the token; the owned fixture Editor was stopped.
