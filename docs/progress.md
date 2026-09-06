@@ -14,6 +14,11 @@ Milestone source documents:
 
 Commits and verified gates:
 
+- `24360e9` — `fix(validation): require exact compiler and course evidence`
+  - Enforced coherent exact-generation compiler receipts, file/code/count expectations for all nine seeded compiler defects, and independent Console assertions for each Marvin Write overload. Compiler observation failures no longer satisfy expected runtime assertion failures.
+  - Completed review `20260905-233614-8794ea99`; both independently validated findings were applied. Direct receipt rejection tests cover missing generations and insufficient counts. Final Node 24.11.1 tests passed 290/290 and protocol 10/10; build, typecheck, lint, formatting, strict changed-test typechecking and diff checks passed; audit found zero vulnerabilities.
+  - The pre-review-fix live run passed Module 1 23/23, Module 2 43/43 and both cancellation restorations. Parent checks confirmed exact source/scene hashes and observed PageUp/PageDown state changes on the declared fixture driver. These are explicitly not post-review-fix or final complete-series Unity gates.
+  - Committed exactly 14 owned implementation/test/evidence files, with no generated Unity data, credentials, course assets or external publication. Remaining local release-candidate gates are unchanged. This post-commit ledger entry travels with the next progress update.
 - `81bf257` — `fix(reliability): preserve paired script recovery across callers`
   - Prepared and compensated paired source/metadata changes, retained unverified displaced bytes, preserved later metadata edits, and carried failed recovery receipts through batch/scenario boundaries. Incomplete/unknown scenario recovery now refuses automatic restore/cleanup.
   - Completed eight-lens review `20260905-225422-d12a5216`; three file-grouped follow-ups applied all four independently validated P1 findings. Red/green regressions and fixture-path correction chronology are recorded in `course-ready-verification.md`; no finding was silently waived.

@@ -13,7 +13,7 @@ Do not advertise macOS, Linux, Unity 2021, Unity 6, or another Unity 2022 patch 
 
 From a clean checkout:
 
-On Windows, install PowerShell 7 and ensure `pwsh.exe` is on PATH before running the tests. Owned-process cleanup uses .NET process-tree termination; helper failures remain failed gates even when the root process exits. The Windows regression includes a real descendant and an unrelated sentinel process.
+On Windows 10+, install PowerShell 7, ensure `pwsh.exe` is on PATH and permit `Add-Type` before running the tests. Version probes assign a Windows Job Object atomically before the executable runs; success requires observed root exit and an empty job. Other owned-process cleanup uses .NET process-tree termination. Helper failures remain failed gates even when the root process exits. Regressions include root-first exit, cancellation, timeout, supervisor loss, real descendants and an unrelated sentinel process. This fixed runner helper is not a sandbox for hostile executables and is not exposed as an MCP arbitrary-code capability.
 
 ```text
 npm ci

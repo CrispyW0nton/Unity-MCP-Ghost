@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
-import { stopOwnedProcess } from "../src/testing/unityEditor.js";
+import { assertCertifiedUnityEditor, stopOwnedProcess } from "../src/testing/unityEditor.js";
 import { defaultUnityTestTimeoutMs, runUnityTestSuite, unityTestTimeoutMs, type UnityTestDependencies } from "../src/testing/unityTestRunner.js";
 
 const greenXml = '<test-run result="Passed" total="2" passed="2" failed="0" skipped="0" inconclusive="0"></test-run>';
@@ -46,6 +46,41 @@ async function fixture(t: TestContext, mode: "green" | "failed" | "missing" | "r
 }
 
 describe("owned Unity test runner", () => {
+  it("preserves a real version probe's cleanup failure after cancellation", async (t) => {
+    const f = await fixture(t, "green");
+    const cancellation = new AbortController();
+    const cleanupFailure = new Error("Version helper cleanup could not be proven");
+    await assert.rejects(
+      runUnityTestSuite(
+        { editorPath: process.execPath, projectPath: f.projectPath, platform: "EditMode", signal: cancellation.signal },
+        {
+          ...f.dependencies,
+          verifyEditor: async (path, signal) => {
+            const verification = assertCertifiedUnityEditor(path, signal, {
+              versionArguments: ["-e", "setInterval(() => {}, 1000)"],
+              stopVersion: async (child) => {
+                await stopOwnedProcess(child);
+                throw cleanupFailure;
+              }
+            });
+            cancellation.abort(new Error("Cancel during version verification"));
+            await verification;
+          }
+        }
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateError);
+        assert.ok(error.errors.includes(cleanupFailure));
+        assert.ok(error.errors.some((item: unknown) => item instanceof Error && item.message.includes("UNITY_TEST_CANCELLED")));
+        assert.ok("code" in error && error.code === "UNITY_VERSION_CLEANUP_FAILED");
+        assertFailureEvidence(error, f.projectPath, /cleanup was not verified/);
+        return true;
+      }
+    );
+    assert.equal(f.launches.length, 0);
+    assert.equal(await readFile(f.stableResult, "utf8"), "previous certified result");
+  });
+
   it("validates a bounded timeout before starting work", () => {
     assert.equal(unityTestTimeoutMs(undefined), defaultUnityTestTimeoutMs);
     assert.equal(unityTestTimeoutMs("1"), 1);

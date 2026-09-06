@@ -10,7 +10,7 @@ The `0.2.0-rc.1` release candidate contains:
 
 Supported baseline: **Unity 2022.3.62f1 on Windows**, with local Node verification on **24.11.1**. The development toolchain requires Node 20.19+, 22.13+, or 24+; CI is configured for the latest 20/22/24 patches, but those remote results are not yet observed. Other Unity versions and operating systems are not certified until their CI jobs are observed green.
 
-Windows tests that launch owned child processes also require **PowerShell 7 (`pwsh.exe` on PATH)** for bounded process-tree cleanup. This is a test-runner prerequisite, not a dependency of the MCP server or Unity package.
+Windows tests that launch owned child processes also require **Windows 10+ and PowerShell 7 (`pwsh.exe` on PATH, with `Add-Type` permitted)** for bounded process cleanup. Version probes use an atomically assigned Windows Job Object and fail if cleanup cannot be verified. These are test-runner prerequisites, not dependencies of the MCP server or Unity package.
 
 See [docs/development-plan.md](docs/development-plan.md) for the full strategic roadmap, including the competitive pattern map, phased tool catalog, semantic-analysis moat, durable transport plan, and mobile/runtime milestones. See [docs/progress.md](docs/progress.md) for implementation progress and [docs/mcp-book-guidance.md](docs/mcp-book-guidance.md) for the MCP-specific design guidance applied from the local protocol reference books.
 

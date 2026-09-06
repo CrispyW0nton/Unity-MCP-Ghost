@@ -94,7 +94,9 @@ export async function runUnityTestSuite(options: UnityTestOptions, dependencies:
       signal.throwIfAborted();
       result = { counts, resultPath, logPath };
     } catch (error) {
-      failure = signal.aborted ? signal.reason : error;
+      // Version verification owns its subprocess cleanup. Do not replace its
+      // compound failure with cancellation and hide uncertain descendant exit.
+      failure = error instanceof AggregateError ? error : signal.aborted ? signal.reason : error;
     }
     // Cleanup must finish even after cancellation. Keep cancellation and the
     // deadline active until cleanup completes, then accept this unique result.
@@ -107,6 +109,7 @@ export async function runUnityTestSuite(options: UnityTestOptions, dependencies:
         code: "UNITY_TEST_CLEANUP_FAILED"
       });
     }
+    if (failure instanceof AggregateError) throw failure;
     signal.throwIfAborted();
     if (!result) throw failure;
     return result;

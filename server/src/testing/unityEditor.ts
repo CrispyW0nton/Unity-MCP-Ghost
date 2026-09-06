@@ -1,6 +1,7 @@
-import { execFile, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { platform } from "node:os";
 import { promisify } from "node:util";
+import { startWindowsVersionJob } from "./windowsVersionJob.js";
 
 export const certifiedUnityVersion = "2022.3.62f1";
 
@@ -10,9 +11,118 @@ export function assertCertifiedUnityVersion(version: string): void {
   }
 }
 
-export async function assertCertifiedUnityEditor(path: string, signal?: AbortSignal): Promise<void> {
-  const { stdout } = await promisify(execFile)(path, ["-version"], { windowsHide: true, timeout: 15000, maxBuffer: 4096, signal });
-  assertCertifiedUnityVersion(stdout);
+export interface UnityVersionProbeDependencies {
+  versionArguments?: string[];
+  timeoutMs?: number;
+  /** Internal test hook; Windows job cleanup always completes before this hook. */
+  stopVersion?: (child: ChildProcess) => Promise<void>;
+}
+
+export async function assertCertifiedUnityEditor(path: string, signal?: AbortSignal, dependencies: UnityVersionProbeDependencies = {}): Promise<void> {
+  const timeoutMs = dependencies.timeoutMs ?? 15000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 15000) throw new Error("Unity version probe timeout must be from 1 to 15000 ms.");
+  signal?.throwIfAborted();
+  const args = dependencies.versionArguments ?? ["-version"];
+  const job = platform() === "win32" ? startWindowsVersionJob(path, args) : undefined;
+  // Non-Windows keeps its existing, uncertified cleanup behavior. Windows owns
+  // an atomic job boundary, independent of the version root's lifetime.
+  const child = job?.child ?? spawn(path, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  // A cancellation may beat a pending spawn error. Keep that error handled even
+  // after the observation listeners detach; close releases this final listener.
+  const ignoreLateError = () => {};
+  child.once("error", ignoreLateError);
+  child.once("close", () => child.removeListener("error", ignoreLateError));
+  let failure: unknown;
+  let verified = false;
+  try {
+    assertCertifiedUnityVersion(await readVersionOutput(child, timeoutMs, signal, job?.output));
+    verified = true;
+  } catch (error) {
+    failure = signal?.aborted ? signal.reason : error;
+  }
+  try {
+    if (job) await job.stop();
+    await (dependencies.stopVersion ?? (job ? undefined : stopOwnedProcess))?.(child);
+  } catch (cleanupError) {
+    const failures = verified ? [] : [failure];
+    if (signal?.aborted && signal.reason !== failure) failures.push(signal.reason);
+    throw Object.assign(new AggregateError([...failures, cleanupError], "UNITY_VERSION_CLEANUP_FAILED: Version process cleanup was not verified."), {
+      code: "UNITY_VERSION_CLEANUP_FAILED"
+    });
+  } finally {
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  }
+  signal?.throwIfAborted();
+  if (!verified) throw failure;
+}
+
+async function readVersionOutput(child: ChildProcess, timeoutMs: number, signal?: AbortSignal, supervisedOutput?: Promise<string>): Promise<string> {
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  const stdout: Buffer[] = [];
+  let detach!: () => void;
+  try {
+    return await new Promise<string>((resolveOutput, reject) => {
+      let settled = false;
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      const onAbort = () => fail(signal?.reason);
+      const onStdout = (chunk: Buffer) => {
+        if (settled) return;
+        stdoutBytes += chunk.byteLength;
+        if (stdoutBytes > 4096) fail(versionOutputLimit("stdout"));
+        else stdout.push(chunk);
+      };
+      const onStderr = (chunk: Buffer) => {
+        if (settled) return;
+        stderrBytes += chunk.byteLength;
+        if (stderrBytes > 4096) fail(versionOutputLimit("stderr"));
+      };
+      const onClose = (code: number | null) => {
+        if (settled) return;
+        settled = true;
+        if (code !== 0)
+          reject(Object.assign(new Error(`UNITY_VERSION_EXIT_FAILED: Version probe exited with code ${code}.`), { code: "UNITY_VERSION_EXIT_FAILED" }));
+        else resolveOutput(Buffer.concat(stdout).toString("utf8"));
+      };
+      const timer = setTimeout(
+        () => fail(Object.assign(new Error(`UNITY_VERSION_TIMEOUT: Version probe exceeded ${timeoutMs} ms.`), { code: "UNITY_VERSION_TIMEOUT" })),
+        timeoutMs
+      );
+      child.once("error", fail);
+      if (supervisedOutput) {
+        void supervisedOutput.then((output) => {
+          if (settled) return;
+          settled = true;
+          resolveOutput(output);
+        }, fail);
+      } else {
+        child.once("close", onClose);
+        child.stdout?.on("data", onStdout);
+        child.stderr?.on("data", onStderr);
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      detach = () => {
+        clearTimeout(timer);
+        child.removeListener("error", fail);
+        child.removeListener("close", onClose);
+        child.stdout?.removeListener("data", onStdout);
+        child.stderr?.removeListener("data", onStderr);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      if (signal?.aborted) onAbort();
+    });
+  } finally {
+    detach();
+  }
+}
+
+function versionOutputLimit(stream: string): Error {
+  return Object.assign(new Error(`UNITY_VERSION_OUTPUT_LIMIT: Version probe ${stream} exceeded 4096 bytes.`), { code: "UNITY_VERSION_OUTPUT_LIMIT" });
 }
 
 /** Stop only a child spawned by this runner, including its owned Windows helper processes. */
