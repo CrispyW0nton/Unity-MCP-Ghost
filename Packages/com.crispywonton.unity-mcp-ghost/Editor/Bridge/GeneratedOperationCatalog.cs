@@ -33,6 +33,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             "package.remove",
             "package.search",
             "play_mode.get",
+            "player.build",
             "prefab.create",
             "prefab.instantiate",
             "prefab.references_trace",

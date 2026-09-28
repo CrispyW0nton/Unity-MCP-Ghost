@@ -423,12 +423,12 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                     ["name"] = request.Value<string>("name")
                 },
                 ["exists"] = gameObject != null,
-                ["instanceId"] = gameObject == null ? null : (JToken)gameObject.GetInstanceID(),
+                ["instanceId"] = gameObject == null ? null : (JToken)gameObject.GetGhostInstanceId(),
                 ["hierarchyPath"] = gameObject == null ? null : HierarchyPath(gameObject.transform),
                 ["activeSelf"] = gameObject == null ? null : (JToken)gameObject.activeSelf,
                 ["activeInHierarchy"] = gameObject == null ? null : (JToken)gameObject.activeInHierarchy,
                 ["component"] = component == null ? null : component.GetType().FullName,
-                ["componentInstanceId"] = component == null ? null : (JToken)component.GetInstanceID(),
+                ["componentInstanceId"] = component == null ? null : (JToken)component.GetGhostInstanceId(),
                 ["propertyPath"] = request.Value<string>("propertyPath"),
                 ["observed"] = observed
             };

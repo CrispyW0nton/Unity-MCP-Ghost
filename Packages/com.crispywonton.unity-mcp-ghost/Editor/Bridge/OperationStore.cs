@@ -20,6 +20,16 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         internal static string RootOverrideForTests;
 
+        internal static void Reattach(string id, Func<string> readJson, Action cancel)
+        {
+            lock (Sync)
+            {
+                var record = Load(PathFor(id));
+                if (record == null || IsTerminal(record.Status)) return;
+                Operations[id] = new LiveOperation { Kind = record.Kind, Label = record.Label, ReadJson = readJson, Cancel = cancel, CancellationSafe = true };
+            }
+        }
+
         public static string Register(string kind, string label, Func<string> readJson)
         {
             var id = Guid.NewGuid().ToString("N");

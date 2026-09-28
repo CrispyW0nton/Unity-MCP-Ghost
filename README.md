@@ -1,5 +1,7 @@
 # Unity MCP Ghost
 
+> **Branch notice — Unity 6.5 development snapshot:** `codex/unity-6000.5-compatibility` contains the conversion targeting **Unity 6000.5.9f1**. It currently fails compilation with the repository's Unity 2022.3.62f1 test fixture because the new test-run recovery calls require newer Test Framework APIs. The baseline support statement below describes the earlier release, not certification of this branch. See [conversion evidence and current verification limits](docs/unity-6-5-conversion.md). Do not treat this snapshot as a cross-version release.
+
 Unity MCP Ghost is a Cursor-first Unity automation bridge inspired by the Unreal MCP Ghost architecture: inspect, mutate, validate, repair, test, and document Unity projects through deterministic MCP tools.
 
 The `0.2.0-rc.1` release candidate contains:

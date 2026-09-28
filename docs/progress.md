@@ -17,6 +17,10 @@ Current bounded work: explicit repair recovery is committed at `72f69f0` and smo
 
 Commits and verified gates:
 
+- `f0503d808ea94f6317a3000e9638d59759f9e547` — `fix(core): bound public compile waits and require exact evidence`
+  - Committed exactly nine owned source/test/documentation paths. Public compile/validation waits use actual SDK cancellation, one monotonic budget, single-send validation starts and strict exact-generation diagnostics; typed non-execution and uncertain outcomes remain distinct.
+  - Parent final verification: 265/265 focused, Node 527/527 and protocol 10/10, no failures/skips/cancellations; typecheck, lint, format, build/catalog/release layout, direct strict changed-test checks and diff checks passed; dependency audit found zero vulnerabilities. Completed bounded review findings #1/#5/#6 are applied; exact commands and red/green evidence are in `docs/public-compile-wait-verification-2026-09-06.md`.
+  - No Unity/live-course/final-series gate was rerun for this TypeScript slice. No credentials, generated Unity data, course assets, push or PR were included. Working tree was clean immediately after commit; this post-commit ledger travels with the next progress update. At handoff the goal service reports `usageLimited`, not complete; next required unit is actual Test Runner lifecycle.
 - `ba19aa2` — `fix(testing): make repair smoke recovery evidence trustworthy`
   - Replaced implicit retries and fixed-folder cleanup with unique owned scratch content, live authenticated capability/identity preflight, producer-faithful creation hashes, expected current-generation compiler failure and independently verified rollback. Unknown scene/import/mutation outcomes retain evidence and defer further Editor mutations.
   - Completed review `20260906-014839-2109d572` resolved findings #1/#2/#3 plus the independently reproduced unknown-generation follow-up. The original Not ready report and follow-up evidence remain separate; no different-provider review was available. Exact red/green commands are in `docs/repair-smoke-safety-verification-2026-09-06.md`.

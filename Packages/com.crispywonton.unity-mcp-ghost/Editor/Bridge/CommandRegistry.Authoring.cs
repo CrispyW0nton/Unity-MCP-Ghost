@@ -227,7 +227,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static string HandleGameObjectSetTransform(UnityMcpRequest request)
         {
             var instanceId = JsonRpcUtil.ReadInt(request.RawJson, "instanceId", 0);
-            var gameObject = EditorUtility.InstanceIDToObject(instanceId) as GameObject;
+            var gameObject = ObjectIdentity.Resolve(instanceId) as GameObject;
             if (gameObject == null)
             {
                 throw new InvalidOperationException("Could not resolve GameObject instanceId: " + instanceId);
@@ -283,7 +283,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static string HandleGameObjectGet(UnityMcpRequest request)
         {
             var instanceId = JsonRpcUtil.ReadInt(request.RawJson, "instanceId", 0);
-            var gameObject = EditorUtility.InstanceIDToObject(instanceId) as GameObject;
+            var gameObject = ObjectIdentity.Resolve(instanceId) as GameObject;
             if (gameObject == null)
             {
                 throw new InvalidOperationException("Could not resolve GameObject instanceId: " + instanceId);
@@ -295,7 +295,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private static string HandleGameObjectDelete(UnityMcpRequest request)
         {
             var instanceId = JsonRpcUtil.ReadInt(request.RawJson, "instanceId", 0);
-            var gameObject = EditorUtility.InstanceIDToObject(instanceId) as GameObject;
+            var gameObject = ObjectIdentity.Resolve(instanceId) as GameObject;
             if (gameObject == null)
             {
                 throw new InvalidOperationException("Could not resolve GameObject instanceId: " + instanceId);
@@ -320,7 +320,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             var name = JsonRpcUtil.ReadString(request.RawJson, "name", original.name + " Copy");
             if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
             {
-                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"gameobject.duplicate\",\"sourceInstanceId\":" + original.GetInstanceID() + ",\"name\":\"" + JsonRpcUtil.Escape(name) + "\"}}";
+                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"gameobject.duplicate\",\"sourceInstanceId\":" + original.GetGhostInstanceId() + ",\"name\":\"" + JsonRpcUtil.Escape(name) + "\"}}";
             }
 
             Undo.IncrementCurrentGroup();
@@ -395,7 +395,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("{\"ok\":true,\"gameObject\":\"");
             builder.Append(JsonRpcUtil.Escape(gameObject.name));
             builder.Append("\",\"instanceId\":");
-            builder.Append(gameObject.GetInstanceID());
+            builder.Append(gameObject.GetGhostInstanceId());
             builder.Append(",\"components\":[");
 
             var count = 0;
@@ -442,7 +442,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
             {
-                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"component.modify\",\"componentInstanceId\":" + component.GetInstanceID() + ",\"type\":\"" + JsonRpcUtil.Escape(component.GetType().FullName) + "\",\"propertyPath\":\"" + JsonRpcUtil.Escape(propertyPath) + "\",\"currentValue\":\"" + JsonRpcUtil.Escape(PropertyValueAsString(property)) + "\"}}";
+                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"component.modify\",\"componentInstanceId\":" + component.GetGhostInstanceId() + ",\"type\":\"" + JsonRpcUtil.Escape(component.GetType().FullName) + "\",\"propertyPath\":\"" + JsonRpcUtil.Escape(propertyPath) + "\",\"currentValue\":\"" + JsonRpcUtil.Escape(PropertyValueAsString(property)) + "\"}}";
             }
 
             Undo.IncrementCurrentGroup();
@@ -465,14 +465,14 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             if (JsonRpcUtil.ReadBool(request.RawJson, "dryRun", false))
             {
-                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"component.remove\",\"componentInstanceId\":" + component.GetInstanceID() + ",\"type\":\"" + JsonRpcUtil.Escape(component.GetType().FullName) + "\"}}";
+                return "{\"ok\":true,\"dryRun\":true,\"planned\":{\"action\":\"component.remove\",\"componentInstanceId\":" + component.GetGhostInstanceId() + ",\"type\":\"" + JsonRpcUtil.Escape(component.GetType().FullName) + "\"}}";
             }
 
             Undo.IncrementCurrentGroup();
             Undo.SetCurrentGroupName("MCP: Remove Component");
             var undoGroupId = Undo.GetCurrentGroup();
             var type = component.GetType().FullName;
-            var componentId = component.GetInstanceID();
+            var componentId = component.GetGhostInstanceId();
             Undo.DestroyObjectImmediate(component);
             return "{\"ok\":true,\"removed\":{\"componentInstanceId\":" + componentId + ",\"type\":\"" + JsonRpcUtil.Escape(type) + "\"},\"undoGroupId\":" + undoGroupId + "}";
         }

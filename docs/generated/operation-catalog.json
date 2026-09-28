@@ -1740,6 +1740,207 @@
       ]
     },
     {
+      "operationId": "ghost.tool.build_player.v1",
+      "version": 1,
+      "name": "build_player",
+      "description": "Build a saved scene into a new Windows player or unsigned iOS Xcode project directory under project Builds. Requires the matching installed and active platform. Existing outputs are never overwritten.",
+      "profile": "authoring",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "scene": {
+            "type": "string",
+            "minLength": 1
+          },
+          "buildName": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{1,64}$"
+          },
+          "target": {
+            "default": "StandaloneWindows64",
+            "type": "string",
+            "enum": [
+              "StandaloneWindows64",
+              "iOS"
+            ]
+          },
+          "dryRun": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "scene",
+          "buildName",
+          "target",
+          "dryRun"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "data": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "data": {}
+                },
+                "required": [
+                  "code",
+                  "message"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "warning",
+                    "error"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "data": {}
+              },
+              "required": [
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "operationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "undoGroupId": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "data",
+          "error",
+          "diagnostics",
+          "requestId",
+          "operationId",
+          "projectId",
+          "confidence",
+          "undoGroupId",
+          "durationMs",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "scene": "x",
+          "buildName": "0000000000000000000000000000000000000000000000000000000000000000",
+          "target": "StandaloneWindows64",
+          "dryRun": false
+        }
+      ],
+      "risk": "asset-write",
+      "mutates": true,
+      "supportsDryRun": true,
+      "phase": 2,
+      "relatedResources": [],
+      "destructive": false,
+      "idempotent": false,
+      "openWorld": false,
+      "permissionClass": "project-write",
+      "mainThread": true,
+      "undoable": false,
+      "expectedDurationMs": {
+        "minimum": 1,
+        "maximum": 300000
+      },
+      "bridgeOperations": [
+        "player.build"
+      ]
+    },
+    {
       "operationId": "ghost.tool.call_path_find.v1",
       "version": 1,
       "name": "call_path_find",

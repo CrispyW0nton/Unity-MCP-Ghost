@@ -53,6 +53,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private void RegisterAuthoringCommands()
         {
+            Register("player.build", HandlePlayerBuild);
             Register("scene.get_hierarchy", HandleSceneHierarchy);
             Register("scene.create", HandleSceneCreate);
             Register("scene.open", HandleSceneOpen);

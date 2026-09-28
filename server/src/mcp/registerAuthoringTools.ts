@@ -6,6 +6,20 @@ export function registerAuthoringTools(server: McpServer, context: ToolContext):
   registerUnityRequestTool(
     server,
     context,
+    "build_player",
+    "Build a saved scene into a new Windows player or unsigned iOS Xcode project directory under project Builds. Requires the matching installed and active platform. Existing outputs are never overwritten.",
+    {
+      scene: z.string().min(1),
+      buildName: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+      target: z.enum(["StandaloneWindows64", "iOS"]).default("StandaloneWindows64"),
+      dryRun: DryRunSchema
+    },
+    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    "player.build"
+  );
+  registerUnityRequestTool(
+    server,
+    context,
     "scene_create",
     "Create a new Unity scene for level, menu, or gameplay prototyping work.",
     {

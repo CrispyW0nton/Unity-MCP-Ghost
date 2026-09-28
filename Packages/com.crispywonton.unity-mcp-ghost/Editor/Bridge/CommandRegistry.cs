@@ -103,6 +103,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 + "\"activeScenePath\":\"" + JsonRpcUtil.Escape(activeScene.path) + "\","
                 + "\"isCompiling\":" + Bool(EditorApplication.isCompiling) + ","
                 + "\"isPlaying\":" + Bool(EditorApplication.isPlaying) + ","
+                + "\"activeSceneDirty\":" + Bool(activeScene.isDirty) + ","
+                + "\"compileState\":" + (CompileDiagnosticBuffer.LatestRequestedGeneration > 0 ? CompileDiagnosticBuffer.WaitState(CompileDiagnosticBuffer.LatestRequestedGeneration, false) : "null") + ","
                 + "\"isPaused\":" + Bool(EditorApplication.isPaused) + ","
                 + "\"durableQueue\":" + DurableCommandQueue.StatusJson()
                 + "}";
@@ -115,6 +117,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 + "\"ok\":true,"
                 + "\"isCompiling\":" + Bool(EditorApplication.isCompiling) + ","
                 + "\"isPlaying\":" + Bool(EditorApplication.isPlaying) + ","
+                + "\"activeSceneDirty\":" + Bool(activeScene.isDirty) + ","
+                + "\"compileState\":" + (CompileDiagnosticBuffer.LatestRequestedGeneration > 0 ? CompileDiagnosticBuffer.WaitState(CompileDiagnosticBuffer.LatestRequestedGeneration, false) : "null") + ","
                 + "\"isPaused\":" + Bool(EditorApplication.isPaused) + ","
                 + "\"isUpdating\":" + Bool(EditorApplication.isUpdating) + ","
                 + "\"activeScenePath\":\"" + JsonRpcUtil.Escape(activeScene.path) + "\","
@@ -555,6 +559,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             var operationId = Guid.NewGuid().ToString("N");
+            GhostTestRunRecovery.Begin(operationId);
             var callbacks = new GhostTestRunCallbacks(operationId);
             var api = ScriptableObject.CreateInstance<TestRunnerApi>();
             api.RegisterCallbacks(callbacks);
@@ -572,7 +577,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             }
 
             OperationStore.Register(operationId, "tests", "tests.run " + mode, () => callbacks.StateJson, () => CancelTestRun(api), true);
-            api.Execute(new ExecutionSettings(filter));
+            try { GhostTestRunRecovery.RunnerStarted(api.Execute(new ExecutionSettings(filter))); }
+            catch { GhostTestRunRecovery.Finished(operationId); throw; }
             return OperationStarted(operationId, "tests.run");
         }
 
@@ -651,7 +657,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("{\"name\":\"");
             builder.Append(JsonRpcUtil.Escape(gameObject.name));
             builder.Append("\",\"instanceId\":");
-            builder.Append(gameObject.GetInstanceID());
+            builder.Append(gameObject.GetGhostInstanceId());
             builder.Append(",\"activeSelf\":");
             builder.Append(Bool(gameObject.activeSelf));
             builder.Append(",\"depth\":");
@@ -712,7 +718,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             return "{"
                 + "\"ok\":true,"
                 + "\"name\":\"" + JsonRpcUtil.Escape(gameObject.name) + "\","
-                + "\"instanceId\":" + gameObject.GetInstanceID() + ","
+                + "\"instanceId\":" + gameObject.GetGhostInstanceId() + ","
                 + "\"scenePath\":\"" + JsonRpcUtil.Escape(gameObject.scene.path) + "\","
                 + "\"activeSelf\":" + Bool(gameObject.activeSelf) + ","
                 + "\"undoGroupId\":" + (undoGroupId.HasValue ? undoGroupId.Value.ToString(CultureInfo.InvariantCulture) : "null") + ","
@@ -774,7 +780,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("{\"name\":\"");
             builder.Append(JsonRpcUtil.Escape(gameObject.name));
             builder.Append("\",\"instanceId\":");
-            builder.Append(gameObject.GetInstanceID());
+            builder.Append(gameObject.GetGhostInstanceId());
             builder.Append(",\"scenePath\":\"");
             builder.Append(JsonRpcUtil.Escape(gameObject.scene.path));
             builder.Append("\",\"activeSelf\":");
@@ -784,7 +790,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static GameObject ResolveGameObject(int instanceId)
         {
-            var gameObject = EditorUtility.InstanceIDToObject(instanceId) as GameObject;
+            var gameObject = ObjectIdentity.Resolve(instanceId) as GameObject;
             if (gameObject == null)
             {
                 throw new InvalidOperationException("Could not resolve GameObject instanceId: " + instanceId);
@@ -795,7 +801,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static Component ResolveComponent(int componentInstanceId)
         {
-            var component = EditorUtility.InstanceIDToObject(componentInstanceId) as Component;
+            var component = ObjectIdentity.Resolve(componentInstanceId) as Component;
             if (component == null)
             {
                 throw new InvalidOperationException("Could not resolve Component instanceId: " + componentInstanceId);
@@ -903,9 +909,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             builder.Append("\",\"name\":\"");
             builder.Append(JsonRpcUtil.Escape(component.GetType().Name));
             builder.Append("\",\"componentInstanceId\":");
-            builder.Append(component.GetInstanceID());
+            builder.Append(component.GetGhostInstanceId());
             builder.Append(",\"gameObjectInstanceId\":");
-            builder.Append(component.gameObject.GetInstanceID());
+            builder.Append(component.gameObject.GetGhostInstanceId());
             builder.Append(",\"gameObject\":\"");
             builder.Append(JsonRpcUtil.Escape(component.gameObject.name));
             builder.Append("\"}");
@@ -3329,6 +3335,9 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         public void RunFinished(ITestResultAdaptor result)
         {
+            GhostTestRunRecovery.Finished(OperationId);
+            TestRunnerApi.UnregisterTestCallback(this);
+            if (result != null) { passed=result.PassCount;failed=result.FailCount;skipped=result.SkipCount+result.InconclusiveCount;total=passed+failed+skipped;failedTests.Clear();CollectFailures(result); }
             var status = ClassifyRunStatus(result != null ? result.ResultState : "InfrastructureError", failed);
             var response = new JObject
             {
@@ -3355,6 +3364,12 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
             StateJson = response.ToString(Formatting.None);
             OperationStore.Update(OperationId, StateJson);
+        }
+
+        private void CollectFailures(ITestResultAdaptor result)
+        {
+            if(result.HasChildren){foreach(var child in result.Children)CollectFailures(child);return;}
+            if(result.ResultState.StartsWith("Failed",StringComparison.OrdinalIgnoreCase))failedTests.Add(new JObject{["name"]=result.Name,["fullName"]=result.FullName,["message"]=result.Message,["stackTrace"]=result.StackTrace});
         }
 
         public void TestStarted(ITestAdaptor test)

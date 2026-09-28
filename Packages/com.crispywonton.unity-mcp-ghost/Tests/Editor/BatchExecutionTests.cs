@@ -69,8 +69,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
                 {
                     ["operations"] = new JArray
                     {
-                        Operation("gameobject.set_transform", new JObject { ["instanceId"] = gameObject.GetInstanceID(), ["x"] = 9, ["y"] = 8, ["z"] = 7 }),
-                        Operation("component.add", new JObject { ["instanceId"] = gameObject.GetInstanceID(), ["type"] = "UnityEngine.Transform" })
+                        Operation("gameobject.set_transform", new JObject { ["instanceId"] = gameObject.GetGhostInstanceId(), ["x"] = 9, ["y"] = 8, ["z"] = 7 }),
+                        Operation("component.add", new JObject { ["instanceId"] = gameObject.GetGhostInstanceId(), ["type"] = "UnityEngine.Transform" })
                     }
                 });
 
@@ -96,7 +96,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
                     ["acceptedRisk"] = "safe-write",
                     ["operations"] = new JArray
                     {
-                        Operation("gameobject.delete", new JObject { ["instanceId"] = gameObject.GetInstanceID() })
+                        Operation("gameobject.delete", new JObject { ["instanceId"] = gameObject.GetGhostInstanceId() })
                     }
                 });
 
@@ -125,7 +125,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
                     ["operations"] = new JArray
                     {
                         Operation("asset.create_folder", new JObject { ["parentPath"] = "Assets", ["folderName"] = folderName }),
-                        Operation("component.add", new JObject { ["instanceId"] = gameObject.GetInstanceID(), ["type"] = "UnityEngine.Transform" })
+                        Operation("component.add", new JObject { ["instanceId"] = gameObject.GetGhostInstanceId(), ["type"] = "UnityEngine.Transform" })
                     }
                 });
 
@@ -196,7 +196,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor.Tests
                     {
                         Operation("script.write", new JObject { ["path"] = earlierAssetPath, ["content"] = changedSource }),
                         Operation("script.write", new JObject { ["path"] = failedAssetPath, ["content"] = changedSource }),
-                        Operation("component.add", new JObject { ["instanceId"] = gameObject.GetInstanceID(), ["type"] = "UnityEngine.Transform" })
+                        Operation("component.add", new JObject { ["instanceId"] = gameObject.GetGhostInstanceId(), ["type"] = "UnityEngine.Transform" })
                     }
                 });
 
