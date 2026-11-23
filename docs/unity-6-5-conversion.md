@@ -10,7 +10,7 @@ This development snapshot is published on `codex/unity-6000.5-compatibility`, no
 - `npm test`: 526/527 passed. The Windows version-probe timeout test failed because its fixture did not create its descendant before the deadline. An isolated rerun, `node --import tsx --test server/test/unityVersionProbe.test.ts`, passed 16/16. This is not a fully green rerun of the entire suite.
 - `npm run test:unity:editmode`: failed compilation on Unity 2022.3.62f1. `TestRunnerApi.UnregisterTestCallback` and `TestRunnerApi.CancelTestRun` are unavailable in that fixture's Test Framework. Earlier object-ID fallback code does not make the whole package compatible with the older fixture.
 - No Unity 6000.5.9f1 native suite was rerun for publication. The checked local Hub installations contain 2022.3.62f1, 6000.3.2f1, and 6000.3.5f2. The existing test-project version, CI configuration, and package metadata are not a new 6.5 certification matrix.
-- Known development limitation: the Windows build handler currently names its executable `DolphinCove.exe`; the generic build-name contract does not yet control that filename. iOS support is implemented but not certified by the Windows conversion evidence.
+- Resolved 2026-11-16: the Windows build handler now names its executable after `PlayerSettings.productName` (falling back to the build name) instead of `DolphinCove.exe`. iOS support is implemented but not certified by the Windows conversion evidence.
 
 The raw `conversion-node-tests.log` stays local and is excluded from the commit. No Unity caches, credentials, or course assets are added by this publication.
 

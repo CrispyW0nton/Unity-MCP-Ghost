@@ -478,7 +478,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
                 }
                 return new BatchOperationPolicy(method == "script.delete" ? "destructive" : "code-write", true, false, true, true);
             }
-            if (method == "package.add" || method == "package.remove")
+            if (method == "package.add" || method == "package.remove" || method == "asset.import_unitypackage")
             {
                 return new BatchOperationPolicy("external", true, false, true, false);
             }

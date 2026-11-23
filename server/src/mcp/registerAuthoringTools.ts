@@ -7,15 +7,37 @@ export function registerAuthoringTools(server: McpServer, context: ToolContext):
     server,
     context,
     "build_player",
-    "Build a saved scene into a new Windows player or unsigned iOS Xcode project directory under project Builds. Requires the matching installed and active platform. Existing outputs are never overwritten.",
+    "Build a saved scene into a new Windows player, unsigned iOS Xcode project, or WebGL folder (index.html) under project Builds. iOS/WebGL require the matching installed and active platform. Existing outputs are never overwritten.",
     {
       scene: z.string().min(1),
       buildName: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
-      target: z.enum(["StandaloneWindows64", "iOS"]).default("StandaloneWindows64"),
+      target: z.enum(["StandaloneWindows64", "iOS", "WebGL"]).default("StandaloneWindows64"),
       dryRun: DryRunSchema
     },
     { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
     "player.build"
+  );
+  registerUnityRequestTool(
+    server,
+    context,
+    "editor_operations_list",
+    "List the project's own editor operations: static methods in project editor code marked with a [GhostOperation(id)] attribute.",
+    {},
+    { risk: "read", mutates: false, supportsDryRun: false, phase: 2 },
+    "editor.list_operations"
+  );
+  registerUnityRequestTool(
+    server,
+    context,
+    "editor_invoke",
+    "Run one project-declared editor operation (a static method marked [GhostOperation(id)] in the project's own editor code) with an optional string argument. Only explicitly marked project methods can run; the editor must be idle.",
+    {
+      operation: z.string().regex(/^[A-Za-z][A-Za-z0-9_.]{0,96}$/),
+      args: z.string().max(20000).optional(),
+      dryRun: DryRunSchema
+    },
+    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    "editor.invoke"
   );
   registerUnityRequestTool(
     server,

@@ -216,6 +216,76 @@ export function registerCodeTools(server: McpServer, context: ToolContext): void
   registerUnityRequestTool(
     server,
     context,
+    "asset_texture_import_set",
+    "Set texture import settings for one texture or every texture in a folder (Sprite for UI art, Point filtering for pixel art, mipmaps, anisotropy, max size, alpha). Dry-run lists the textures and their current settings.",
+    {
+      path: z.string().min(1).describe("Assets/ path of a texture file or a folder of textures"),
+      textureType: z.enum(["Default", "Sprite", "NormalMap"]).optional(),
+      filterMode: z.enum(["Point", "Bilinear", "Trilinear"]).optional(),
+      mipmaps: z.boolean().optional(),
+      alphaIsTransparency: z.boolean().optional(),
+      anisoLevel: z.number().int().min(0).max(16).optional(),
+      maxSize: z.number().int().min(32).max(16384).optional(),
+      dryRun: DryRunSchema
+    },
+    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    "asset.texture_import_set"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "asset_import_unitypackage",
+    "Import a local .unitypackage asset pack (absolute path) without the interactive dialog. Requires the project's package/external capability; dry-run (default) only validates the file. Wait for compile_wait afterwards.",
+    {
+      packagePath: z.string().min(1).describe("Absolute path to a .unitypackage file on this machine"),
+      dryRun: z.boolean().default(true)
+    },
+    { risk: "external", mutates: true, supportsDryRun: true, phase: 2, openWorld: false },
+    "asset.import_unitypackage"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "project_settings_set",
+    "Set Player settings that assignments specify: product and company name, default screen resolution (for example Full HD 1920x1080), full-screen mode and run-in-background. Returns the before/after values.",
+    {
+      productName: z.string().min(1).max(128).optional(),
+      companyName: z.string().min(1).max(128).optional(),
+      defaultScreenWidth: z.number().int().min(320).max(7680).optional(),
+      defaultScreenHeight: z.number().int().min(240).max(4320).optional(),
+      fullScreenMode: z.enum(["ExclusiveFullScreen", "FullScreenWindow", "MaximizedWindow", "Windowed"]).optional(),
+      runInBackground: z.boolean().optional(),
+      dryRun: DryRunSchema
+    },
+    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    "project.settings_set"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
+    "project_layers_set",
+    "Name user layers (6-31) and add tags in the TagManager, for example Ground/Player/Enemy layers used by LayerMask ground checks and sphere casts. Refuses to rename an existing layer unless replace is true.",
+    {
+      layers: z
+        .array(z.object({ index: z.number().int().min(6).max(31), name: z.string().min(1).max(64), replace: z.boolean().optional() }))
+        .max(26)
+        .optional(),
+      tags: z
+        .array(z.object({ name: z.string().min(1).max(64) }))
+        .max(64)
+        .optional(),
+      dryRun: DryRunSchema
+    },
+    { risk: "asset-write", mutates: true, supportsDryRun: true, phase: 2 },
+    "project.layers_set"
+  );
+
+  registerUnityRequestTool(
+    server,
+    context,
     "asset_move",
     "Move a Unity asset through AssetDatabase, constrained to Assets/ and dry-run previewable.",
     {

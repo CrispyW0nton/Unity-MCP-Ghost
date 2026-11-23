@@ -299,7 +299,7 @@ namespace CrispyWonton.UnityMcpGhost.Editor
 
         private static bool RequiresPackageCapability(string method)
         {
-            return method == "package.search" || method == "package.add" || method == "package.remove";
+            return method == "package.search" || method == "package.add" || method == "package.remove" || method == "asset.import_unitypackage";
         }
 
         private static bool IsArbitraryCode(string method)

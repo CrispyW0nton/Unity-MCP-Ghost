@@ -4,6 +4,8 @@ All notable changes to Unity MCP Ghost are documented here. The project follows 
 
 ## Unreleased - local Course-Ready candidate
 
+- Project setup tools found missing while building the GAM 215 Module 11 project: `asset_import_unitypackage` (local `.unitypackage`, gated by the package/external capability, dry-run by default), `project_settings_set` (product/company name, default resolution such as Full HD, full-screen mode, run in background), `project_layers_set` (user layers 6-31 and tags, refuses silent renames) and `asset_texture_import_set` (Sprite/Point/mipmaps/aniso/max size for a texture or folder). Catalog: 95 tools, 62 direct bridge mappings. Bridge sources compile against Unity 6000.3.5f2 references; the new operations have not yet been exercised through a live editor session.
+- `player_build` names the Windows executable after `PlayerSettings.productName` (falling back to the build name) instead of the hard-coded `DolphinCove.exe`.
 - `repair_apply_edits` result contract 2 makes incomplete/unknown receipts and failed verification explicit, retains recovery evidence, and requires rollback for non-dry-run repairs. Console diagnostics are explicitly unchecked (`consoleDiagnosticsChecked: false`, `consoleErrorCount: null`). See [migration and recovery guidance](docs/repair-result-contract-v2.md).
 - The complete local release-candidate verification is still in progress. The historical fixture-complete label below is superseded by this qualification: neither configured CI nor controlled-bridge tests certify the unfinished integrated milestone. Remote CI and real course-project certification remain pending.
 

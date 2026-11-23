@@ -54,6 +54,8 @@ namespace CrispyWonton.UnityMcpGhost.Editor
         private void RegisterAuthoringCommands()
         {
             Register("player.build", HandlePlayerBuild);
+            Register("editor.invoke", HandleEditorInvoke);
+            Register("editor.list_operations", HandleEditorOperationsList);
             Register("scene.get_hierarchy", HandleSceneHierarchy);
             Register("scene.create", HandleSceneCreate);
             Register("scene.open", HandleSceneOpen);
@@ -81,6 +83,10 @@ namespace CrispyWonton.UnityMcpGhost.Editor
             Register("asset.copy", HandleAssetCopy);
             Register("asset.delete", HandleAssetDelete);
             Register("asset.refresh", HandleAssetRefresh);
+            Register("asset.texture_import_set", HandleAssetTextureImportSet);
+            Register("asset.import_unitypackage", HandleAssetImportUnityPackage);
+            Register("project.settings_set", HandleProjectSettingsSet);
+            Register("project.layers_set", HandleProjectLayersSet);
             Register("prefab.create", HandlePrefabCreate);
             Register("prefab.instantiate", HandlePrefabInstantiate);
         }

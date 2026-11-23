@@ -938,6 +938,192 @@
       ]
     },
     {
+      "operationId": "ghost.tool.asset_import_unitypackage.v1",
+      "version": 1,
+      "name": "asset_import_unitypackage",
+      "description": "Import a local .unitypackage asset pack (absolute path) without the interactive dialog. Requires the project's package/external capability; dry-run (default) only validates the file. Wait for compile_wait afterwards.",
+      "profile": "authoring",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "packagePath": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Absolute path to a .unitypackage file on this machine"
+          },
+          "dryRun": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "packagePath",
+          "dryRun"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "data": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "data": {}
+                },
+                "required": [
+                  "code",
+                  "message"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "warning",
+                    "error"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "data": {}
+              },
+              "required": [
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "operationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "undoGroupId": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "data",
+          "error",
+          "diagnostics",
+          "requestId",
+          "operationId",
+          "projectId",
+          "confidence",
+          "undoGroupId",
+          "durationMs",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "packagePath": "Assets/Example.cs",
+          "dryRun": true
+        }
+      ],
+      "risk": "external",
+      "mutates": true,
+      "supportsDryRun": true,
+      "phase": 2,
+      "relatedResources": [],
+      "destructive": false,
+      "idempotent": false,
+      "openWorld": false,
+      "permissionClass": "package-network",
+      "mainThread": true,
+      "undoable": false,
+      "expectedDurationMs": {
+        "minimum": 1,
+        "maximum": 300000
+      },
+      "bridgeOperations": [
+        "asset.import_unitypackage"
+      ]
+    },
+    {
       "operationId": "ghost.tool.asset_move.v1",
       "version": 1,
       "name": "asset_move",
@@ -1497,6 +1683,224 @@
       ]
     },
     {
+      "operationId": "ghost.tool.asset_texture_import_set.v1",
+      "version": 1,
+      "name": "asset_texture_import_set",
+      "description": "Set texture import settings for one texture or every texture in a folder (Sprite for UI art, Point filtering for pixel art, mipmaps, anisotropy, max size, alpha). Dry-run lists the textures and their current settings.",
+      "profile": "authoring",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Assets/ path of a texture file or a folder of textures"
+          },
+          "textureType": {
+            "type": "string",
+            "enum": [
+              "Default",
+              "Sprite",
+              "NormalMap"
+            ]
+          },
+          "filterMode": {
+            "type": "string",
+            "enum": [
+              "Point",
+              "Bilinear",
+              "Trilinear"
+            ]
+          },
+          "mipmaps": {
+            "type": "boolean"
+          },
+          "alphaIsTransparency": {
+            "type": "boolean"
+          },
+          "anisoLevel": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16
+          },
+          "maxSize": {
+            "type": "integer",
+            "minimum": 32,
+            "maximum": 16384
+          },
+          "dryRun": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "dryRun"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "data": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "data": {}
+                },
+                "required": [
+                  "code",
+                  "message"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "warning",
+                    "error"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "data": {}
+              },
+              "required": [
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "operationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "undoGroupId": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "data",
+          "error",
+          "diagnostics",
+          "requestId",
+          "operationId",
+          "projectId",
+          "confidence",
+          "undoGroupId",
+          "durationMs",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "path": "Assets/Example.cs",
+          "dryRun": false
+        }
+      ],
+      "risk": "asset-write",
+      "mutates": true,
+      "supportsDryRun": true,
+      "phase": 2,
+      "relatedResources": [],
+      "destructive": false,
+      "idempotent": false,
+      "openWorld": false,
+      "permissionClass": "project-write",
+      "mainThread": true,
+      "undoable": false,
+      "expectedDurationMs": {
+        "minimum": 1,
+        "maximum": 300000
+      },
+      "bridgeOperations": [
+        "asset.texture_import_set"
+      ]
+    },
+    {
       "operationId": "ghost.tool.batch_execute.v1",
       "version": 1,
       "name": "batch_execute",
@@ -1743,7 +2147,7 @@
       "operationId": "ghost.tool.build_player.v1",
       "version": 1,
       "name": "build_player",
-      "description": "Build a saved scene into a new Windows player or unsigned iOS Xcode project directory under project Builds. Requires the matching installed and active platform. Existing outputs are never overwritten.",
+      "description": "Build a saved scene into a new Windows player, unsigned iOS Xcode project, or WebGL folder (index.html) under project Builds. iOS/WebGL require the matching installed and active platform. Existing outputs are never overwritten.",
       "profile": "authoring",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1772,7 +2176,8 @@
             "type": "string",
             "enum": [
               "StandaloneWindows64",
-              "iOS"
+              "iOS",
+              "WebGL"
             ]
           },
           "dryRun": {
@@ -5198,6 +5603,354 @@
         "maximum": 30000
       },
       "bridgeOperations": []
+    },
+    {
+      "operationId": "ghost.tool.editor_invoke.v1",
+      "version": 1,
+      "name": "editor_invoke",
+      "description": "Run one project-declared editor operation (a static method marked [GhostOperation(id)] in the project's own editor code) with an optional string argument. Only explicitly marked project methods can run; the editor must be idle.",
+      "profile": "authoring",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "operation": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_.]{0,96}$"
+          },
+          "args": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "dryRun": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation",
+          "dryRun"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "data": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "data": {}
+                },
+                "required": [
+                  "code",
+                  "message"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "warning",
+                    "error"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "data": {}
+              },
+              "required": [
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "operationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "undoGroupId": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "data",
+          "error",
+          "diagnostics",
+          "requestId",
+          "operationId",
+          "projectId",
+          "confidence",
+          "undoGroupId",
+          "durationMs",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "operation": "x",
+          "dryRun": false
+        }
+      ],
+      "risk": "asset-write",
+      "mutates": true,
+      "supportsDryRun": true,
+      "phase": 2,
+      "relatedResources": [],
+      "destructive": false,
+      "idempotent": false,
+      "openWorld": false,
+      "permissionClass": "project-write",
+      "mainThread": true,
+      "undoable": false,
+      "expectedDurationMs": {
+        "minimum": 1,
+        "maximum": 300000
+      },
+      "bridgeOperations": [
+        "editor.invoke"
+      ]
+    },
+    {
+      "operationId": "ghost.tool.editor_operations_list.v1",
+      "version": 1,
+      "name": "editor_operations_list",
+      "description": "List the project's own editor operations: static methods in project editor code marked with a [GhostOperation(id)] attribute.",
+      "profile": "authoring",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "data": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "data": {}
+                },
+                "required": [
+                  "code",
+                  "message"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "warning",
+                    "error"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "data": {}
+              },
+              "required": [
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "operationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "undoGroupId": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "data",
+          "error",
+          "diagnostics",
+          "requestId",
+          "operationId",
+          "projectId",
+          "confidence",
+          "undoGroupId",
+          "durationMs",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {}
+      ],
+      "risk": "read",
+      "mutates": false,
+      "supportsDryRun": false,
+      "phase": 2,
+      "relatedResources": [],
+      "destructive": false,
+      "idempotent": true,
+      "openWorld": false,
+      "permissionClass": "read",
+      "mainThread": false,
+      "undoable": false,
+      "expectedDurationMs": {
+        "minimum": 1,
+        "maximum": 30000
+      },
+      "bridgeOperations": [
+        "editor.list_operations"
+      ]
     },
     {
       "operationId": "ghost.tool.editor_state_get.v1",
@@ -11354,6 +12107,441 @@
       },
       "bridgeOperations": [
         "semantic.project_index_summary"
+      ]
+    },
+    {
+      "operationId": "ghost.tool.project_layers_set.v1",
+      "version": 1,
+      "name": "project_layers_set",
+      "description": "Name user layers (6-31) and add tags in the TagManager, for example Ground/Player/Enemy layers used by LayerMask ground checks and sphere casts. Refuses to rename an existing layer unless replace is true.",
+      "profile": "authoring",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "layers": {
+            "maxItems": 26,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "minimum": 6,
+                  "maximum": 31
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "replace": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "index",
+                "name"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "tags": {
+            "maxItems": 64,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "dryRun": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dryRun"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "data": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "data": {}
+                },
+                "required": [
+                  "code",
+                  "message"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "warning",
+                    "error"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "data": {}
+              },
+              "required": [
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "operationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "undoGroupId": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "data",
+          "error",
+          "diagnostics",
+          "requestId",
+          "operationId",
+          "projectId",
+          "confidence",
+          "undoGroupId",
+          "durationMs",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "dryRun": false
+        }
+      ],
+      "risk": "asset-write",
+      "mutates": true,
+      "supportsDryRun": true,
+      "phase": 2,
+      "relatedResources": [],
+      "destructive": false,
+      "idempotent": false,
+      "openWorld": false,
+      "permissionClass": "project-write",
+      "mainThread": true,
+      "undoable": false,
+      "expectedDurationMs": {
+        "minimum": 1,
+        "maximum": 300000
+      },
+      "bridgeOperations": [
+        "project.layers_set"
+      ]
+    },
+    {
+      "operationId": "ghost.tool.project_settings_set.v1",
+      "version": 1,
+      "name": "project_settings_set",
+      "description": "Set Player settings that assignments specify: product and company name, default screen resolution (for example Full HD 1920x1080), full-screen mode and run-in-background. Returns the before/after values.",
+      "profile": "authoring",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "productName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "companyName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "defaultScreenWidth": {
+            "type": "integer",
+            "minimum": 320,
+            "maximum": 7680
+          },
+          "defaultScreenHeight": {
+            "type": "integer",
+            "minimum": 240,
+            "maximum": 4320
+          },
+          "fullScreenMode": {
+            "type": "string",
+            "enum": [
+              "ExclusiveFullScreen",
+              "FullScreenWindow",
+              "MaximizedWindow",
+              "Windowed"
+            ]
+          },
+          "runInBackground": {
+            "type": "boolean"
+          },
+          "dryRun": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dryRun"
+        ],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "data": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "data": {}
+                },
+                "required": [
+                  "code",
+                  "message"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "info",
+                    "warning",
+                    "error"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "data": {}
+              },
+              "required": [
+                "severity",
+                "message"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "operationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "undoGroupId": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "data",
+          "error",
+          "diagnostics",
+          "requestId",
+          "operationId",
+          "projectId",
+          "confidence",
+          "undoGroupId",
+          "durationMs",
+          "warnings"
+        ],
+        "additionalProperties": false
+      },
+      "examples": [
+        {
+          "dryRun": false
+        }
+      ],
+      "risk": "asset-write",
+      "mutates": true,
+      "supportsDryRun": true,
+      "phase": 2,
+      "relatedResources": [],
+      "destructive": false,
+      "idempotent": false,
+      "openWorld": false,
+      "permissionClass": "project-write",
+      "mainThread": true,
+      "undoable": false,
+      "expectedDurationMs": {
+        "minimum": 1,
+        "maximum": 300000
+      },
+      "bridgeOperations": [
+        "project.settings_set"
       ]
     },
     {
